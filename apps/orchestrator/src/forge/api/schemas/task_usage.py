@@ -145,6 +145,42 @@ class TaskUsageHistoryResponse(BaseModel):
     failed_attempt_count: StrictInt = Field(default=0, ge=0, le=2**63 - 1)
 
 
+class TaskUsageOwnerCommandRequest(BaseModel):
+    """The route supplies the authenticated actor; a caller cannot assert one."""
+
+    model_config = ConfigDict(extra="forbid")
+    checkpoint_id: UUID
+    expected_version: StrictInt = Field(ge=0, le=2**63 - 2)
+    idempotency_key: str = Field(min_length=1, max_length=255)
+    action: Literal["continue", "resume", "resolve", "set_policy", "override_checkpoint", "stop"]
+    continue_mode: Literal["next_checkpoint", "without_usage_pauses"] | None = None
+    requested_policy: MonitoringPolicy | None = None
+    override_note: str | None = Field(default=None, max_length=2000)
+
+    @model_validator(mode="after")
+    def validate_action(self) -> TaskUsageOwnerCommandRequest:
+        if self.action == "continue" and self.continue_mode is None:
+            raise ValueError("continue requires a mode")
+        if self.action != "continue" and self.continue_mode is not None:
+            raise ValueError("only continue has a mode")
+        if (self.action == "set_policy") != (self.requested_policy is not None):
+            raise ValueError("set_policy requires a policy")
+        return self
+
+
+class TaskUsageCheckpointResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    checkpoint: CheckpointRecord | None
+    report: UsageReport | None = None
+
+
+class TaskUsageOwnerCommandResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    receipt: OwnerCommandReceipt
+    checkpoint: CheckpointRecord
+    report: UsageReport | None = None
+
+
 class TaskAllowanceInput(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     schema_version: Literal[1] = 1

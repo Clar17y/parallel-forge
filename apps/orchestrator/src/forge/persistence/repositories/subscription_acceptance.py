@@ -28,6 +28,7 @@ from forge.persistence.models.scheduling import (
 )
 from forge.persistence.models.subscription import SubscriptionAttempt, SubscriptionTask
 from forge.persistence.models.subscription_results import SubscriptionAttemptResult
+from forge.persistence.models.task_usage import TaskUsageCheckpoint
 from forge.persistence.repositories.commands import PostgresCommandRepository
 from forge.persistence.repositories.projects import PostgresProjectRepository
 from forge.persistence.repositories.runs import PostgresRunRepository
@@ -36,6 +37,21 @@ from forge.persistence.repositories.subscription_review import (
     candidate_review_evidence,
     historical_candidate_review_evidence,
 )
+
+
+async def _checkpoint_active(session: AsyncSession, run_id: UUID) -> bool:
+    return (
+        await session.scalar(
+            select(TaskUsageCheckpoint.id)
+            .where(
+                TaskUsageCheckpoint.subject_kind == "run",
+                TaskUsageCheckpoint.subject_id == run_id,
+                TaskUsageCheckpoint.state.in_(("checkpoint_requested", "pausing", "paused")),
+            )
+            .limit(1)
+        )
+        is not None
+    )
 
 
 async def acceptance_proposal(
@@ -224,6 +240,8 @@ async def record_acceptance_inspection(
     snapshot: GitWorkingTreeSnapshot,
 ) -> CandidateInspection:
     current = await acceptance_proposal(session, proposal.attempt_id)
+    if await _checkpoint_active(session, current.decision.run_id):
+        raise SubscriptionDecisionError("acceptance inspection is fenced by usage checkpoint")
     if replace(current, inspection=None) != replace(proposal, inspection=None):
         raise SubscriptionDecisionError("acceptance source changed during inspection")
     observed = CandidateInspection.from_snapshot(snapshot)
@@ -322,6 +340,9 @@ async def _reject_prepared_acceptance(
         PostgresSubscriptionBudgetRepository,
     )
     from forge.persistence.repositories.subscription_decisions import _rejection_handoff
+
+    if await _checkpoint_active(session, proposal.decision.run_id):
+        raise SubscriptionDecisionError("acceptance rejection is fenced by usage checkpoint")
 
     attempt = await session.get(SubscriptionAttempt, proposal.attempt_id)
     assert attempt is not None

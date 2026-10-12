@@ -41,6 +41,9 @@ def safe_usage(usage: UsageRecord | None, request: AgentRequest) -> UsageRecord:
             input_tokens=usage.input_tokens,
             output_tokens=usage.output_tokens,
             cached_input_tokens=usage.cached_input_tokens,
+            input_tokens_complete=usage.input_tokens_complete,
+            output_tokens_complete=usage.output_tokens_complete,
+            cached_input_tokens_complete=usage.cached_input_tokens_complete,
             duration_ms=usage.duration_ms,
             tool_call_count=usage.tool_call_count,
             provider_request_id=usage.provider_request_id,
@@ -93,6 +96,15 @@ def usage_attempts_bytes(attempts: tuple[UsageRecord, ...]) -> bytes:
                     "estimated_cost_minor": attempt.estimated_cost_minor,
                     "currency": attempt.currency,
                     "unknown_price_reason": attempt.unknown_price_reason,
+                    **{
+                        name: getattr(attempt, name)
+                        for name in (
+                            "input_tokens_complete",
+                            "output_tokens_complete",
+                            "cached_input_tokens_complete",
+                        )
+                        if getattr(attempt, name) is not None
+                    },
                     "run_id": str(attempt.run_id) if attempt.run_id is not None else None,
                     "agent_execution_id": (
                         str(attempt.agent_execution_id)

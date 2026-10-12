@@ -23,6 +23,7 @@ from forge.application.services.subscription_handoff_application import (
 from forge.application.services.subscription_plan_gate import SubscriptionPlanGateService
 from forge.application.services.subscription_task_controls import SubscriptionTaskControlService
 from forge.domain.run import RunState
+from forge.domain.task_usage_contract import SubjectKey
 
 
 def is_transient_recovery_error(error: Exception) -> bool:
@@ -87,13 +88,25 @@ class SubscriptionDecisionRecovery:
             for candidate in candidates:
                 async with self._factory() as work:
                     due_version = await work.subscription_recovery.due_version(candidate.attempt_id)
+                    checkpoint = None
+                    if due_version is not None:
+                        run_id = await work.subscription_recovery.attempt_run_id(
+                            candidate.attempt_id
+                        )
+                        run = await work.runs.get(run_id)
+                        checkpoint = await work.task_usage_checkpoints.active_for_subject(
+                            SubjectKey(project_id=run.project_id, kind="run", subject_id=run.id)
+                        )
                     violation = (
                         await work.subscription_recovery.role_violation(candidate.attempt_id)
-                        if due_version is not None
+                        if due_version is not None and checkpoint is None
                         else None
                     )
                     await work.rollback()
                 if due_version is None:
+                    continue
+                if checkpoint is not None:
+                    deferred += 1
                     continue
                 if violation is not None:
                     async with self._factory() as work:
@@ -147,6 +160,14 @@ class SubscriptionDecisionRecovery:
                             candidate.attempt_id
                         )
                         run = await work.runs.get(run_id)
+                        if (
+                            await work.task_usage_checkpoints.active_for_subject(
+                                SubjectKey(project_id=run.project_id, kind="run", subject_id=run.id)
+                            )
+                            is not None
+                        ):
+                            deferred += 1
+                            continue
                         if run.state in {RunState.PAUSED, RunState.CANCELLED}:
                             classification, reason = "prerequisite", "run_controlled"
                         elif (

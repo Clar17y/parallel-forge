@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import replace
 from typing import cast
 from uuid import UUID, uuid4
 
@@ -671,6 +672,14 @@ class TestSafeUsageAttempts:
         u = _make_usage(request)
         assert safe_usage_attempts(u, (u,), request) == (u,)
 
+    def test_unknown_attempt_cannot_be_promoted_to_complete_aggregate(self) -> None:
+        request = _make_request()
+        attempt = replace(_make_usage(request), input_tokens_complete=False)
+        aggregate = replace(attempt, input_tokens_complete=True)
+        assert safe_usage_attempts(aggregate, (attempt,), request) == ()
+        legacy = replace(attempt, input_tokens_complete=None)
+        assert safe_usage_attempts(legacy, (legacy,), request) == (legacy,)
+
     def test_unbound_attempt_returns_empty(self) -> None:
         request = _make_request(provider="google")
         aggregate = _make_usage(request)
@@ -726,3 +735,13 @@ class TestUsageAttemptsBytes:
         assert parsed["attempts"][0]["input_tokens"] == 10
         assert parsed["attempts"][0]["output_tokens"] == 5
         assert parsed["attempts"][0]["provider"] == request.provider
+        assert "input_tokens_complete" not in parsed["attempts"][0]
+
+    def test_serialization_preserves_explicit_evidence_flags(self) -> None:
+        request = _make_request()
+        usage = replace(_make_usage(request), input_tokens_complete=True,
+                        output_tokens_complete=False, cached_input_tokens_complete=False)
+        raw = json.loads(usage_attempts_bytes((usage,)))["attempts"][0]
+        assert raw["input_tokens_complete"] is True
+        assert raw["output_tokens_complete"] is False
+        assert raw["cached_input_tokens_complete"] is False

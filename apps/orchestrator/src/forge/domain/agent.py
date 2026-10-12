@@ -817,6 +817,15 @@ def validated_usage_attempts(
     ):
         if sum(getattr(attempt, field) for attempt in attempts) != getattr(aggregate, field):
             raise ValueError("usage attempts must sum to aggregate measured usage")
+    for field in (
+        "input_tokens_complete",
+        "output_tokens_complete",
+        "cached_input_tokens_complete",
+    ):
+        if getattr(aggregate, field) is True and any(
+            getattr(attempt, field) is not True for attempt in attempts
+        ):
+            raise ValueError("aggregate usage cannot claim completeness missing from an attempt")
     return tuple(replace(attempt) for attempt in attempts)
 
 

@@ -119,12 +119,18 @@ class _AggregateUsage:
     provider_cost_known: bool = True
     attempt_count: int = 0
     provider_request_id: str | None = None
+    input_tokens_complete: bool = True
+    output_tokens_complete: bool = True
+    cached_input_tokens_complete: bool = True
 
     def add(self, result: AdkInvocationResult) -> None:
         usage = result.usage
         self.input_tokens = _checked_add(self.input_tokens, usage.input_tokens)
         self.output_tokens = _checked_add(self.output_tokens, usage.output_tokens)
         self.cached_input_tokens = _checked_add(self.cached_input_tokens, usage.cached_input_tokens)
+        self.input_tokens_complete &= usage.input_tokens_complete is True
+        self.output_tokens_complete &= usage.output_tokens_complete is True
+        self.cached_input_tokens_complete &= usage.cached_input_tokens_complete is True
         self.tool_call_count = _checked_add(self.tool_call_count, usage.tool_call_count)
         self.duration_ms = _checked_add(self.duration_ms, result.duration_ms)
         if usage.cost_minor is None:
@@ -288,6 +294,9 @@ def _unpriced_usage(
             input_tokens=aggregate.input_tokens - aggregate.cached_input_tokens,
             output_tokens=aggregate.output_tokens,
             cached_input_tokens=aggregate.cached_input_tokens,
+            input_tokens_complete=aggregate.input_tokens_complete,
+            output_tokens_complete=aggregate.output_tokens_complete,
+            cached_input_tokens_complete=aggregate.cached_input_tokens_complete,
             duration_ms=aggregate.duration_ms,
             tool_call_count=aggregate.tool_call_count,
             provider_request_id=provider_request_id,
@@ -346,6 +355,9 @@ def _preserves_measured_usage(
                 "input_tokens",
                 "output_tokens",
                 "cached_input_tokens",
+                "input_tokens_complete",
+                "output_tokens_complete",
+                "cached_input_tokens_complete",
                 "duration_ms",
                 "tool_call_count",
                 "provider_request_id",
@@ -388,6 +400,9 @@ def _unknown_priced_usage(
         input_tokens=usage.input_tokens,
         output_tokens=usage.output_tokens,
         cached_input_tokens=usage.cached_input_tokens,
+        input_tokens_complete=usage.input_tokens_complete,
+        output_tokens_complete=usage.output_tokens_complete,
+        cached_input_tokens_complete=usage.cached_input_tokens_complete,
         duration_ms=usage.duration_ms,
         tool_call_count=usage.tool_call_count,
         provider_request_id=usage.provider_request_id,

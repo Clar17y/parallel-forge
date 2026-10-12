@@ -43,7 +43,10 @@ from forge.persistence.models.subscription_results import SubscriptionAttemptRes
 from forge.persistence.models.subscription_usage import SubscriptionAttemptConsumption
 from forge.persistence.repositories.operations import _intent_from_record
 from forge.persistence.repositories.subscription import PostgresSubscriptionRepository
-from forge.persistence.repositories.subscription_acceptance import acceptance_proposal
+from forge.persistence.repositories.subscription_acceptance import (
+    _checkpoint_active,
+    acceptance_proposal,
+)
 from forge.persistence.repositories.subscription_handoff_evidence import verify_artifact_closure
 from forge.persistence.repositories.subscription_launch import launches_confirmed
 from forge.persistence.repositories.tool_calls import _record_from_row
@@ -274,6 +277,8 @@ async def record_acceptance_receipts(
         if result.application_payload["receipt_verification"] != proof.payload():
             raise SubscriptionDecisionError("acceptance receipt verification replay differs")
         return
+    if await _checkpoint_active(session, proposal.decision.run_id):
+        raise SubscriptionDecisionError("acceptance receipt is fenced by usage checkpoint")
     result.application_payload = {
         **result.application_payload,
         "receipt_verification": proof.payload(),

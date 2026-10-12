@@ -64,9 +64,14 @@ from forge.persistence.models.subscription_feedback import SubscriptionTaskFeedb
 from forge.persistence.models.subscription_handoff import SubscriptionHandoffFence
 from forge.persistence.models.subscription_results import SubscriptionAttemptResult
 from forge.persistence.models.subscription_usage import SubscriptionAttemptConsumption
+from forge.persistence.models.task_usage import TaskUsageCheckpoint
 from forge.persistence.repositories.epic_budget import PostgresEpicBudgetRepository
 from forge.persistence.repositories.subscription_budget import PostgresSubscriptionBudgetRepository
 from forge.persistence.repositories.subscription_quota import PostgresSubscriptionQuotaRepository
+
+
+class UsageCheckpointLeaseRevoked(SchedulingLeaseRevoked):
+    """No further provider work; an already completed result may still settle."""
 
 
 class PostgresSchedulingRepository:
@@ -82,6 +87,15 @@ class PostgresSchedulingRepository:
             is None
         ):
             raise SchedulingConflict("scheduled run not found")
+
+    async def _usage_checkpoint_active(self, run_id: UUID) -> bool:
+        return await self._session.scalar(
+            select(TaskUsageCheckpoint.id).where(
+                TaskUsageCheckpoint.subject_kind == "run",
+                TaskUsageCheckpoint.subject_id == run_id,
+                TaskUsageCheckpoint.state.in_(("checkpoint_requested", "pausing", "paused")),
+            ).limit(1)
+        ) is not None
 
     async def enqueue(self, task: ScheduleTask) -> ScheduleTask:
         await self._lock_run(task.run_id)
@@ -397,6 +411,8 @@ class PostgresSchedulingRepository:
             )
             if locked is None:
                 continue
+            if await self._usage_checkpoint_active(candidate.run_id):
+                continue
             run = await self._session.get(
                 SubscriptionSchedulerRun, candidate.run_id, with_for_update=True
             )
@@ -584,6 +600,8 @@ class PostgresSchedulingRepository:
             raise SchedulingLeaseLost("scheduled run is absent")
         if not run_allows_subscription_attempt(source_run.state, source_run.pending_gate):
             raise SchedulingLeaseRevoked("task lease is fenced by run control")
+        if await self._usage_checkpoint_active(lease.run_id):
+            raise UsageCheckpointLeaseRevoked("task lease is fenced by usage checkpoint")
         row = await self._task(lease, lock=True)
         logical = await self._session.get(
             SubscriptionTask, lease.task_id, populate_existing=True, with_for_update=True
@@ -643,6 +661,8 @@ class PostgresSchedulingRepository:
         expected_candidate_epoch: int | None = None,
     ) -> TaskEffectLease:
         await self._lock_run(lease.run_id)
+        if await self._usage_checkpoint_active(lease.run_id):
+            raise SchedulingConflict("task effect admission is fenced by usage checkpoint")
         row = await self._task(lease, lock=True)
         run = await self._session.get(SubscriptionSchedulerRun, lease.run_id, with_for_update=True)
         if run is None or row.pause_requested or row.cancel_requested:

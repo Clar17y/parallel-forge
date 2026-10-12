@@ -7,7 +7,40 @@
     97,
     100
   ],
-  "status": "Locally implemented, simplified and repaired; PR #108 published, round-seven repair push pending at this snapshot.",
+  "status": "Merged PR #108; final hosted and merge reconciliation recorded in final_delivery. Earlier entries retain their historical snapshots.",
+  "final_delivery": {
+    "pr": "https://github.com/Clar17y/parallel-forge/pull/108",
+    "tested_pr_head": "29041086f80638426179be0797cac79569a4025b",
+    "merged_commit": "e2c93d0a35102fd16162ee492da4044b3070a59f",
+    "merged_at_utc": "2026-10-11T12:13:52Z",
+    "tested_tree": "7eea7d35ad7aaf76ce99390b3cd6110b0d3f8df6",
+    "merged_tree_matches_tested_head": true,
+    "automatic_smoke": {
+      "conclusion": "SUCCESS",
+      "url": "https://github.com/Clar17y/parallel-forge/actions/runs/38108655877"
+    },
+    "codex": {
+      "completed": true,
+      "verdict": "No major issues on tested head",
+      "finding_conversations": 13,
+      "unresolved": 0,
+      "evidence_backed_replies": true
+    },
+    "retained_closed_children": [
+      95,
+      96,
+      97,
+      100,
+      105
+    ],
+    "receipts_root": "C:/Users/sdyer/.codex/worktree-evidence/parallel-forge/usage-monitoring-batch-2904108-pr108-35871bc4d8214a3fa4dc8a0194876fe1/.llm-output",
+    "historical_scope": "Earlier publication, issue-state, acceptance and unrun-check entries retain their recorded historical snapshots. Automatic PR smoke and final Codex review later passed. Earlier broad backend failures plus scoped repairs are not a final whole-suite pass. No runtime live-provider conformance or full signed64 browser round trip is claimed. Checkpoints, continuation, authenticated browser journeys and production assembly are reconciled in the next batch under #106.",
+    "receipts": [
+      "pr108-round7/hosted-acceptance.json",
+      "pr108-round7/acceptance.json",
+      "teardown-pr108/merge-reconciliation.json"
+    ]
+  },
   "feature_complete": false,
   "candidate": {
     "source_commit": "9592471a972275cd429772006be7e64dfaa8f85f",

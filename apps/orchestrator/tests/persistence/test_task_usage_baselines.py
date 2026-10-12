@@ -8,6 +8,7 @@ from uuid import uuid4
 
 import pytest
 from forge.agents.adk_gateway import GoogleAdkGateway
+from forge.application.services.epic_brainstorm import configured_authoring_cohort
 from forge.application.services.evaluations import EvaluationService
 from forge.application.services.task_usage_baselines import (
     TaskUsageBaselineService,
@@ -130,7 +131,8 @@ async def test_repository_finalization_failure_count_obeys_historical_cutoff(
             persisted_run.id, step_id, execution_id, finish,
             UsageRecord(provider="provider-a", model="model-a", prompt_version="v1",
                         input_tokens=2, output_tokens=3, pricing_version="v1",
-                        currency="USD", unknown_price_reason="unpriced"),
+                        currency="USD", unknown_price_reason="unpriced",
+                        input_tokens_complete=True, output_tokens_complete=True),
             completed_at=completed_at,
         )
         await work.commit()
@@ -168,6 +170,8 @@ async def test_legacy_failure_counts_use_unique_terminal_executions_at_cutoff(
                     id=uuid4(), run_id=persisted_run.id, agent_execution_id=identity,
                     provider="provider-a", model="model-a", prompt_version="v1",
                     input_tokens=1, output_tokens=0, cached_input_tokens=0,
+                    input_tokens_complete=True, output_tokens_complete=True,
+                    cached_input_tokens_complete=True,
                     duration_ms=1, tool_call_count=0, pricing_version="v1",
                     currency="USD", estimated_cost_minor=0,
                     created_at=created_at,
@@ -199,6 +203,8 @@ async def test_legacy_failure_counts_use_unique_terminal_executions_at_cutoff(
                                agent_execution_id=prior_execution,
                                provider="provider-a", model="model-a", prompt_version="v1",
                                input_tokens=3, output_tokens=4, cached_input_tokens=0,
+                               input_tokens_complete=True, output_tokens_complete=True,
+                               cached_input_tokens_complete=True,
                                duration_ms=1, tool_call_count=0, pricing_version="v1",
                                currency="USD", estimated_cost_minor=0))
         await session.execute(update(Run).where(Run.id == prior.id).values(state="COMPLETED"))
@@ -286,6 +292,8 @@ async def test_finalized_run_sample_uses_measured_provider_rows_and_role_phase(
                     input_tokens=100 * (index + 1),
                     output_tokens=50 * (index + 1),
                     cached_input_tokens=20,
+                    input_tokens_complete=True, output_tokens_complete=True,
+                    cached_input_tokens_complete=True,
                     duration_ms=1,
                     tool_call_count=0,
                     pricing_version="test-v1",
@@ -405,6 +413,8 @@ async def test_many_candidates_batch_sample_and_exclusion_evidence_queries(
                                agent_execution_id=legacy_id, provider="provider-a",
                                model="model-a", prompt_version="v1", input_tokens=4,
                                output_tokens=1, cached_input_tokens=2, duration_ms=1,
+                               input_tokens_complete=True, output_tokens_complete=True,
+                               cached_input_tokens_complete=True,
                                tool_call_count=0, pricing_version="v1", currency="USD",
                                estimated_cost_minor=0))
         await session.execute(update(Run).where(Run.id == persisted_run.id).values(state="COMPLETED"))
@@ -420,6 +430,8 @@ async def test_many_candidates_batch_sample_and_exclusion_evidence_queries(
                                    agent_execution_id=execution_id, provider="provider-a",
                                    model="model-a", prompt_version="v1", input_tokens=10 + index,
                                    output_tokens=2, cached_input_tokens=3, duration_ms=1,
+                                   input_tokens_complete=True, output_tokens_complete=True,
+                                   cached_input_tokens_complete=True,
                                    tool_call_count=0, pricing_version="v1", currency="USD",
                                    estimated_cost_minor=0))
             await session.execute(update(Run).where(Run.id == run.id).values(state="COMPLETED"))
@@ -494,6 +506,8 @@ async def test_exact_window_boundary_retains_older_admitted_unit_and_huge_window
                                agent_execution_id=execution_id, provider="provider-a",
                                model="model-a", prompt_version="v1", input_tokens=12,
                                output_tokens=3, cached_input_tokens=5, duration_ms=1,
+                               input_tokens_complete=True, output_tokens_complete=True,
+                               cached_input_tokens_complete=True,
                                tool_call_count=0, pricing_version="v1", currency="USD",
                                estimated_cost_minor=0))
     binding = _binding(persisted_run, execution_id)
@@ -638,6 +652,8 @@ async def test_partial_source_bindings_never_train_whole_subject_baseline(
                     input_tokens=100,
                     output_tokens=50,
                     cached_input_tokens=0,
+                    input_tokens_complete=True, output_tokens_complete=True,
+                    cached_input_tokens_complete=True,
                     duration_ms=1,
                     tool_call_count=0,
                     pricing_version="test-v1",
@@ -699,6 +715,8 @@ async def test_historical_exclusions_ignore_later_admitted_incomplete_source(
                                agent_execution_id=early_id, provider="provider-a",
                                model="model-a", prompt_version="v1", input_tokens=20,
                                output_tokens=5, cached_input_tokens=10, duration_ms=1,
+                               input_tokens_complete=True, output_tokens_complete=True,
+                               cached_input_tokens_complete=True,
                                tool_call_count=0, pricing_version="v1", currency="USD",
                                estimated_cost_minor=0))
         await session.execute(update(Run).where(Run.id == persisted_run.id).values(state="COMPLETED"))
@@ -854,6 +872,8 @@ async def test_concurrent_freeze_returns_one_immutable_snapshot(session_factory,
                 input_tokens=25,
                 output_tokens=10,
                 cached_input_tokens=0,
+                input_tokens_complete=True, output_tokens_complete=True,
+                cached_input_tokens_complete=True,
                 duration_ms=1,
                 tool_call_count=0,
                 pricing_version="test-v1",
@@ -1041,6 +1061,8 @@ async def test_colliding_run_and_authoring_ids_keep_failed_and_legacy_facts_sepa
                 id=uuid4(), run_id=shared_id, agent_execution_id=execution_id,
                 provider="provider-a", model="model-a", prompt_version="v1",
                 input_tokens=input_tokens, output_tokens=1, cached_input_tokens=1,
+                input_tokens_complete=True, output_tokens_complete=True,
+                cached_input_tokens_complete=True,
                 duration_ms=1, tool_call_count=0, pricing_version="v1",
                 currency="USD", estimated_cost_minor=0,
             ))
@@ -1092,6 +1114,8 @@ async def test_legacy_source_inventory_honors_historical_cutoff_and_inclusive_bo
                                    agent_execution_id=execution_id, provider="provider-a",
                                    model="model-a", prompt_version="v1", input_tokens=4,
                                    output_tokens=1, cached_input_tokens=2, duration_ms=1,
+                                   input_tokens_complete=True, output_tokens_complete=True,
+                                   cached_input_tokens_complete=True,
                                    tool_call_count=0, pricing_version="v1", currency="USD",
                                    estimated_cost_minor=0))
             await session.execute(update(Run).where(Run.id == run.id).values(state="COMPLETED"))
@@ -1107,6 +1131,8 @@ async def test_legacy_source_inventory_honors_historical_cutoff_and_inclusive_bo
                                agent_execution_id=future_execution_id,
                                provider="provider-a", model="model-a", prompt_version="v1",
                                input_tokens=20, output_tokens=1, cached_input_tokens=0,
+                               input_tokens_complete=True, output_tokens_complete=True,
+                               cached_input_tokens_complete=True,
                                duration_ms=1, tool_call_count=0, pricing_version="v1",
                                currency="USD", estimated_cost_minor=0,
                                created_at=historical_at))
@@ -1151,6 +1177,8 @@ async def test_report_keeps_one_snapshot_when_final_source_commits_between_proje
                                agent_execution_id=first_id, provider="provider-a",
                                model="model-a", prompt_version="v1", input_tokens=4,
                                output_tokens=1, cached_input_tokens=2, duration_ms=1,
+                               input_tokens_complete=True, output_tokens_complete=True,
+                               cached_input_tokens_complete=True,
                                tool_call_count=0, pricing_version="v1", currency="USD",
                                estimated_cost_minor=0))
         await session.execute(update(Run).where(Run.id == persisted_run.id).values(state="COMPLETED"))
@@ -1183,6 +1211,8 @@ async def test_report_keeps_one_snapshot_when_final_source_commits_between_proje
                                    agent_execution_id=second_id, provider="provider-a",
                                    model="model-a", prompt_version="v1", input_tokens=8,
                                    output_tokens=1, cached_input_tokens=0, duration_ms=1,
+                                   input_tokens_complete=True, output_tokens_complete=True,
+                                   cached_input_tokens_complete=True,
                                    tool_call_count=0, pricing_version="v1", currency="USD",
                                    estimated_cost_minor=0))
     finally:
@@ -1231,7 +1261,7 @@ async def test_authoring_and_run_subjects_are_separate_history_rows(session_fact
                 conversation_id=conversation_id,
                 version=1,
                 state="proposed",
-                snapshot={},
+                snapshot={"kind": "brainstorm"},
                 proposal={"title": "test"},
                 proposal_digest="c" * 64,
                 current_attempt_id=None,
@@ -1244,7 +1274,7 @@ async def test_authoring_and_run_subjects_are_separate_history_rows(session_fact
         session.add(BrainstormJobRow(id=foreign_job, epic_id=foreign_epic,
                                     project_id=foreign_project,
                                     conversation_id=foreign_conversation, version=1,
-                                    state="proposed", snapshot={}, proposal={"title": "foreign"},
+                                    state="proposed", snapshot={"kind": "decomposition"}, proposal={"title": "foreign"},
                                     proposal_digest="d" * 64, current_attempt_id=None,
                                     adopted_revision_id=None, wait_pool_revision=None,
                                     retry_authorized_until=None, override_unknown_usage=False))
@@ -1259,7 +1289,8 @@ async def test_authoring_and_run_subjects_are_separate_history_rows(session_fact
     assert len(rows) == 3
     assert {(row.subject_kind, row.task_kind) for row in rows} == {
         ("run", "implementation"),
-        ("authoring_job", "authoring"),
+        ("authoring_job", "brainstorm"),
+        ("authoring_job", "decomposition"),
     }
     assert {row.outcome for row in rows} == {"completed"}
     assert {(row.project_id, row.subject_kind, row.subject_id) for row in rows} == {
@@ -1268,6 +1299,41 @@ async def test_authoring_and_run_subjects_are_separate_history_rows(session_fact
         (foreign_project, "authoring_job", foreign_job),
     }
     assert all(row.total_tokens is None and not row.measured for row in rows)
+    cohort = RouteCohort.from_members((RouteMember(
+        role="authoring", provider="fixture", model="fixture", ordinal=0,
+    ),))
+    async with session_factory() as session:
+        for identity, expected in ((job_id, "brainstorm"), (foreign_job, "decomposition")):
+            binding = WorkUnitBinding(
+                subject=SubjectKey(
+                    project_id=(persisted_run.project_id if identity == job_id else foreign_project),
+                    kind="authoring_job", subject_id=identity,
+                ),
+                work_unit_id=uuid4(), admitted_phase_id=expected,
+                configured_route=cohort, effective_route=cohort,
+                source=SourceBinding(kind="authoring_attempt", source_id=uuid4()),
+            )
+            assert await baseline_module._subject_task_kind(session, binding) == expected
+    typed = tuple(replace(row, finalized=True, measured=True, total_tokens=10,
+                          configured_route=cohort.fingerprint,
+                          effective_route=cohort.fingerprint)
+                  for row in rows if row.subject_kind == "authoring_job")
+    selected = select_cohort(
+        typed, rules=SamplingRules(minimum_comparables=1),
+        as_of=datetime.now(UTC) + timedelta(seconds=1),
+        project_ids={persisted_run.project_id, foreign_project},
+        subject_kind="authoring_job", task_kind="decomposition",
+        configured_route=cohort.fingerprint, effective_route=cohort.fingerprint,
+        target_project_id=foreign_project,
+    )
+    assert [row.subject_id for row in selected.samples] == [foreign_job]
+    service = TaskUsageBaselineService(TaskUsageBaselineQuery(session_factory))
+    for task_kind in ("brainstorm", "decomposition"):
+        report = await service.report(UsageReportFilters(
+            project_ids=frozenset({persisted_run.project_id, foreign_project}),
+            task_kind=task_kind, as_of=datetime.now(UTC) + timedelta(seconds=1),
+        ))
+        assert set(report["by_task_type"]) == {task_kind}
 
 
 @pytest.mark.integration
@@ -1294,9 +1360,9 @@ async def test_measured_proposal_history_and_frozen_reference_survive_real_adopt
         ))
     assert proposal_audit is not None and proposal_audit.detail["state"] == "proposed"
     proposal_at = proposal_audit.created_at
-    route = RouteCohort.from_members((RouteMember(
-        role="developer", provider="fake", model="fixture", ordinal=0,
-    ),))
+    route = configured_authoring_cohort(
+        PostgresBrainstormRepository.decode_snapshot(job).route.requested
+    )
     binding = WorkUnitBinding(
         subject=SubjectKey(project_id=project_id, kind="authoring_job", subject_id=receipt.job_id),
         work_unit_id=uuid4(), admitted_phase_id="authoring",
@@ -1386,6 +1452,7 @@ async def test_measured_proposal_history_and_frozen_reference_survive_real_adopt
         assert len(measured) == expected
         if expected:
             assert measured[0].measured and measured[0].total_tokens == 9
+
         exclusions = await query.exclusions(
             project_ids={project_id}, as_of=at, window_days=1,
             subjects={(project_id, "authoring_job", receipt.job_id)},
@@ -1416,7 +1483,8 @@ async def test_measured_proposal_history_and_frozen_reference_survive_real_adopt
                    if sql.lstrip().startswith("select epic_brainstorm_jobs.id"))
     settled_sql = next(sql for sql in statements
                        if sql.lstrip().startswith("select epic_brainstorm_audit.id as audit_id"))
-    assert "epic_brainstorm_jobs.snapshot" not in job_sql
+    assert "epic_brainstorm_jobs.snapshot ->>" in job_sql
+    assert "epic_brainstorm_jobs.snapshot," not in job_sql
     assert "epic_brainstorm_attempts.usage" not in settled_sql
     assert "epic_brainstorm_attempts.reservation" not in settled_sql
     assert "epic_brainstorm_attempts.terminal_proof" not in settled_sql
@@ -1437,6 +1505,58 @@ async def test_measured_proposal_history_and_frozen_reference_survive_real_adopt
     assert mismatched[1]["in_progress"] == 1
     assert mismatched[2]["overview"]["sample_count"] == 0
 
+
+@pytest.mark.integration
+async def test_live_only_authoring_route_remains_filterable_but_excluded(session_factory):
+    _, _, project_id, _, receipt = await prepared(session_factory)
+    worker = EpicBrainstormWorker(
+        session_factory, owner="live-route-worker",
+        gateway_factory=lambda _: FakeGateway(), reader_factory=lambda _: object(),
+    )
+    assert await worker.run_once() == receipt.job_id
+    async with session_factory() as session:
+        job = await session.get(BrainstormJobRow, receipt.job_id)
+        assert job is not None and job.current_attempt_id is not None
+        route = configured_authoring_cohort(
+            PostgresBrainstormRepository.decode_snapshot(job).route.requested
+        )
+        attempt_id = job.current_attempt_id
+    binding = WorkUnitBinding(
+        subject=SubjectKey(project_id=project_id, kind="authoring_job", subject_id=receipt.job_id),
+        work_unit_id=uuid4(), admitted_phase_id="authoring",
+        configured_route=route, effective_route=route,
+        source=SourceBinding(kind="authoring_attempt", source_id=attempt_id),
+    )
+    writer = PostgresTaskUsageObservations(session_factory)
+    await writer.bind(binding)
+    await writer.append_observation(Observation(
+        binding=binding, event_id="live-only", sequence=1,
+        counter_kind=CounterKind.CUMULATIVE,
+        tokens=TokenCounts(input_tokens=4, output_tokens=5), final=False,
+    ))
+    query = TaskUsageBaselineQuery(session_factory)
+    sample, = [row for row in await query.samples(
+        project_ids={project_id}, as_of=datetime.now(UTC) + timedelta(seconds=1),
+        window_days=365,
+    ) if row.subject_id == receipt.job_id]
+    assert sample.task_kind == "brainstorm"
+    assert sample.total_tokens is None and not sample.measured and not sample.finalized
+    assert sample.configured_route == route.fingerprint
+    assert sample.effective_route == route.fingerprint
+    assert sample.route_members == tuple(
+        (member.role, member.provider, member.model, member.reasoning_effort)
+        for member in route.members
+    )
+    member = route.members[0]
+    report = await TaskUsageBaselineService(query).report(UsageReportFilters(
+        project_ids=frozenset({project_id}), subject_kind="authoring_job",
+        task_kind="brainstorm", provider=member.provider,
+        model=member.model, effort=member.reasoning_effort,
+        rules=SamplingRules(minimum_comparables=1),
+    ))
+    assert report["overview"]["eligible_count"] == 0
+    assert report["overview"]["excluded_count"] == 1
+    assert report["excluded_outcomes"] == {"incomplete_usage": 1}
 
 @pytest.mark.integration
 async def test_authoring_cancel_audit_preserves_before_and_after_cutoffs(session_factory):
@@ -1635,6 +1755,8 @@ async def test_extreme_ready_history_threshold_freezes_from_large_measured_value
                                provider="provider-a", model="model-a", prompt_version="v1",
                                input_tokens=2_000_000_000, output_tokens=0,
                                cached_input_tokens=0, duration_ms=1, tool_call_count=0,
+                               input_tokens_complete=True, output_tokens_complete=True,
+                               cached_input_tokens_complete=True,
                                pricing_version="v1", currency="USD", estimated_cost_minor=0))
         await session.execute(update(Run).where(Run.id == persisted_run.id).values(state="COMPLETED"))
         session.add(TaskUsagePolicyRevision(
@@ -1870,6 +1992,8 @@ async def test_accepted_run_remains_in_historical_report_after_merge(
                                agent_execution_id=execution_id, provider="provider-a",
                                model="model-a", prompt_version="v1", input_tokens=7,
                                output_tokens=2, cached_input_tokens=1, duration_ms=1,
+                               input_tokens_complete=True, output_tokens_complete=True,
+                               cached_input_tokens_complete=True,
                                tool_call_count=0, pricing_version="v1", currency="USD",
                                estimated_cost_minor=0))
         attempts = (await session.scalars(select(SubscriptionAttempt).where(
@@ -2241,6 +2365,8 @@ async def test_legacy_model_usage_uses_defensible_actual_routes_and_keeps_failed
                     input_tokens=40,
                     output_tokens=10,
                     cached_input_tokens=20 if index == 0 else 5,
+                    input_tokens_complete=True, output_tokens_complete=True,
+                    cached_input_tokens_complete=True,
                     duration_ms=1,
                     tool_call_count=0,
                     pricing_version="test-v1",

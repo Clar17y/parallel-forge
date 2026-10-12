@@ -1560,16 +1560,19 @@ describe('AuthoringWorkspace', () => {
   test('reopened selected job shows a checking state until its first outcome arrives', async () => {
     window.history.replaceState({}, '', `/epics/${epicId}?conversation_id=${conversationId}&job_id=current-job`);
     let finishOutcome!: (value: unknown) => void;
+    let outcomeStarted!: () => void;
+    const outcomeRequestStarted = new Promise<void>(resolve => { outcomeStarted = resolve; });
     vi.mocked(api).mockImplementation(async <T,>(path: string) => {
       if (path.startsWith(`/epics/${epicId}/brainstorm-conversations?`)) return [thread] as T;
       if (path === `/epics/${epicId}/brainstorm-conversations/${conversationId}/turns?project_id=${projectId}`) return turns as T;
-      if (path === `/epics/${epicId}/brainstorm-jobs/current-job?project_id=${projectId}`) return await new Promise<unknown>(resolve => { finishOutcome = resolve; }) as T;
+      if (path === `/epics/${epicId}/brainstorm-jobs/current-job?project_id=${projectId}`) return await new Promise<unknown>(resolve => { finishOutcome = resolve; outcomeStarted(); }) as T;
       return undefined as T;
     });
     render(<AuthoringWorkspace epicId={epicId} projectId={projectId} epicVersion={9} />);
     const checking = await screen.findByRole('region', { name: 'Checking assistant status' });
     expect(checking).toHaveAttribute('data-executing', 'true');
     expect(screen.queryByText('Proposal ready for review')).not.toBeInTheDocument();
+    await outcomeRequestStarted;
     await act(async () => finishOutcome(proposedOutcome));
     expect(await screen.findByText('Proposal ready for review')).toBeInTheDocument();
   });

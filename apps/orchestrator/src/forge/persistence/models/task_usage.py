@@ -9,6 +9,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKeyConstraint,
+    Index,
     Integer,
     String,
     UniqueConstraint,
@@ -356,9 +357,19 @@ class TaskUsageCheckpoint(Base):
         UniqueConstraint(
             "work_unit_id", "trigger_event_id", name="uq_task_usage_checkpoints_trigger"
         ),
+        Index(
+            "uq_task_usage_checkpoints_active_subject",
+            "project_id", "subject_kind", "subject_id",
+            unique=True,
+            postgresql_where=text("state IN ('checkpoint_requested','pausing','paused')"),
+        ),
         CheckConstraint(
-            "version >= 0 AND state IN ('checkpoint_requested','pausing','paused','resumed','resolved') AND (state NOT IN ('paused','resumed') OR process_settled)",
+            "version >= 0 AND generation > 0 AND state IN ('checkpoint_requested','pausing','paused','resumed','resolved') AND (state NOT IN ('paused','resumed') OR process_settled)",
             name="state_shape",
+        ),
+        CheckConstraint(
+            "(next_checkpoint_threshold_tokens IS NULL OR next_checkpoint_threshold_tokens > 0) AND (monitoring_policy_revision IS NULL OR monitoring_policy_revision > 0) AND (NOT usage_pauses_disabled OR next_checkpoint_threshold_tokens IS NULL)",
+            name="continuation_shape",
         ),
     )
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
@@ -372,7 +383,11 @@ class TaskUsageCheckpoint(Base):
     trigger_event_id: Mapped[str] = mapped_column(String(256), nullable=False)
     state: Mapped[str] = mapped_column(String(32), nullable=False)
     version: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    generation: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("1"))
     process_settled: Mapped[bool] = mapped_column(nullable=False, default=False)
+    next_checkpoint_threshold_tokens: Mapped[int | None] = mapped_column(BigInteger)
+    usage_pauses_disabled: Mapped[bool] = mapped_column(nullable=False, default=False)
+    monitoring_policy_revision: Mapped[int | None] = mapped_column(BigInteger)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -393,7 +408,7 @@ class TaskUsageOwnerCommand(Base):
             "expected_version >= 0 AND result_version >= expected_version", name="version_shape"
         ),
         CheckConstraint(
-            "action IN ('continue','resume','resolve','set_policy','override_checkpoint') AND jsonb_typeof(command_payload) = 'object' AND jsonb_typeof(warnings) = 'array' AND affected_snapshot_digest ~ '^[0-9a-f]{64}$'",
+            "action IN ('continue','resume','resolve','set_policy','override_checkpoint','stop') AND jsonb_typeof(command_payload) = 'object' AND jsonb_typeof(warnings) = 'array' AND affected_snapshot_digest ~ '^[0-9a-f]{64}$'",
             name="payload_shape",
         ),
     )
@@ -412,3 +427,24 @@ class TaskUsageOwnerCommand(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+class TaskUsageSubjectAdmissionRow(Base):
+    __tablename__ = "task_usage_subject_admissions"
+    __table_args__ = (
+        ForeignKeyConstraint(("project_id",), ("projects.id",), ondelete="RESTRICT"),
+        ForeignKeyConstraint(("run_id", "project_id"), ("runs.id", "runs.project_id"), ondelete="RESTRICT"),
+        ForeignKeyConstraint(("authoring_job_id", "project_id"), ("epic_brainstorm_jobs.id", "epic_brainstorm_jobs.project_id"), ondelete="RESTRICT"),
+        ForeignKeyConstraint(("project_id", "policy_revision"), ("task_usage_policy_revisions.project_id", "task_usage_policy_revisions.revision"), ondelete="RESTRICT"),
+        CheckConstraint("(subject_kind = 'run' AND run_id = subject_id AND authoring_job_id IS NULL) OR (subject_kind = 'authoring_job' AND authoring_job_id = subject_id AND run_id IS NULL)", name="subject_shape"),
+        CheckConstraint("(policy_revision IS NULL OR policy_revision > 0) AND configured_route_digest ~ '^[0-9a-f]{64}$' AND jsonb_typeof(configured_route_members) = 'array'", name="snapshot_shape"),
+    )
+    project_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    subject_kind: Mapped[str] = mapped_column(String(24), primary_key=True)
+    subject_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    run_id: Mapped[UUID | None] = mapped_column(Uuid)
+    authoring_job_id: Mapped[UUID | None] = mapped_column(Uuid)
+    policy_revision: Mapped[int | None] = mapped_column(BigInteger)
+    configured_route_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    configured_route_members: Mapped[list[dict[str, object]]] = mapped_column(JSONB, nullable=False)
+    admitted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

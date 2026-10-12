@@ -12,6 +12,7 @@ from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from forge.application.ports.epic_brainstorm import BrainstormBriefPort, BriefInput
+from forge.application.ports.task_usage import OwnerCommandReceipt, UsageReport
 from forge.application.services.auth import AuthenticatedActor
 from forge.domain.epic_brainstorm import (
     AuthoringJobSnapshot,
@@ -36,6 +37,7 @@ from forge.domain.subscription import (
     decode_subscription_record,
     encode_subscription_record,
 )
+from forge.domain.task_usage_contract import CheckpointRecord, OwnerCommand, RouteCohort
 from forge.persistence.models.epic_brainstorm import (
     BrainstormAttemptRow,
     BrainstormBudgetLedger,
@@ -51,6 +53,22 @@ class BrainstormConfiguredRoute:
     budget: TaskBudget
     profile_id: UUID | None
     profile_version: int | None
+
+
+def configured_authoring_cohort(route: RouteSpec) -> RouteCohort:
+    """Freeze the single configured route for an authoring job admission."""
+    from forge.domain.task_usage_contract import RouteCohort, RouteMember
+
+    effort = route.effort.value if route.effort is not None else None
+    return RouteCohort.from_members((
+        RouteMember(
+            role="authoring",
+            provider=route.provider,
+            model=route.model,
+            reasoning_effort=effort,
+            ordinal=0,
+        ),
+    ))
 
 
 _LOCAL_CLIENTS = {
@@ -342,6 +360,14 @@ class EpicBrainstormService:
             )
             session.add(row)
             await session.flush()
+            from forge.domain.task_usage_contract import SubjectKey
+            from forge.persistence.repositories.task_usage_admissions import (
+                PostgresTaskUsageAdmissionRepository,
+            )
+
+            cohort = configured_authoring_cohort(snapshot.route.requested)
+            subject = SubjectKey(project_id=project_id, kind="authoring_job", subject_id=job_id)
+            await PostgresTaskUsageAdmissionRepository(session).admit(subject, cohort)
             receipt = repository.receipt(row, key)
             await repository.save_receipt(epic_id, key, digest, receipt.model_dump(mode="json"))
             await repository.audit(
@@ -420,6 +446,25 @@ class EpicBrainstormService:
             if row.version != expected_job_version:
                 raise BrainstormConflict("job version is stale")
             if row.state in ("queued", "quota_wait", "capacity_wait"):
+                row.state = "cancelled"
+            elif row.state == "paused":
+                from forge.domain.task_usage_contract import CheckpointState, SubjectKey
+                from forge.persistence.repositories.task_usage_checkpoints import (
+                    PostgresTaskUsageCheckpointRepository,
+                )
+
+                checkpoints = PostgresTaskUsageCheckpointRepository(session)
+                checkpoint = await checkpoints.active_for_subject(
+                    SubjectKey(project_id=project_id, kind="authoring_job", subject_id=job_id)
+                )
+                if checkpoint is None or checkpoint.state is not CheckpointState.PAUSED:
+                    raise BrainstormConflict("paused job checkpoint is missing")
+                await checkpoints.transition(
+                    checkpoint.checkpoint_id,
+                    expected_version=checkpoint.version,
+                    state=CheckpointState.RESOLVED,
+                    process_settled=True,
+                )
                 row.state = "cancelled"
             elif row.state in ("running", "reconciling"):
                 row.state = "cancel_requested"
@@ -646,6 +691,209 @@ class EpicBrainstormService:
                 {"proposal_digest": proposal_digest, "brief_revision_id": str(revision_id)},
             )
             return revision_id
+
+    async def usage_checkpoint(
+        self,
+        *,
+        epic_id: UUID,
+        project_id: UUID,
+        job_id: UUID,
+    ) -> CheckpointRecord | None:
+        from forge.domain.task_usage_contract import SubjectKey
+        from forge.persistence.repositories.task_usage_checkpoints import (
+            PostgresTaskUsageCheckpointRepository,
+        )
+
+        async with self.sessions() as session:
+            repository = PostgresBrainstormRepository(session)
+            await repository.job(epic_id, project_id, job_id)
+            subject = SubjectKey(project_id=project_id, kind="authoring_job", subject_id=job_id)
+            return await PostgresTaskUsageCheckpointRepository(session).latest_for_subject(subject)
+
+    async def usage_checkpoint_view(
+        self,
+        *,
+        epic_id: UUID,
+        project_id: UUID,
+        job_id: UUID,
+    ) -> tuple[CheckpointRecord | None, UsageReport | None]:
+        from sqlalchemy import select
+
+        from forge.application.services.task_usage_reports import build_usage_report
+        from forge.domain.task_usage_contract import SubjectKey
+        from forge.persistence.models.task_usage import TaskUsageBaseline, TaskUsageWorkUnit
+        from forge.persistence.queries.task_usage_baselines import _reference_from_row
+        from forge.persistence.queries.task_usage_totals import TaskUsageTotalsQuery
+        from forge.persistence.repositories.task_usage_admissions import (
+            PostgresTaskUsageAdmissionRepository,
+        )
+        from forge.persistence.repositories.task_usage_checkpoints import (
+            PostgresTaskUsageCheckpointRepository,
+        )
+        from forge.persistence.repositories.task_usage_observations import decode_binding
+
+        subject = SubjectKey(project_id=project_id, kind="authoring_job", subject_id=job_id)
+        async with self.sessions() as session:
+            await PostgresBrainstormRepository(session).job(epic_id, project_id, job_id)
+            checkpoint = await PostgresTaskUsageCheckpointRepository(session).latest_for_subject(
+                subject
+            )
+            baseline_row = await session.scalar(
+                select(TaskUsageBaseline).where(
+                    TaskUsageBaseline.project_id == project_id,
+                    TaskUsageBaseline.subject_kind == subject.kind,
+                    TaskUsageBaseline.subject_id == job_id,
+                )
+            )
+            baseline = None
+            if baseline_row is not None:
+                unit = await session.get(TaskUsageWorkUnit, baseline_row.work_unit_id)
+                if unit is None:
+                    raise RuntimeError("frozen authoring baseline work unit is missing")
+                baseline = _reference_from_row(baseline_row, decode_binding(unit))
+            admission = await PostgresTaskUsageAdmissionRepository(session).get(subject)
+            totals = await TaskUsageTotalsQuery(self.sessions).totals(subject)
+            report = await build_usage_report(
+                session,
+                totals=totals,
+                policy_revision=(
+                    checkpoint.monitoring_policy_revision or checkpoint.policy_revision
+                    if checkpoint is not None
+                    else admission.policy_revision if admission is not None else None
+                ),
+                baseline=baseline,
+                checkpoint=checkpoint,
+            )
+            return checkpoint, report
+
+    async def apply_checkpoint_command(
+        self,
+        *,
+        epic_id: UUID,
+        project_id: UUID,
+        job_id: UUID,
+        actor: AuthenticatedActor,
+        command: OwnerCommand,
+    ) -> tuple[OwnerCommandReceipt, CheckpointRecord]:
+        if actor.actor_id != command.actor_id:
+            from forge.persistence.repositories.task_usage_checkpoints import CheckpointConflict
+
+            raise CheckpointConflict("owner command actor differs from authenticated session")
+        from forge.domain.task_usage_contract import CheckpointState, SubjectKey
+        from forge.persistence.models.task_usage import TaskUsageBaseline, TaskUsageWorkUnit
+        from forge.persistence.queries.task_usage_baselines import _reference_from_row
+        from forge.persistence.queries.task_usage_totals import TaskUsageTotalsQuery
+        from forge.persistence.repositories.task_usage_checkpoints import (
+            CheckpointConflict,
+            PostgresTaskUsageCheckpointRepository,
+        )
+        from forge.persistence.repositories.task_usage_observations import decode_binding
+        from forge.persistence.repositories.task_usage_policy import (
+            PostgresTaskUsagePolicyRepository,
+        )
+
+        async with self.sessions() as session, session.begin():
+            repository = PostgresBrainstormRepository(session)
+            # Match adoption's producer-epic-before-job lock order. A paused
+            # job cannot resume against a brief or graph edited meanwhile.
+            brief = await self.briefs(session).input(epic_id, for_update=True)
+            row = await repository.job(epic_id, project_id, job_id, lock=True)
+            subject = SubjectKey(project_id=project_id, kind="authoring_job", subject_id=job_id)
+            checkpoints = PostgresTaskUsageCheckpointRepository(session)
+            current = await checkpoints.get(command.checkpoint_id)
+            if current is None or current.binding.subject != subject:
+                raise CheckpointConflict("checkpoint does not belong to the authorized authoring job")
+            replay = await checkpoints.receipt_for_command(command)
+            if replay is not None:
+                return replay, current
+
+            if command.action == "set_policy":
+                if current.state is not CheckpointState.PAUSED or row.state != "paused":
+                    raise CheckpointConflict("authoring job must be paused to change checkpoint policy")
+                requested = command.requested_policy
+                assert requested is not None
+                if requested.project_id != subject.project_id:
+                    raise CheckpointConflict("policy belongs to another project")
+                await PostgresTaskUsagePolicyRepository(session).append_policy_revision(
+                    requested,
+                    expected_revision=requested.revision - 1,
+                    actor_id=actor.actor_id,
+                )
+                state: CheckpointState = current.state
+                next_limit = None
+                bypass = None
+                revision = requested.revision
+            elif command.action == "continue":
+                if current.state is not CheckpointState.PAUSED or row.state != "paused":
+                    raise CheckpointConflict("settled authoring pause is required for continuation")
+                snapshot = repository.decode_snapshot(row)
+                if (
+                    brief.project_id != project_id
+                    or brief.epic_version != snapshot.expected_epic_version
+                    or brief.accepted_revision_id != snapshot.input_brief_revision_id
+                    or brief.accepted_digest != snapshot.input_brief_digest
+                    or brief.draft_digest != snapshot.input_draft_digest
+                    or brief.accepted_graph_revision_id != snapshot.input_graph_revision_id
+                    or brief.accepted_graph_digest != snapshot.input_graph_digest
+                ):
+                    raise CheckpointConflict("authoring input changed while paused")
+                prior_attempt = (
+                    await session.get(BrainstormAttemptRow, row.current_attempt_id)
+                    if row.current_attempt_id is not None
+                    else None
+                )
+                if prior_attempt is None or not prior_attempt.process_settled or prior_attempt.state != "settled":
+                    raise CheckpointConflict("authoring process/effects remain unsettled")
+                state = CheckpointState.RESUMED
+                bypass = command.continue_mode == "without_usage_pauses"
+                if bypass:
+                    next_limit = None
+                else:
+                    totals_query = TaskUsageTotalsQuery(self.sessions)
+                    totals = await totals_query.totals(subject)
+                    if totals.known_total_tokens is None:
+                        raise CheckpointConflict(
+                            "measured usage is unavailable for next checkpoint"
+                        )
+                    baseline_row = await session.get(
+                        TaskUsageBaseline, current.baseline_binding.work_unit_id
+                    )
+                    baseline_unit = await session.get(
+                        TaskUsageWorkUnit, current.baseline_binding.work_unit_id
+                    )
+                    if baseline_row is None or baseline_unit is None:
+                        raise RuntimeError("frozen checkpoint reference is missing")
+                    ref = _reference_from_row(baseline_row, decode_binding(baseline_unit))
+                    from forge.application.services.task_usage_controls import next_threshold
+
+                    next_limit = next_threshold(ref, totals.known_total_tokens)
+                revision = None
+                # Owner continuation resets job to queued with zero repair debit
+                row.state, row.failure = "queued", None
+                row.retry_authorized_until = None
+                row.version += 1
+            elif command.action == "stop":
+                if current.state is not CheckpointState.PAUSED or row.state != "paused":
+                    raise CheckpointConflict("authoring job must settle before stop")
+                row.state, row.failure = "cancelled", "cancelled"
+                row.version += 1
+                state, next_limit, bypass, revision = CheckpointState.RESOLVED, None, None, None
+            else:
+                raise CheckpointConflict("unsupported authoring checkpoint owner action")
+
+            totals_query = TaskUsageTotalsQuery(self.sessions)
+            affected_snapshot = (await totals_query.totals(subject)).snapshot_digest
+            receipt = await checkpoints.apply_owner_command(
+                command,
+                state=state,
+                affected_snapshot=affected_snapshot,
+                next_checkpoint_threshold_tokens=next_limit,
+                usage_pauses_disabled=bypass,
+                monitoring_policy_revision=revision,
+            )
+            updated = await checkpoints.get(current.checkpoint_id)
+            assert updated is not None
+            return receipt, updated
 
 
 class BoundEpicAuthoringAdapter:

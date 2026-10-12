@@ -186,6 +186,10 @@ def _usage_snapshot(usage: object) -> tuple[int, int, int]:
         _provider_count(getattr(usage, "thoughts_token_count", None)),
     )
     cached_tokens = _provider_count(getattr(usage, "cached_content_token_count", None))
+    if getattr(usage, "prompt_token_count", None) is None:
+        # A reported cache subset proves at least this much input, even when
+        # ADK omits the full prompt count. Keep the parent dimension unknown.
+        input_tokens = max(input_tokens, cached_tokens)
     return (input_tokens, output_tokens, cached_tokens)
 
 
@@ -375,6 +379,9 @@ class AdkUsageSummary:
     cached_input_tokens: int = 0
     tool_call_count: int = 0
     cost_minor: int | None = None
+    input_tokens_complete: bool | None = None
+    output_tokens_complete: bool | None = None
+    cached_input_tokens_complete: bool | None = None
 
     def __post_init__(self) -> None:
         _strict_nonnegative_int32(self.input_tokens)
@@ -383,6 +390,13 @@ class AdkUsageSummary:
         _strict_nonnegative_int32(self.tool_call_count)
         if self.cost_minor is not None:
             _strict_nonnegative_int32(self.cost_minor)
+        for complete in (
+            self.input_tokens_complete,
+            self.output_tokens_complete,
+            self.cached_input_tokens_complete,
+        ):
+            if complete is not None and type(complete) is not bool:
+                raise TypeError("usage completeness must be boolean or unknown")
 
 
 class AdkCostEstimator(Protocol):
@@ -515,17 +529,42 @@ class _ObservedStream:
     active_output_tokens: int = 0
     active_cached_input_tokens: int = 0
     active_cost_minor: int | None = None
+    input_tokens_complete: bool = True
+    output_tokens_complete: bool = True
+    cached_input_tokens_complete: bool = True
+    active_input_tokens_complete: bool = False
+    active_output_tokens_complete: bool = False
+    active_cached_input_tokens_complete: bool = False
+    active_turn: bool = False
+    observed_model_turn: bool = False
+    active_model_turn: bool = False
     last_text: str | None = None
     provider_request_id: str | None = None
     finish_reason: AdkFinishReason = AdkFinishReason.COMPLETED
 
     def observe(self, event: object, *, expected_author: str) -> None:
+        self.active_turn = True
         usage = getattr(event, "usage_metadata", None)
+        content = getattr(event, "content", None)
+        # ADK gives function responses the agent's author, but their content
+        # role is user and they do not represent an additional model call.
+        if usage is not None or getattr(content, "role", None) == "model":
+            self.active_model_turn = True
+            self.observed_model_turn = True
         if usage is not None:
             snapshot = _usage_snapshot(usage)
             self.active_input_tokens = max(self.active_input_tokens, snapshot[0])
             self.active_output_tokens = max(self.active_output_tokens, snapshot[1])
             self.active_cached_input_tokens = max(self.active_cached_input_tokens, snapshot[2])
+            self.active_input_tokens_complete |= (
+                getattr(usage, "prompt_token_count", None) is not None
+            )
+            self.active_output_tokens_complete |= (
+                getattr(usage, "candidates_token_count", None) is not None
+            )
+            self.active_cached_input_tokens_complete |= (
+                getattr(usage, "cached_content_token_count", None) is not None
+            )
         cost = _event_cost(event, usage)
         if cost is not None:
             self.active_cost_minor = max(self.active_cost_minor or 0, cost)
@@ -542,11 +581,17 @@ class _ObservedStream:
             self.commit_active_turn()
 
     def commit_active_turn(self) -> None:
+        if not self.active_turn:
+            return
         self.input_tokens = _checked_add(self.input_tokens, self.active_input_tokens)
         self.output_tokens = _checked_add(self.output_tokens, self.active_output_tokens)
         self.cached_input_tokens = _checked_add(
             self.cached_input_tokens, self.active_cached_input_tokens
         )
+        if self.active_model_turn:
+            self.input_tokens_complete &= self.active_input_tokens_complete
+            self.output_tokens_complete &= self.active_output_tokens_complete
+            self.cached_input_tokens_complete &= self.active_cached_input_tokens_complete
         if self.active_cost_minor is not None:
             self.cost_minor = (
                 self.active_cost_minor
@@ -557,6 +602,11 @@ class _ObservedStream:
         self.active_output_tokens = 0
         self.active_cached_input_tokens = 0
         self.active_cost_minor = None
+        self.active_input_tokens_complete = False
+        self.active_output_tokens_complete = False
+        self.active_cached_input_tokens_complete = False
+        self.active_turn = False
+        self.active_model_turn = False
 
     def current_usage(self) -> AdkUsageSummary:
         input_tokens = _checked_add(self.input_tokens, self.active_input_tokens)
@@ -575,6 +625,15 @@ class _ObservedStream:
             cached_input_tokens=cached,
             tool_call_count=self.tool_calls,
             cost_minor=cost,
+            input_tokens_complete=self.observed_model_turn
+            and self.input_tokens_complete
+            and (not self.active_model_turn or self.active_input_tokens_complete),
+            output_tokens_complete=self.observed_model_turn
+            and self.output_tokens_complete
+            and (not self.active_model_turn or self.active_output_tokens_complete),
+            cached_input_tokens_complete=self.observed_model_turn
+            and self.cached_input_tokens_complete
+            and (not self.active_model_turn or self.active_cached_input_tokens_complete),
         )
 
 

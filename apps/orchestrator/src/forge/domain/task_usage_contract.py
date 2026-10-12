@@ -75,6 +75,22 @@ class SubjectKey:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class TaskUsageSubjectAdmission:
+    subject: SubjectKey
+    configured_route: RouteCohort
+    policy_revision: StrictInt | None
+    admitted_at: datetime
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.subject, SubjectKey) or not isinstance(self.configured_route, RouteCohort):
+            raise TypeError("subject admission identity is invalid")
+        if self.policy_revision is not None:
+            _positive(self.policy_revision, "admitted policy revision")
+        if not isinstance(self.admitted_at, datetime) or self.admitted_at.tzinfo is None:
+            raise ValueError("subject admission time must be timezone aware")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class RouteMember:
     role: str
     provider: str
@@ -472,7 +488,11 @@ class CheckpointRecord:
     reference_digest: str
     trigger_event_id: str
     version: StrictInt = 0
+    generation: StrictInt = 1
     process_settled: StrictBool = False
+    next_checkpoint_threshold_tokens: StrictInt | None = None
+    usage_pauses_disabled: StrictBool = False
+    monitoring_policy_revision: StrictInt | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -487,11 +507,20 @@ class CheckpointRecord:
             raise TypeError("checkpoint state is invalid")
         _positive(self.policy_revision, "policy revision")
         _positive(self.version, "checkpoint version", allow_zero=True)
+        _positive(self.generation, "checkpoint generation")
         _digest(self.reference_digest, "reference digest")
         if type(self.trigger_event_id) is not str or not self.trigger_event_id:
             raise ValueError("checkpoint requires trigger event")
         if type(self.process_settled) is not bool:
             raise TypeError("process settlement must be a boolean")
+        if self.next_checkpoint_threshold_tokens is not None:
+            _positive(self.next_checkpoint_threshold_tokens, "next checkpoint threshold")
+        if type(self.usage_pauses_disabled) is not bool:
+            raise TypeError("usage-pause bypass must be a boolean")
+        if self.monitoring_policy_revision is not None:
+            _positive(self.monitoring_policy_revision, "monitoring policy revision")
+        if self.usage_pauses_disabled and self.next_checkpoint_threshold_tokens is not None:
+            raise ValueError("bypassed usage pauses cannot have a next threshold")
         if (
             self.state in {CheckpointState.PAUSED, CheckpointState.RESUMED}
             and not self.process_settled
@@ -528,6 +557,7 @@ class OwnerCommand:
                 "resolve",
                 "set_policy",
                 "override_checkpoint",
+                "stop",
             }
         ):
             raise ValueError("owner command is invalid")

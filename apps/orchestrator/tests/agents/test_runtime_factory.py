@@ -90,6 +90,7 @@ async def test_subscription_factory_binds_exact_invocation_and_result_attempt() 
     factory = AgentRuntimeFactory(subscription_adapters=(Adapter(),))
     assert factory.subscription_routes == frozenset({request.task.route.effective})
     bound = factory.subscription_gateway_for(request, broker=broker, lifecycle=lifecycle)
+    assert not callable(getattr(bound, "execute_observed", None))
     assert await bound.execute(request) == gateway.result
     with pytest.raises(RouteUnavailable):
         await bound.execute(other)
@@ -102,6 +103,60 @@ async def test_subscription_factory_binds_exact_invocation_and_result_attempt() 
     with pytest.raises(SubscriptionInterrupted) as interruption:
         await bound.execute(request)
     assert interruption.value.result.attempt == request.attempt
+    assert interruption.value.result.failure is SubscriptionFailure.PROTOCOL
+
+
+@pytest.mark.asyncio
+async def test_subscription_factory_preserves_optional_observed_gateway_pin() -> None:
+    from dataclasses import replace
+
+    from forge.application.ports.subscription_gateway import (
+        SubscriptionFailure,
+        SubscriptionInterrupted,
+        SubscriptionInvocationResult,
+    )
+    from test_subscription_protocol import _request
+
+    request = _request()
+    other = _request()
+    result = SubscriptionInvocationResult(
+        attempt=request.attempt, failure=SubscriptionFailure.UNAVAILABLE
+    )
+    marker = object()
+
+    class Gateway:
+        returned = result
+        interrupted = False
+
+        async def execute(self, invocation):
+            return self.returned
+
+        async def execute_observed(self, invocation, *, usage_binding, usage_sink):
+            assert invocation == request
+            assert usage_binding is marker and usage_sink is marker
+            if self.interrupted:
+                raise SubscriptionInterrupted(self.returned)
+            return self.returned
+
+    class Adapter:
+        route = request.task.route.effective
+
+        def gateway_for(self, invocation, *, broker, lifecycle):
+            return gateway
+
+    gateway = Gateway()
+    bound = AgentRuntimeFactory(subscription_adapters=(Adapter(),)).subscription_gateway_for(
+        request, broker=object(), lifecycle=object()
+    )
+    assert await bound.execute_observed(request, usage_binding=marker, usage_sink=marker) == result
+    with pytest.raises(RouteUnavailable):
+        await bound.execute_observed(other, usage_binding=marker, usage_sink=marker)
+    gateway.returned = replace(result, attempt=other.attempt)
+    with pytest.raises(RouteUnavailable):
+        await bound.execute_observed(request, usage_binding=marker, usage_sink=marker)
+    gateway.interrupted = True
+    with pytest.raises(SubscriptionInterrupted) as interruption:
+        await bound.execute_observed(request, usage_binding=marker, usage_sink=marker)
     assert interruption.value.result.failure is SubscriptionFailure.PROTOCOL
 
 

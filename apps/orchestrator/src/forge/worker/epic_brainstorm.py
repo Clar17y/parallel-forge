@@ -13,9 +13,10 @@ from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
 from typing import cast
-from uuid import UUID, uuid4
+from uuid import UUID, uuid4, uuid5
 
 from sqlalchemy import and_, or_, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from forge.agents.client_process import (
@@ -29,8 +30,10 @@ from forge.application.ports.epic_brainstorm import (
     AuthoringGatewayResult,
     BrainstormGateway,
     BrainstormGatewayResult,
+    ObservableBrainstormGateway,
 )
 from forge.application.ports.repository import RepositoryReader
+from forge.application.services.task_usage_composition import TaskUsageComposition
 from forge.domain.epic_brainstorm import (
     _MAX_USAGE,
     AuthoringJobSnapshot,
@@ -237,6 +240,7 @@ class EpicBrainstormWorker:
         quota_policy: QuotaPolicy | None = None,
         epic_ceiling: TaskBudget | None = None,
         kinds: frozenset[str] = frozenset(("brainstorm",)),
+        task_usage: TaskUsageComposition | None = None,
     ) -> None:
         if (
             not isinstance(owner, str)
@@ -262,7 +266,9 @@ class EpicBrainstormWorker:
         self.kinds = kinds
         self.quota_policy = quota_policy or QuotaPolicy()
         self.epic_ceiling = epic_ceiling
+        self.task_usage = task_usage
         self._active_operations: set[asyncio.Task[AuthoringGatewayResult]] = set()
+        self._observation_cursor: UUID | None = None
 
     def _retire_operation(self, operation: asyncio.Task[AuthoringGatewayResult]) -> None:
         self._active_operations.discard(operation)
@@ -287,6 +293,194 @@ class EpicBrainstormWorker:
         return PostgresBrainstormRepository(
             session, quota_policy=self.quota_policy, epic_ceiling=self.epic_ceiling
         )
+
+    async def reconcile_committed_observations(self, *, limit: int = 100) -> None:
+        """Re-evaluate durable authoring telemetry after a sink or worker interruption."""
+        if self.task_usage is None:
+            return
+        from forge.persistence.models.task_usage import TaskUsageObservation, TaskUsageWorkUnit
+
+        async with self.sessions() as session:
+            query = (
+                select(TaskUsageObservation, TaskUsageWorkUnit.subject_id)
+                .join(TaskUsageWorkUnit, TaskUsageWorkUnit.id == TaskUsageObservation.work_unit_id)
+                .join(
+                    BrainstormJobRow,
+                    BrainstormJobRow.id == TaskUsageWorkUnit.subject_id,
+                )
+                .where(TaskUsageWorkUnit.subject_kind == "authoring_job")
+                .distinct(TaskUsageWorkUnit.subject_id)
+                .order_by(
+                    TaskUsageWorkUnit.subject_id,
+                    (TaskUsageWorkUnit.authoring_attempt_id == BrainstormJobRow.current_attempt_id)
+                    .desc()
+                    .nulls_last(),
+                    TaskUsageObservation.observed_at.desc(),
+                    TaskUsageObservation.sequence.desc(),
+                    TaskUsageObservation.id.desc(),
+                )
+                .limit(limit)
+            )
+            if self._observation_cursor is not None:
+                query = query.where(TaskUsageWorkUnit.subject_id > self._observation_cursor)
+            rows = (await session.execute(query)).all()
+        if not rows:
+            self._observation_cursor = None
+            return
+        for observation, subject_id in rows:
+            await self._evaluate_committed_observation(observation.work_unit_id, observation.event_id)
+            self._observation_cursor = subject_id
+        if len(rows) < limit:
+            self._observation_cursor = None
+
+    async def _replay_live_work_unit(self, work_unit_id: UUID) -> None:
+        """Check only the active attempt's latest committed event during provider work."""
+        if self.task_usage is None:
+            return
+        from forge.persistence.models.task_usage import TaskUsageObservation
+
+        async with self.sessions() as session:
+            event_id = await session.scalar(
+                select(TaskUsageObservation.event_id)
+                .where(TaskUsageObservation.work_unit_id == work_unit_id)
+                .order_by(TaskUsageObservation.sequence.desc())
+                .limit(1)
+            )
+        if event_id is not None:
+            await self._evaluate_committed_observation(work_unit_id, event_id)
+
+    async def _evaluate_committed_observation(self, work_unit_id: UUID, event_id: str) -> None:
+        assert self.task_usage is not None
+        from forge.domain.task_usage_contract import CheckpointRecord, CheckpointState, SubjectKey
+        from forge.domain.task_usage_monitor import evaluate_run_usage
+        from forge.persistence.models.task_usage import TaskUsageBaseline, TaskUsageWorkUnit
+        from forge.persistence.queries.task_usage_baselines import _reference_from_row
+        from forge.persistence.repositories.task_usage_checkpoints import (
+            PostgresTaskUsageCheckpointRepository,
+        )
+        from forge.persistence.repositories.task_usage_observations import decode_binding
+        from forge.persistence.repositories.task_usage_policy import (
+            PostgresTaskUsagePolicyRepository,
+        )
+
+        async with self.sessions() as session:
+            unit = await session.get(TaskUsageWorkUnit, work_unit_id)
+            if unit is None or unit.subject_kind != "authoring_job":
+                return
+            binding = decode_binding(unit)
+            subject = SubjectKey(
+                project_id=unit.project_id, kind="authoring_job", subject_id=unit.subject_id
+            )
+        totals = await self.task_usage.totals.totals(subject)
+        async with self.sessions() as session, session.begin():
+            job = await session.get(BrainstormJobRow, subject.subject_id, with_for_update=True)
+            if job is None or unit.authoring_attempt_id is None:
+                return
+            checkpoints = PostgresTaskUsageCheckpointRepository(session)
+            active = await checkpoints.active_for_subject(subject)
+            terminal = job.state in {"proposed", "failed", "cancelled", "quota_wait"}
+            attempt = (
+                await session.get(BrainstormAttemptRow, job.current_attempt_id)
+                if (terminal or job.state == "queued") and job.current_attempt_id is not None
+                else None
+            )
+            settled = attempt is not None and attempt.process_settled
+            if active is not None:
+                if (terminal or job.state == "queued") and settled:
+                    if active.state is CheckpointState.REQUESTED:
+                        active = await checkpoints.transition(
+                            active.checkpoint_id,
+                            expected_version=active.version,
+                            state=CheckpointState.PAUSING,
+                            process_settled=False,
+                        )
+                    queued = job.state == "queued"
+                    if queued:
+                        job.state, job.failure = "paused", None
+                        job.version += 1
+                    await checkpoints.transition(
+                        active.checkpoint_id,
+                        expected_version=active.version,
+                        state=CheckpointState.PAUSED if queued else CheckpointState.RESOLVED,
+                        process_settled=True,
+                    )
+                return
+            latest = await checkpoints.latest_for_subject(subject)
+            if (
+                latest is not None
+                and latest.state is CheckpointState.RESOLVED
+                and (
+                    latest.binding.source.source_id == job.current_attempt_id
+                    or latest.binding.work_unit_id == work_unit_id
+                )
+            ):
+                return
+            baseline_row = await session.scalar(
+                select(TaskUsageBaseline).where(
+                    TaskUsageBaseline.project_id == subject.project_id,
+                    TaskUsageBaseline.subject_kind == subject.kind,
+                    TaskUsageBaseline.subject_id == subject.subject_id,
+                )
+            )
+            if baseline_row is None:
+                return
+            baseline_unit = await session.get(TaskUsageWorkUnit, baseline_row.work_unit_id)
+            if baseline_unit is None:
+                return
+            baseline = _reference_from_row(baseline_row, decode_binding(baseline_unit))
+            revision = (
+                latest.monitoring_policy_revision
+                if latest is not None and latest.monitoring_policy_revision is not None
+                else baseline.policy_revision
+            )
+            policy = await PostgresTaskUsagePolicyRepository(session).get(
+                subject.project_id, revision
+            )
+            if policy is None:
+                return
+            choice = evaluate_run_usage(
+                baseline,
+                policy,
+                measured_tokens=totals.known_total_tokens,
+                completeness=totals.completeness,
+                next_checkpoint_threshold_tokens=(
+                    latest.next_checkpoint_threshold_tokens if latest is not None else None
+                ),
+                usage_pauses_disabled=(latest.usage_pauses_disabled if latest is not None else False),
+            )
+            if choice != "checkpoint":
+                return
+            checkpoint = await checkpoints.request(
+                CheckpointRecord(
+                    checkpoint_id=uuid5(work_unit_id, event_id),
+                    binding=binding,
+                    baseline_binding=baseline.binding,
+                    state=CheckpointState.REQUESTED,
+                    policy_revision=baseline.policy_revision,
+                    reference_digest=baseline.snapshot_digest,
+                    trigger_event_id=event_id,
+                    monitoring_policy_revision=revision,
+                )
+            )
+            if checkpoint.state is not CheckpointState.REQUESTED:
+                return
+            if (terminal or job.state == "queued") and settled:
+                checkpoint = await checkpoints.transition(
+                    checkpoint.checkpoint_id,
+                    expected_version=checkpoint.version,
+                    state=CheckpointState.PAUSING,
+                    process_settled=False,
+                )
+                queued = job.state == "queued"
+                if queued:
+                    job.state, job.failure = "paused", None
+                    job.version += 1
+                await checkpoints.transition(
+                    checkpoint.checkpoint_id,
+                    expected_version=checkpoint.version,
+                    state=CheckpointState.PAUSED if queued else CheckpointState.RESOLVED,
+                    process_settled=True,
+                )
 
     @staticmethod
     def _host_duration_ms(attempt: BrainstormAttemptRow) -> int:
@@ -373,6 +567,18 @@ class EpicBrainstormWorker:
         attempt = await session.get(
             BrainstormAttemptRow, row.current_attempt_id, with_for_update=True
         )
+        checkpoint = None
+        checkpoints = None
+        if self.task_usage is not None:
+            from forge.domain.task_usage_contract import CheckpointState, SubjectKey
+            from forge.persistence.repositories.task_usage_checkpoints import (
+                PostgresTaskUsageCheckpointRepository,
+            )
+
+            checkpoints = PostgresTaskUsageCheckpointRepository(session)
+            checkpoint = await checkpoints.active_for_subject(
+                SubjectKey(project_id=row.project_id, kind="authoring_job", subject_id=row.id)
+            )
         if attempt is None:
             row.next_eligible_at = datetime.now(UTC) + timedelta(seconds=5)
             return None
@@ -423,33 +629,69 @@ class EpicBrainstormWorker:
                     row.state = "reconciling"
                     row.version += 1
                 row.next_eligible_at = datetime.now(UTC) + timedelta(seconds=5)
+                if (
+                    checkpoint is not None
+                    and checkpoints is not None
+                    and checkpoint.state is CheckpointState.REQUESTED
+                ):
+                    await checkpoints.transition(
+                        checkpoint.checkpoint_id,
+                        expected_version=checkpoint.version,
+                        state=CheckpointState.PAUSING,
+                        process_settled=False,
+                    )
                 return None
         if not attempt.process_settled:
             attempt.process_settled = True
             attempt.usage_known = False
             attempt.usage = self._host_usage(attempt, launched=False, recovery=True)
         cancelled = row.state == "cancel_requested" or row.failure == "cancelled"
-        row.state, row.failure = (
-            ("cancelled", "cancelled")
-            if cancelled
-            else (
-                "failed",
-                "interrupted"
-                if row.failure == "interrupted"
-                else "timeout"
-                if row.failure == "timeout"
-                or _invocation_expired(attempt.created_at, attempt.reservation or {})
-                else "lost_result",
-            )
+        timed_out = row.failure == "timeout" or _invocation_expired(
+            attempt.created_at, attempt.reservation or {}
         )
+        if cancelled:
+            row.state, row.failure = "cancelled", "cancelled"
+        elif timed_out:
+            row.state, row.failure = "failed", "timeout"
+        elif row.failure == "quota_exhausted":
+            row.state = "quota_wait"
+        elif row.failure in {"unavailable", "invalid_output", "budget_exhausted"}:
+            row.state = "failed"
+        elif checkpoint is not None:
+            row.state, row.failure = "paused", "lost_result"
+        else:
+            row.state, row.failure = (
+                "failed", "interrupted" if row.failure == "interrupted" else "lost_result"
+            )
         row.version += 1
-        row.next_eligible_at = None
+        if row.state != "quota_wait":
+            row.next_eligible_at = None
         attempt.state, attempt.failure = "settled", row.failure
+        if checkpoint is not None and checkpoints is not None:
+            if checkpoint.state is CheckpointState.REQUESTED:
+                checkpoint = await checkpoints.transition(
+                    checkpoint.checkpoint_id,
+                    expected_version=checkpoint.version,
+                    state=CheckpointState.PAUSING,
+                    process_settled=False,
+                )
+            await checkpoints.transition(
+                checkpoint.checkpoint_id,
+                expected_version=checkpoint.version,
+                state=(
+                    CheckpointState.PAUSED
+                    if row.state == "paused"
+                    else CheckpointState.RESOLVED
+                ),
+                process_settled=True,
+            )
         if attempt.launch_intent:
             attempt.usage_known = False
             attempt.usage = self._host_usage(attempt, launched=True, recovery=True)
         repository = self._repository(session)
-        await repository.quota_settle(row, attempt, exhausted=False, reset_at=None)
+        await repository.quota_settle(
+            row, attempt, exhausted=row.failure == "quota_exhausted", reset_at=None
+        )
         await repository.audit(
             row.epic_id,
             None,
@@ -467,6 +709,7 @@ class EpicBrainstormWorker:
         reconciled = await self.reconcile_settled()
         if reconciled is not None:
             return reconciled
+        await self.reconcile_committed_observations()
         async with self.sessions() as session, session.begin():
             repository = self._repository(session)
             claimed = await repository.claim(self.owner, self.lease_seconds, kinds=self.kinds)
@@ -502,6 +745,22 @@ class EpicBrainstormWorker:
                     or row.state == "cancel_requested"
                     or row.current_attempt_id != attempt_id
                 )
+                if not persisted_cancelled and self.task_usage is not None:
+                    from forge.domain.task_usage_contract import SubjectKey
+                    from forge.persistence.repositories.task_usage_checkpoints import (
+                        PostgresTaskUsageCheckpointRepository,
+                    )
+
+                    persisted_cancelled = (
+                        await PostgresTaskUsageCheckpointRepository(session).active_for_subject(
+                            SubjectKey(
+                                project_id=snapshot.project_id,
+                                kind="authoring_job",
+                                subject_id=snapshot.job_id,
+                            )
+                        )
+                        is not None
+                    )
             return (
                 _invocation_expired(admitted_at, reservation)
                 or stop.is_set()
@@ -529,6 +788,33 @@ class EpicBrainstormWorker:
                 await self._apply_bounded(snapshot, attempt_id, fence, None, "timeout", job_cancel)
                 return snapshot.job_id
 
+            # Bind task usage work unit before invoking gateway
+            work_unit_binding = None
+            if self.task_usage is not None:
+                from forge.application.services.epic_brainstorm import configured_authoring_cohort
+                from forge.domain.task_usage_contract import (
+                    SourceBinding,
+                    SubjectKey,
+                    WorkUnitBinding,
+                )
+
+                configured_cohort = configured_authoring_cohort(snapshot.route.requested)
+                effective_cohort = configured_authoring_cohort(snapshot.route.effective)
+                work_unit_id = uuid4()
+                work_unit_binding = WorkUnitBinding(
+                    subject=SubjectKey(
+                        project_id=snapshot.project_id,
+                        kind="authoring_job",
+                        subject_id=snapshot.job_id,
+                    ),
+                    work_unit_id=work_unit_id,
+                    admitted_phase_id="authoring_exchange",
+                    configured_route=configured_cohort,
+                    effective_route=effective_cohort,
+                    source=SourceBinding(kind="authoring_attempt", source_id=attempt_id),
+                )
+                await self.task_usage.admitted_observations.bind(work_unit_binding)
+
             async def authorize_tool() -> None:
                 async with self.sessions() as session, session.begin():
                     row = await session.get(BrainstormJobRow, snapshot.job_id, with_for_update=True)
@@ -548,6 +834,23 @@ class EpicBrainstormWorker:
                         or job_cancel.is_set()
                     ):
                         raise BrainstormConflict("tool authority revoked")
+                    if self.task_usage is not None:
+                        from forge.domain.task_usage_contract import SubjectKey
+                        from forge.persistence.repositories.task_usage_checkpoints import (
+                            PostgresTaskUsageCheckpointRepository,
+                        )
+
+                        checkpoint = await PostgresTaskUsageCheckpointRepository(
+                            session
+                        ).active_for_subject(
+                            SubjectKey(
+                                project_id=snapshot.project_id,
+                                kind="authoring_job",
+                                subject_id=snapshot.job_id,
+                            )
+                        )
+                        if checkpoint is not None:
+                            raise BrainstormConflict("usage checkpoint holds tool authority")
                     if active.tool_calls_used >= cast(int, reservation["tool_call_count"]):
                         raise BrainstormConflict("tool budget exhausted")
                     active.tool_calls_used += 1
@@ -565,6 +868,37 @@ class EpicBrainstormWorker:
                         proposal=None, telemetry=None, failure="cancelled"
                     )
                 reader = BrainstormReadOnlyTools(repository_reader, authorize=authorize_tool)
+                if (
+                    callable(getattr(gateway, "execute_observed", None))
+                    and work_unit_binding is not None
+                    and self.task_usage is not None
+                ):
+                    from forge.domain.task_usage_contract import Observation
+
+                    class AuthoringTaskUsageObserver:
+                        def __init__(self, outer: EpicBrainstormWorker) -> None:
+                            self._outer = outer
+
+                        async def observe_usage(self, observation: Observation) -> None:
+                            assert self._outer.task_usage is not None
+                            await self._outer.task_usage.admitted_observations.append_observation(
+                                observation
+                            )
+                            await self._outer._evaluate_committed_observation(
+                                observation.binding.work_unit_id, observation.event_id
+                            )
+
+                    sink = AuthoringTaskUsageObserver(self)
+                    return await cast(ObservableBrainstormGateway, gateway).execute_observed(
+                        invocation,
+                        turns,
+                        reader,
+                        cancelled=cancelled,
+                        lifecycle=lifecycle,
+                        usage_binding=work_unit_binding,
+                        usage_sink=sink,
+                    )
+
                 return await gateway.execute(
                     invocation, turns, reader, cancelled=cancelled, lifecycle=lifecycle
                 )
@@ -587,6 +921,37 @@ class EpicBrainstormWorker:
                     break
                 if operation.done():
                     break
+                if work_unit_binding is not None:
+                    from forge.persistence.repositories.task_usage_checkpoints import (
+                        CheckpointConflict,
+                    )
+
+                    try:
+                        await self._replay_live_work_unit(work_unit_binding.work_unit_id)
+                    except (TimeoutError, SQLAlchemyError, CheckpointConflict):
+                        # The committed event remains available on the next live poll.
+                        pass
+                if self.task_usage is not None:
+                    from forge.domain.task_usage_contract import CheckpointState, SubjectKey
+                    from forge.persistence.repositories.task_usage_checkpoints import (
+                        PostgresTaskUsageCheckpointRepository,
+                    )
+
+                    subject_key = SubjectKey(
+                        project_id=snapshot.project_id,
+                        kind="authoring_job",
+                        subject_id=snapshot.job_id,
+                    )
+                    async with self.sessions() as session, session.begin():
+                        cps = PostgresTaskUsageCheckpointRepository(session)
+                        active_cp = await cps.active_for_subject(subject_key)
+                        if active_cp is not None and active_cp.state == CheckpointState.REQUESTED:
+                            await cps.transition(
+                                active_cp.checkpoint_id,
+                                expected_version=active_cp.version,
+                                state=CheckpointState.PAUSING,
+                                process_settled=False,
+                            )
                 if await cancelled():
                     if _invocation_expired(admitted_at, reservation):
                         failure = "timeout"
@@ -764,8 +1129,15 @@ class EpicBrainstormWorker:
                 return
             repository = self._repository(session)
             reset_at = self._quota_reset(result)
-            interrupted = failure == "interrupted" or stop.is_set()
+            is_cancelled = row.state == "cancel_requested"
+            interrupted = (
+                failure == "interrupted"
+                or stop.is_set()
+                or (result is not None and result.failure == "interrupted")
+            )
             timed_out = failure == "timeout" or (
+                result is not None and result.failure == "timeout"
+            ) or (
                 not interrupted
                 and _invocation_expired(attempt.created_at, attempt.reservation or {})
             )
@@ -799,6 +1171,27 @@ class EpicBrainstormWorker:
                 )
                 row.version += 1
                 attempt.state = "reconciling"
+                if self.task_usage is not None:
+                    from forge.domain.task_usage_contract import CheckpointState, SubjectKey
+                    from forge.persistence.repositories.task_usage_checkpoints import (
+                        PostgresTaskUsageCheckpointRepository,
+                    )
+
+                    cps = PostgresTaskUsageCheckpointRepository(session)
+                    checkpoint = await cps.active_for_subject(
+                        SubjectKey(
+                            project_id=row.project_id,
+                            kind="authoring_job",
+                            subject_id=row.id,
+                        )
+                    )
+                    if checkpoint is not None and checkpoint.state is CheckpointState.REQUESTED:
+                        await cps.transition(
+                            checkpoint.checkpoint_id,
+                            expected_version=checkpoint.version,
+                            state=CheckpointState.PAUSING,
+                            process_settled=False,
+                        )
                 await repository.audit(
                     row.epic_id, None, "attempt_reconciling", attempt_id, {"launch_intent": True}
                 )
@@ -922,20 +1315,10 @@ class EpicBrainstormWorker:
                     )
                 )
             )
-            is_cancelled = row.state == "cancel_requested"
-            if is_cancelled:
-                row.state, row.failure = "cancelled", "cancelled"
-                attempt.failure = "cancelled"
-            elif timed_out:
-                row.state, row.failure = "failed", "timeout"
-                attempt.failure = "timeout"
-            elif interrupted:
-                row.state, row.failure = "failed", "interrupted"
-                attempt.failure = "interrupted"
-            elif (
+            can_save_proposal = (
                 result is not None
                 and result.proposal is not None
-                and result.failure is None
+                and (result.failure is None or result.failure == "interrupted")
                 and attempt.process_started
                 and attempt.process_settled
                 and attempt.terminal_proof is not None
@@ -945,7 +1328,29 @@ class EpicBrainstormWorker:
                 and telemetry is not None
                 and telemetry_valid
                 and not over_budget
-            ):
+            )
+
+            # Check if an active checkpoint exists for this authoring job
+            active_cp = None
+            checkpoints_repo = None
+            if self.task_usage is not None:
+                from forge.domain.task_usage_contract import SubjectKey
+                from forge.persistence.repositories.task_usage_checkpoints import (
+                    PostgresTaskUsageCheckpointRepository,
+                )
+
+                checkpoints_repo = PostgresTaskUsageCheckpointRepository(session)
+                active_cp = await checkpoints_repo.active_for_subject(
+                    SubjectKey(
+                        project_id=snapshot.project_id,
+                        kind="authoring_job",
+                        subject_id=snapshot.job_id,
+                    )
+                )
+
+            if can_save_proposal and not is_cancelled and not timed_out:
+                assert result is not None and result.proposal is not None
+                # Preserved completed/racing valid proposal
                 proposal = result.proposal.model_copy(update={"turn_id": uuid4()})
                 row.proposal = proposal.model_dump(mode="json")
                 row.proposal_digest = proposal.digest
@@ -963,12 +1368,26 @@ class EpicBrainstormWorker:
                     ),
                 )
                 attempt.failure = None
+            elif is_cancelled:
+                row.state, row.failure = "cancelled", "cancelled"
+                attempt.failure = "cancelled"
+            elif timed_out:
+                row.state, row.failure = "failed", "timeout"
+                attempt.failure = "timeout"
             elif result is not None and result.failure == "quota_exhausted":
                 row.state, row.failure = "quota_wait", "quota_exhausted"
                 row.next_eligible_at = reset_at or datetime.now(UTC) + timedelta(
                     seconds=self.quota_policy.unknown_reset_cooldown_seconds
                 )
                 attempt.failure = "quota_exhausted"
+            elif active_cp is not None and (
+                interrupted or (result is not None and result.failure == "cancelled")
+            ):
+                row.state, row.failure = "paused", None
+                attempt.failure = "usage_checkpoint"
+            elif interrupted:
+                row.state, row.failure = "failed", "interrupted"
+                attempt.failure = "interrupted"
             else:
                 safe_failures = {
                     "cancelled",
@@ -992,6 +1411,34 @@ class EpicBrainstormWorker:
                 )
                 row.state, row.failure = "failed", safe_failure
                 attempt.failure = row.failure
+
+            # A completed result wins a late threshold crossing. A pause is
+            # truthful only after the external process and effects have settled.
+            if active_cp is not None and checkpoints_repo is not None:
+                from forge.domain.task_usage_contract import CheckpointState
+
+                if active_cp.state is CheckpointState.REQUESTED:
+                    active_cp = await checkpoints_repo.transition(
+                        active_cp.checkpoint_id,
+                        expected_version=active_cp.version,
+                        state=CheckpointState.PAUSING,
+                        process_settled=False,
+                    )
+                if row.state == "paused":
+                    await checkpoints_repo.transition(
+                        active_cp.checkpoint_id,
+                        expected_version=active_cp.version,
+                        state=CheckpointState.PAUSED,
+                        process_settled=True,
+                    )
+                else:
+                    await checkpoints_repo.transition(
+                        active_cp.checkpoint_id,
+                        expected_version=active_cp.version,
+                        state=CheckpointState.RESOLVED,
+                        process_settled=True,
+                    )
+
             attempt.state = "settled"
             row.version += 1
             await repository.quota_settle(

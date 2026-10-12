@@ -24,6 +24,9 @@ class UsageRecord:
     input_tokens: int = 0
     output_tokens: int = 0
     cached_input_tokens: int = 0
+    input_tokens_complete: bool | None = None
+    output_tokens_complete: bool | None = None
+    cached_input_tokens_complete: bool | None = None
     duration_ms: int = 0
     tool_call_count: int = 0
     provider_request_id: str | None = None
@@ -50,6 +53,10 @@ class UsageRecord:
             value = getattr(self, name)
             if type(value) is not int or value < 0:
                 raise ValueError(f"{name} must be a nonnegative integer")
+        for name in ("input_tokens_complete", "output_tokens_complete", "cached_input_tokens_complete"):
+            value = getattr(self, name)
+            if value is not None and type(value) is not bool:
+                raise TypeError(f"{name} must be boolean or unknown")
         if self.provider_request_id is not None:
             _bounded_nonempty(self.provider_request_id, "provider request id", 255)
         if self.estimated_cost_minor is not None and (

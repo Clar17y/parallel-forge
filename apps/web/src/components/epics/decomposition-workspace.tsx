@@ -9,6 +9,7 @@ import { useEpicDecomposition } from '@/hooks/epics/use-epic-decomposition';
 import { useEpicWorkspace } from '@/hooks/epics/use-epic-workspace';
 import { EvidenceDetails } from './evidence-details';
 import { AuthoringJobOutcome } from './authoring-job-outcome';
+import { AuthoringUsageCheckpoint } from './authoring-usage-checkpoint';
 import { describeAuthoringOutcome } from './authoring-presentation';
 import { ActivityStatus } from '@/components/ui/activity-status';
 import type {
@@ -446,6 +447,8 @@ export function DecompositionWorkspace({
       {outcome && (
         <>
           <AuthoringJobOutcome outcome={outcome} title="Decomposition assistant job" stale={outcomeStale} />
+          <AuthoringUsageCheckpoint key={`decomposition:${outcome.job_id}`} epicId={epicId} projectId={projectId} jobId={outcome.job_id} kind="decomposition"
+            locked={outcomeStale || mutationPending || isUnavailable || ['cancel_requested', 'quota_wait', 'capacity_wait'].includes(outcome.state)} />
           {outcome.state === 'cancel_requested' && !outcomeStale && (
             <p role="status">Cancellation requested. Waiting for the process to settle.</p>
           )}

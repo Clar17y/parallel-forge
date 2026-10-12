@@ -48,6 +48,8 @@ class ForgeProcessHarness:
         api_port: int | None = None,
         web_origin: str | None = None,
         subscription_only: bool = False,
+        task_usage_process: bool = False,
+        task_usage_delegated: bool = False,
     ) -> None:
         self.port = api_port or free_loopback_port()
         self.base_url = f"http://127.0.0.1:{self.port}"
@@ -56,6 +58,10 @@ class ForgeProcessHarness:
         self._prompt_root = prompt_root
         self._bare_remote_path = bare_remote_path
         self._subscription_only = subscription_only
+        if task_usage_process and (subscription_only or bare_remote_path is None):
+            raise ValueError("task usage process fixture requires the scripted managed remote")
+        if task_usage_delegated and not task_usage_process:
+            raise ValueError("delegated task usage requires the process fixture")
         # Settings reads .env from cwd. Keyless process tests must not accidentally
         # load the developer worktree's credential references or pricing catalog.
         self._cwd = data_root if subscription_only else Path.cwd()
@@ -104,6 +110,10 @@ class ForgeProcessHarness:
         }
         if bare_remote_path is not None:
             self._env["FORGE_BARE_REMOTE_PATH"] = str(bare_remote_path)
+        if task_usage_process:
+            self._env["FORGE_TASK_USAGE_PROCESS"] = "1"
+        if task_usage_delegated:
+            self._env["FORGE_TASK_USAGE_DELEGATED"] = "1"
 
         if subscription_only:
             return

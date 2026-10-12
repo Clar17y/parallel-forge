@@ -251,6 +251,21 @@ class PostgresCommandRepository:
                 )
                 if run_state is None:
                     raise PersistenceDataError(f"command {record.id} references a missing run")
+                if lane is CommandLane.NORMAL:
+                    from forge.persistence.models.task_usage import TaskUsageCheckpoint
+
+                    checkpoint_id = await session.scalar(
+                        select(TaskUsageCheckpoint.id).where(
+                            TaskUsageCheckpoint.subject_kind == "run",
+                            TaskUsageCheckpoint.subject_id == record.run_id,
+                            TaskUsageCheckpoint.state.in_(
+                                ("checkpoint_requested", "pausing", "paused")
+                            ),
+                        ).limit(1)
+                    )
+                    if checkpoint_id is not None:
+                        skipped.add(record.id)
+                        continue
                 if lane is CommandLane.NORMAL and await session.scalar(
                     select(startup_intervention_hold(record.run_id))
                 ):

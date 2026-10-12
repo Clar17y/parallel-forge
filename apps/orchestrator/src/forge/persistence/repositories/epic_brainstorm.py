@@ -1031,6 +1031,17 @@ class PostgresBrainstormRepository:
             if row is None:
                 return None
             seen.append(row.id)
+            from forge.domain.task_usage_contract import SubjectKey
+            from forge.persistence.repositories.task_usage_checkpoints import (
+                PostgresTaskUsageCheckpointRepository,
+            )
+
+            active_cp = await PostgresTaskUsageCheckpointRepository(self.session).active_for_subject(
+                SubjectKey(project_id=row.project_id, kind="authoring_job", subject_id=row.id)
+            )
+            if active_cp is not None:
+                continue
+
             previous = (
                 await self.session.get(BrainstormAttemptRow, row.current_attempt_id)
                 if row.current_attempt_id

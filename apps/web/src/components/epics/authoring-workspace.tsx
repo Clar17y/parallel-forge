@@ -8,6 +8,7 @@ import { StatusBadge } from '@/components/ui/status-badge';
 import { useEpicBrainstorm } from '@/hooks/epics/use-epic-brainstorm';
 import { EvidenceDetails } from './evidence-details';
 import { AuthoringJobOutcome } from './authoring-job-outcome';
+import { AuthoringUsageCheckpoint } from './authoring-usage-checkpoint';
 import { BrainstormModelPicker } from './brainstorm-model-picker';
 import { toBrainstormRoute, type BrainstormRoute } from './brainstorm-model-choice';
 import { describeAuthoringOutcome } from './authoring-presentation';
@@ -650,6 +651,8 @@ export function AuthoringWorkspace({
       {outcome && (
         <>
           <AuthoringJobOutcome outcome={outcome} stale={outcomeStale} />
+          <AuthoringUsageCheckpoint key={`brainstorm:${outcome.job_id}`} epicId={epicId} projectId={projectId} jobId={outcome.job_id} kind="brainstorm"
+            locked={outcomeStale || mutationPending || isUnavailable || ['cancel_requested', 'quota_wait', 'capacity_wait'].includes(outcome.state)} />
           {outcome.state === 'failed' && !outcomeStale && outcome.failure === 'unavailable' && (
             <p role="status">The selected AI model could not start. Check the local client setup and this project&apos;s AI settings, then retry the assistant job.</p>
           )}

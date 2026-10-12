@@ -323,7 +323,7 @@ describe('DecompositionWorkspace', () => {
     await userEvent.click(adoptBtn);
 
     // Stale error is shown
-    expect(await screen.findByRole('alert')).toBeInTheDocument();
+    expect(await screen.findByText(/Epic version conflict:/)).toBeInTheDocument();
     // Proposal preview is retained
     expect(screen.getByText('Authentication audit trail lacks structured work items.')).toBeInTheDocument();
     expect(screen.getByText('1. Define audit log database migration')).toBeInTheDocument();

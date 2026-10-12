@@ -1323,6 +1323,7 @@
             "enum": [
               "queued",
               "running",
+              "paused",
               "quota_wait",
               "capacity_wait",
               "cancel_requested",
@@ -1404,6 +1405,213 @@
           "requires_feedback"
         ],
         "title": "AvailableCommand",
+        "type": "object"
+      },
+      "BaselineReference": {
+        "properties": {
+          "binding": {
+            "$ref": "#/components/schemas/WorkUnitBinding"
+          },
+          "checkpoint_threshold_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checkpoint Threshold Tokens"
+          },
+          "cohort_digest": {
+            "title": "Cohort Digest",
+            "type": "string"
+          },
+          "comparison_scope": {
+            "default": "subject",
+            "title": "Comparison Scope",
+            "type": "string"
+          },
+          "completeness": {
+            "default": "complete",
+            "title": "Completeness",
+            "type": "string"
+          },
+          "coverage_count": {
+            "default": 0,
+            "title": "Coverage Count",
+            "type": "integer"
+          },
+          "estimator_version": {
+            "title": "Estimator Version",
+            "type": "string"
+          },
+          "frozen_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Frozen At"
+          },
+          "history_digest": {
+            "title": "History Digest",
+            "type": "string"
+          },
+          "mean_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mean Tokens"
+          },
+          "median_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Median Tokens"
+          },
+          "minimum_comparables": {
+            "title": "Minimum Comparables",
+            "type": "integer"
+          },
+          "outcome_count": {
+            "default": 0,
+            "title": "Outcome Count",
+            "type": "integer"
+          },
+          "p90_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P90 Tokens"
+          },
+          "policy_revision": {
+            "title": "Policy Revision",
+            "type": "integer"
+          },
+          "reference_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference Tokens"
+          },
+          "sample_count": {
+            "title": "Sample Count",
+            "type": "integer"
+          },
+          "schema_version": {
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "snapshot_digest": {
+            "title": "Snapshot Digest",
+            "type": "string"
+          },
+          "source_count": {
+            "default": 0,
+            "title": "Source Count",
+            "type": "integer"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "warning_threshold_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Warning Threshold Tokens"
+          },
+          "window_ended_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Window Ended At"
+          },
+          "window_limit": {
+            "title": "Window Limit",
+            "type": "integer"
+          },
+          "window_started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Window Started At"
+          }
+        },
+        "required": [
+          "binding",
+          "policy_revision",
+          "sample_count",
+          "status",
+          "history_digest",
+          "snapshot_digest",
+          "estimator_version",
+          "window_limit",
+          "minimum_comparables",
+          "cohort_digest"
+        ],
+        "title": "BaselineReference",
         "type": "object"
       },
       "BillingMode": {
@@ -1924,6 +2132,7 @@
         "enum": [
           "queued",
           "running",
+          "paused",
           "quota_wait",
           "capacity_wait",
           "cancel_requested",
@@ -2288,8 +2497,15 @@
             "type": "integer"
           },
           "token_limit": {
-            "title": "Token Limit",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Token Limit"
           }
         },
         "required": [
@@ -2633,6 +2849,100 @@
         ],
         "title": "CheckItem",
         "type": "object"
+      },
+      "CheckpointRecord": {
+        "properties": {
+          "baseline_binding": {
+            "$ref": "#/components/schemas/WorkUnitBinding"
+          },
+          "binding": {
+            "$ref": "#/components/schemas/WorkUnitBinding"
+          },
+          "checkpoint_id": {
+            "format": "uuid",
+            "title": "Checkpoint Id",
+            "type": "string"
+          },
+          "generation": {
+            "default": 1,
+            "title": "Generation",
+            "type": "integer"
+          },
+          "monitoring_policy_revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Monitoring Policy Revision"
+          },
+          "next_checkpoint_threshold_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Checkpoint Threshold Tokens"
+          },
+          "policy_revision": {
+            "title": "Policy Revision",
+            "type": "integer"
+          },
+          "process_settled": {
+            "default": false,
+            "title": "Process Settled",
+            "type": "boolean"
+          },
+          "reference_digest": {
+            "title": "Reference Digest",
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/CheckpointState"
+          },
+          "trigger_event_id": {
+            "title": "Trigger Event Id",
+            "type": "string"
+          },
+          "usage_pauses_disabled": {
+            "default": false,
+            "title": "Usage Pauses Disabled",
+            "type": "boolean"
+          },
+          "version": {
+            "default": 0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "checkpoint_id",
+          "binding",
+          "baseline_binding",
+          "state",
+          "policy_revision",
+          "reference_digest",
+          "trigger_event_id"
+        ],
+        "title": "CheckpointRecord",
+        "type": "object"
+      },
+      "CheckpointState": {
+        "enum": [
+          "checkpoint_requested",
+          "pausing",
+          "paused",
+          "resumed",
+          "resolved"
+        ],
+        "title": "CheckpointState",
+        "type": "string"
       },
       "CommandNetworkPolicy": {
         "additionalProperties": false,
@@ -6511,6 +6821,112 @@
         "title": "MonitoringOwnerActionResponse",
         "type": "object"
       },
+      "MonitoringPolicy": {
+        "properties": {
+          "allow_cross_project_fallback": {
+            "default": true,
+            "title": "Allow Cross Project Fallback",
+            "type": "boolean"
+          },
+          "checkpoint_multiplier": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "integer"
+              }
+            ],
+            "default": 2.0,
+            "title": "Checkpoint Multiplier"
+          },
+          "hard_context_cap": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hard Context Cap"
+          },
+          "hard_token_cap": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hard Token Cap"
+          },
+          "history_limit": {
+            "default": 50,
+            "title": "History Limit",
+            "type": "integer"
+          },
+          "manual_estimate_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Manual Estimate Tokens"
+          },
+          "minimum_comparables": {
+            "default": 20,
+            "title": "Minimum Comparables",
+            "type": "integer"
+          },
+          "mode": {
+            "$ref": "#/components/schemas/MonitoringMode",
+            "default": "report_only"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "revision": {
+            "default": 1,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "warning_multiplier": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "integer"
+              }
+            ],
+            "default": 1.5,
+            "title": "Warning Multiplier"
+          },
+          "window_days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Window Days"
+          }
+        },
+        "required": [
+          "project_id"
+        ],
+        "title": "MonitoringPolicy",
+        "type": "object"
+      },
       "MonitoringPolicyResponse": {
         "additionalProperties": false,
         "properties": {
@@ -6769,6 +7185,65 @@
           "expected_revision"
         ],
         "title": "MonitoringPolicyRevisionRequest",
+        "type": "object"
+      },
+      "OwnerCommandReceipt": {
+        "properties": {
+          "action": {
+            "title": "Action",
+            "type": "string"
+          },
+          "actor_id": {
+            "format": "uuid",
+            "title": "Actor Id",
+            "type": "string"
+          },
+          "affected_snapshot": {
+            "title": "Affected Snapshot",
+            "type": "string"
+          },
+          "checkpoint_id": {
+            "format": "uuid",
+            "title": "Checkpoint Id",
+            "type": "string"
+          },
+          "command_id": {
+            "format": "uuid",
+            "title": "Command Id",
+            "type": "string"
+          },
+          "replayed": {
+            "default": false,
+            "title": "Replayed",
+            "type": "boolean"
+          },
+          "result_version": {
+            "title": "Result Version",
+            "type": "integer"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "warnings": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "command_id",
+          "checkpoint_id",
+          "result_version",
+          "state",
+          "actor_id",
+          "action",
+          "affected_snapshot"
+        ],
+        "title": "OwnerCommandReceipt",
         "type": "object"
       },
       "PermissionItem": {
@@ -8752,6 +9227,27 @@
         "title": "ReviewerDiffResponse",
         "type": "object"
       },
+      "RouteCohort": {
+        "properties": {
+          "fingerprint": {
+            "title": "Fingerprint",
+            "type": "string"
+          },
+          "members": {
+            "items": {
+              "$ref": "#/components/schemas/RouteMember"
+            },
+            "title": "Members",
+            "type": "array"
+          }
+        },
+        "required": [
+          "fingerprint",
+          "members"
+        ],
+        "title": "RouteCohort",
+        "type": "object"
+      },
       "RouteInput": {
         "additionalProperties": false,
         "properties": {
@@ -8792,6 +9288,45 @@
           "model"
         ],
         "title": "RouteInput",
+        "type": "object"
+      },
+      "RouteMember": {
+        "properties": {
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "ordinal": {
+            "title": "Ordinal",
+            "type": "integer"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "reasoning_effort": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reasoning Effort"
+          },
+          "role": {
+            "title": "Role",
+            "type": "string"
+          }
+        },
+        "required": [
+          "role",
+          "provider",
+          "model",
+          "ordinal"
+        ],
+        "title": "RouteMember",
         "type": "object"
       },
       "RouteSpec": {
@@ -9722,6 +10257,37 @@
         "title": "SessionResponse",
         "type": "object"
       },
+      "SourceBinding": {
+        "properties": {
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Id"
+          },
+          "source_id": {
+            "format": "uuid",
+            "title": "Source Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "source_id"
+        ],
+        "title": "SourceBinding",
+        "type": "object"
+      },
       "SpecialistPurpose": {
         "description": "Closed vocabulary of specialist purposes separating purpose from tools.",
         "enum": [
@@ -9753,6 +10319,36 @@
         ],
         "title": "StepKind",
         "type": "string"
+      },
+      "SubjectKey": {
+        "properties": {
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "subject_id": {
+            "format": "uuid",
+            "title": "Subject Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "kind",
+          "subject_id"
+        ],
+        "title": "SubjectKey",
+        "type": "object"
       },
       "SubscriptionAttemptPage": {
         "additionalProperties": false,
@@ -11874,6 +12470,36 @@
         "title": "TaskSection",
         "type": "object"
       },
+      "TaskUsageCheckpointResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "checkpoint": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CheckpointRecord"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "report": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UsageReport"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "checkpoint"
+        ],
+        "title": "TaskUsageCheckpointResponse",
+        "type": "object"
+      },
       "TaskUsageHistoryResponse": {
         "additionalProperties": false,
         "description": "Measured history, sample coverage and comparable references for generated clients.",
@@ -11961,6 +12587,113 @@
           "excluded_outcomes"
         ],
         "title": "TaskUsageHistoryResponse",
+        "type": "object"
+      },
+      "TaskUsageOwnerCommandRequest": {
+        "additionalProperties": false,
+        "description": "The route supplies the authenticated actor; a caller cannot assert one.",
+        "properties": {
+          "action": {
+            "enum": [
+              "continue",
+              "resume",
+              "resolve",
+              "set_policy",
+              "override_checkpoint",
+              "stop"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "checkpoint_id": {
+            "format": "uuid",
+            "title": "Checkpoint Id",
+            "type": "string"
+          },
+          "continue_mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "next_checkpoint",
+                  "without_usage_pauses"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Continue Mode"
+          },
+          "expected_version": {
+            "maximum": 9.223372036854776e+18,
+            "minimum": 0.0,
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "override_note": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Override Note"
+          },
+          "requested_policy": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MonitoringPolicy"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "checkpoint_id",
+          "expected_version",
+          "idempotency_key",
+          "action"
+        ],
+        "title": "TaskUsageOwnerCommandRequest",
+        "type": "object"
+      },
+      "TaskUsageOwnerCommandResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "checkpoint": {
+            "$ref": "#/components/schemas/CheckpointRecord"
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/OwnerCommandReceipt"
+          },
+          "report": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UsageReport"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "receipt",
+          "checkpoint"
+        ],
+        "title": "TaskUsageOwnerCommandResponse",
         "type": "object"
       },
       "TokenBudgetDefaultsInput": {
@@ -12449,6 +13182,289 @@
         "title": "UsagePhaseRoleResponse",
         "type": "object"
       },
+      "UsageReport": {
+        "properties": {
+          "baseline": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BaselineReference"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "binding": {
+            "$ref": "#/components/schemas/WorkUnitBinding"
+          },
+          "cached_input_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cached Input Tokens"
+          },
+          "checkpoint": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CheckpointRecord"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "checkpoint_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checkpoint Version"
+          },
+          "compaction_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Compaction Count"
+          },
+          "completeness": {
+            "default": "unknown",
+            "title": "Completeness",
+            "type": "string"
+          },
+          "context_capacity_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context Capacity Tokens"
+          },
+          "context_occupied_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context Occupied Tokens"
+          },
+          "context_peak_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context Peak Tokens"
+          },
+          "freshness": {
+            "title": "Freshness",
+            "type": "string"
+          },
+          "input_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Tokens"
+          },
+          "output_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Tokens"
+          },
+          "policy_revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Policy Revision"
+          },
+          "reasoning_output_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reasoning Output Tokens"
+          },
+          "sources": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/UsageSourceReport"
+            },
+            "title": "Sources",
+            "type": "array"
+          },
+          "warning": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Warning"
+          }
+        },
+        "required": [
+          "binding",
+          "policy_revision",
+          "baseline",
+          "input_tokens",
+          "output_tokens",
+          "context_occupied_tokens",
+          "freshness"
+        ],
+        "title": "UsageReport",
+        "type": "object"
+      },
+      "UsageSourceReport": {
+        "properties": {
+          "binding": {
+            "$ref": "#/components/schemas/WorkUnitBinding"
+          },
+          "compaction_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Compaction Count"
+          },
+          "completeness": {
+            "title": "Completeness",
+            "type": "string"
+          },
+          "context_capacity_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context Capacity Tokens"
+          },
+          "context_occupied_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context Occupied Tokens"
+          },
+          "context_peak_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context Peak Tokens"
+          },
+          "delegated": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delegated"
+          },
+          "input_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Tokens"
+          },
+          "output_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Tokens"
+          },
+          "phase": {
+            "title": "Phase",
+            "type": "string"
+          },
+          "role": {
+            "title": "Role",
+            "type": "string"
+          }
+        },
+        "required": [
+          "binding",
+          "phase",
+          "role",
+          "delegated",
+          "input_tokens",
+          "output_tokens",
+          "completeness"
+        ],
+        "title": "UsageSourceReport",
+        "type": "object"
+      },
       "UsageSummary": {
         "additionalProperties": false,
         "properties": {
@@ -12534,6 +13550,46 @@
           "type"
         ],
         "title": "ValidationError",
+        "type": "object"
+      },
+      "WorkUnitBinding": {
+        "properties": {
+          "admitted_phase_id": {
+            "title": "Admitted Phase Id",
+            "type": "string"
+          },
+          "configured_route": {
+            "$ref": "#/components/schemas/RouteCohort"
+          },
+          "effective_route": {
+            "$ref": "#/components/schemas/RouteCohort"
+          },
+          "schema_version": {
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "source": {
+            "$ref": "#/components/schemas/SourceBinding"
+          },
+          "subject": {
+            "$ref": "#/components/schemas/SubjectKey"
+          },
+          "work_unit_id": {
+            "format": "uuid",
+            "title": "Work Unit Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "subject",
+          "work_unit_id",
+          "admitted_phase_id",
+          "configured_route",
+          "effective_route",
+          "source"
+        ],
+        "title": "WorkUnitBinding",
         "type": "object"
       }
     },
@@ -14287,6 +15343,147 @@
         "summary": "Retry"
       }
     },
+    "/api/epics/{epic_id}/brainstorm-jobs/{job_id}/usage-checkpoint": {
+      "get": {
+        "operationId": "usage_checkpoint_api_epics__epic_id__brainstorm_jobs__job_id__usage_checkpoint_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "epic_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Epic Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskUsageCheckpointResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Usage Checkpoint"
+      }
+    },
+    "/api/epics/{epic_id}/brainstorm-jobs/{job_id}/usage-checkpoint/commands": {
+      "post": {
+        "operationId": "apply_checkpoint_command_api_epics__epic_id__brainstorm_jobs__job_id__usage_checkpoint_commands_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "epic_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Epic Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskUsageOwnerCommandRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskUsageOwnerCommandResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "CSRF": [],
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Apply Checkpoint Command"
+      }
+    },
     "/api/epics/{epic_id}/brief-adoptions": {
       "post": {
         "operationId": "adopt_brief_revision_api_epics__epic_id__brief_adoptions_post",
@@ -15337,6 +16534,147 @@
           }
         ],
         "summary": "Retry"
+      }
+    },
+    "/api/epics/{epic_id}/decomposition-jobs/{job_id}/usage-checkpoint": {
+      "get": {
+        "operationId": "usage_checkpoint_api_epics__epic_id__decomposition_jobs__job_id__usage_checkpoint_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "epic_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Epic Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskUsageCheckpointResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Usage Checkpoint"
+      }
+    },
+    "/api/epics/{epic_id}/decomposition-jobs/{job_id}/usage-checkpoint/commands": {
+      "post": {
+        "operationId": "apply_checkpoint_command_api_epics__epic_id__decomposition_jobs__job_id__usage_checkpoint_commands_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "epic_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Epic Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskUsageOwnerCommandRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskUsageOwnerCommandResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "CSRF": [],
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Apply Checkpoint Command"
       }
     },
     "/api/epics/{epic_id}/executions": {
@@ -18158,6 +19496,107 @@
           }
         ],
         "summary": "Run Usage"
+      }
+    },
+    "/api/runs/{run_id}/usage-checkpoint": {
+      "get": {
+        "operationId": "checkpoint_api_runs__run_id__usage_checkpoint_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskUsageCheckpointResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Checkpoint"
+      }
+    },
+    "/api/runs/{run_id}/usage-checkpoint/commands": {
+      "post": {
+        "operationId": "owner_command_api_runs__run_id__usage_checkpoint_commands_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskUsageOwnerCommandRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskUsageOwnerCommandResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "CSRF": [],
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Owner Command"
       }
     },
     "/api/subscription-models": {

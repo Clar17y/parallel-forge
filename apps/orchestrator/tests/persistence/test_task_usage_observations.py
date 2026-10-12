@@ -8,6 +8,8 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
+from forge.api.schemas.task_usage import UsageReportWire
+from forge.application.services.task_usage_reports import build_usage_report
 from forge.domain.task_usage_contract import (
     CounterKind,
     Observation,
@@ -19,6 +21,7 @@ from forge.domain.task_usage_contract import (
     WorkUnitBinding,
 )
 from forge.persistence.models import AgentExecution, ModelUsage
+from forge.persistence.models.subscription import SubscriptionAttempt, SubscriptionTask
 from forge.persistence.queries import task_usage_totals as totals_module
 from forge.persistence.queries.task_usage_totals import TaskUsageTotalsQuery
 from forge.persistence.repositories.task_usage_observations import (
@@ -53,6 +56,67 @@ async def _binding(session_factory, run, *, source_id=None) -> WorkUnitBinding:
         effective_route=route,
         source=SourceBinding(kind="agent_execution", source_id=source_id),
     )
+
+
+@pytest.mark.asyncio
+async def test_run_report_uses_durable_task_ancestry_without_changing_totals(
+    session_factory, persisted_run,
+) -> None:
+    source_rows = []
+    async with session_factory() as session, session.begin():
+        for index, (parent, input_tokens, output_tokens) in enumerate(
+            ((None, 1, 1), (0, 60, 40), (None, 1, 1), (2, 60, 40))
+        ):
+            task_id, attempt_id = uuid4(), uuid4()
+            parent_id = source_rows[parent][0] if parent is not None else None
+            session.add(SubscriptionTask(
+                id=task_id, run_id=persisted_run.id, task_id=task_id,
+                parent_task_id=parent_id, idempotency_key=f"ancestry-task-{index}", payload={},
+            ))
+            await session.flush()
+            session.add(SubscriptionAttempt(
+                id=attempt_id, run_id=persisted_run.id, task_row_id=task_id,
+                attempt_number=1, idempotency_key=f"ancestry-attempt-{index}",
+                route_payload={},
+            ))
+            await session.flush()
+            source_rows.append((task_id, attempt_id, input_tokens, output_tokens))
+    route = RouteCohort.from_members(
+        (RouteMember(role="primary", provider="test", model="test", ordinal=0),)
+    )
+    writer = PostgresTaskUsageObservations(session_factory)
+    for index, (task_id, attempt_id, input_tokens, output_tokens) in enumerate(source_rows):
+        binding = WorkUnitBinding(
+            subject=SubjectKey(project_id=persisted_run.project_id, kind="run", subject_id=persisted_run.id),
+            work_unit_id=uuid4(), admitted_phase_id=f"phase-{index}",
+            configured_route=route, effective_route=route,
+            source=SourceBinding(kind="subscription_attempt", source_id=attempt_id, parent_id=task_id),
+        )
+        await writer.bind(binding)
+        assert await writer.append_observation(Observation(
+            binding=binding, event_id=f"ancestry-{index}", sequence=1,
+            counter_kind=CounterKind.CUMULATIVE,
+            tokens=TokenCounts(input_tokens=input_tokens, output_tokens=output_tokens),
+        ))
+    async with session_factory() as session:
+        totals = await TaskUsageTotalsQuery(session_factory).totals_in(session, binding.subject)
+        report = await build_usage_report(
+            session, totals=totals, policy_revision=None, baseline=None, checkpoint=None,
+        )
+    assert report is not None
+    assert (report.input_tokens, report.output_tokens) == (122, 82)
+    assert [source.binding.work_unit_id for source in report.sources] == [
+        fact.binding.work_unit_id for fact in totals.source_facts
+    ]
+    assert {source.binding.source.source_id for source in report.sources} == {
+        row[1] for row in source_rows
+    }
+    by_id = {source.binding.source.source_id: source for source in report.sources}
+    assert [by_id[row[1]].delegated for row in source_rows] == [False, True, False, True]
+    wire = UsageReportWire.dump_python(report, mode="json")
+    assert [source["delegated"] for source in wire["sources"]] == [
+        source.delegated for source in report.sources
+    ]
 
 
 @pytest.mark.asyncio
@@ -182,6 +246,9 @@ async def test_authoritative_model_usage_replaces_late_live(session_factory, per
                 input_tokens=20,
                 output_tokens=4,
                 cached_input_tokens=30,
+                input_tokens_complete=True,
+                output_tokens_complete=True,
+                cached_input_tokens_complete=True,
                 duration_ms=1,
                 tool_call_count=0,
                 pricing_version="v1",
@@ -198,6 +265,93 @@ async def test_authoritative_model_usage_replaces_late_live(session_factory, per
     historical = await query.totals(binding.subject, as_of=before_model_usage)
     assert historical.final_source_count == 0
     assert historical.source_facts[0].evidence_kind == "live"
+
+
+@pytest.mark.asyncio
+async def test_model_usage_missing_metadata_does_not_project_as_measured_zero(session_factory, persisted_run) -> None:
+    binding = await _binding(session_factory, persisted_run)
+    writer = PostgresTaskUsageObservations(session_factory)
+    await writer.bind(binding)
+    async with session_factory() as session, session.begin():
+        session.add(ModelUsage(
+            id=uuid4(), run_id=persisted_run.id,
+            agent_execution_id=binding.source.source_id,
+            provider="test", model="test", prompt_version="v1",
+            input_tokens=0, output_tokens=0, cached_input_tokens=0,
+            input_tokens_complete=False, output_tokens_complete=True,
+            cached_input_tokens_complete=False,
+            duration_ms=1, tool_call_count=0, pricing_version="v1",
+            currency="USD", estimated_cost_minor=0,
+        ))
+    totals = await TaskUsageTotalsQuery(session_factory).totals(binding.subject)
+    assert totals.input_tokens is None
+    assert totals.output_tokens == 0
+    assert totals.cached_input_tokens is None
+    assert totals.completeness == "lower_bound"
+
+
+@pytest.mark.asyncio
+async def test_model_usage_retains_full_prompt_when_cache_subset_is_unknown(session_factory, persisted_run) -> None:
+    binding = await _binding(session_factory, persisted_run)
+    await PostgresTaskUsageObservations(session_factory).bind(binding)
+    async with session_factory() as session, session.begin():
+        session.add(ModelUsage(
+            id=uuid4(), run_id=persisted_run.id,
+            agent_execution_id=binding.source.source_id,
+            provider="test", model="test", prompt_version="v1",
+            input_tokens=9, output_tokens=0, cached_input_tokens=0,
+            input_tokens_complete=True, output_tokens_complete=True,
+            cached_input_tokens_complete=False,
+            duration_ms=1, tool_call_count=0, pricing_version="v1",
+            currency="USD", estimated_cost_minor=0,
+        ))
+    totals = await TaskUsageTotalsQuery(session_factory).totals(binding.subject)
+    assert totals.input_tokens == 9
+    assert totals.output_tokens == 0
+    assert totals.cached_input_tokens is None
+    assert totals.completeness == "complete"
+
+
+@pytest.mark.asyncio
+async def test_model_usage_explicit_zero_is_complete(session_factory, persisted_run) -> None:
+    binding = await _binding(session_factory, persisted_run)
+    await PostgresTaskUsageObservations(session_factory).bind(binding)
+    async with session_factory() as session, session.begin():
+        session.add(ModelUsage(
+            id=uuid4(), run_id=persisted_run.id,
+            agent_execution_id=binding.source.source_id,
+            provider="test", model="test", prompt_version="v1",
+            input_tokens=0, output_tokens=0, cached_input_tokens=0,
+            input_tokens_complete=True, output_tokens_complete=True,
+            cached_input_tokens_complete=True,
+            duration_ms=1, tool_call_count=0, pricing_version="v1",
+            currency="USD", estimated_cost_minor=0,
+        ))
+    totals = await TaskUsageTotalsQuery(session_factory).totals(binding.subject)
+    assert (totals.input_tokens, totals.output_tokens, totals.cached_input_tokens) == (0, 0, 0)
+    assert totals.completeness == "complete"
+
+
+@pytest.mark.asyncio
+async def test_mixed_model_rows_retain_positive_partial_as_lower_bound(session_factory, persisted_run) -> None:
+    binding = await _binding(session_factory, persisted_run)
+    await PostgresTaskUsageObservations(session_factory).bind(binding)
+    async with session_factory() as session, session.begin():
+        for tokens, complete in ((11, True), (7, False)):
+            session.add(ModelUsage(
+                id=uuid4(), run_id=persisted_run.id,
+                agent_execution_id=binding.source.source_id,
+                provider="test", model="test", prompt_version="v1",
+                input_tokens=tokens, output_tokens=0, cached_input_tokens=0,
+                input_tokens_complete=complete, output_tokens_complete=True,
+                cached_input_tokens_complete=True,
+                duration_ms=1, tool_call_count=0, pricing_version="v1",
+                currency="USD", estimated_cost_minor=0,
+            ))
+    totals = await TaskUsageTotalsQuery(session_factory).totals(binding.subject)
+    assert totals.input_tokens == 18
+    assert totals.output_tokens == 0
+    assert totals.completeness == "lower_bound"
 
 
 @pytest.mark.asyncio
@@ -338,7 +492,9 @@ async def test_totals_batch_source_reads_with_stable_order_and_digest(
                 agent_execution_id=binding.source.source_id,
                 provider="test", model="test", prompt_version="v1",
                 input_tokens=10 + index, output_tokens=3,
-                cached_input_tokens=20 - index, duration_ms=1,
+                    cached_input_tokens=20 - index, duration_ms=1,
+                    input_tokens_complete=True, output_tokens_complete=True,
+                    cached_input_tokens_complete=True,
                 tool_call_count=0, pricing_version="v1", currency="USD",
                 estimated_cost_minor=0,
             ))
@@ -349,7 +505,9 @@ async def test_totals_batch_source_reads_with_stable_order_and_digest(
                     id=extra_id, run_id=persisted_run.id,
                     agent_execution_id=binding.source.source_id,
                     provider="test", model="test", prompt_version="v1",
-                    input_tokens=5, output_tokens=2, cached_input_tokens=0,
+                        input_tokens=5, output_tokens=2, cached_input_tokens=0,
+                        input_tokens_complete=True, output_tokens_complete=True,
+                        cached_input_tokens_complete=True,
                     duration_ms=1, tool_call_count=0, pricing_version="v1",
                     currency="USD", estimated_cost_minor=0,
                 ))

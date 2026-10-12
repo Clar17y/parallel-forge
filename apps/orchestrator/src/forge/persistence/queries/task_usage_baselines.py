@@ -53,6 +53,7 @@ from forge.persistence.models.subscription import SubscriptionAttempt, Subscript
 from forge.persistence.models.task_usage import (
     TaskUsageBaseline,
     TaskUsagePolicyRevision,
+    TaskUsageSubjectAdmissionRow,
     TaskUsageWorkUnit,
 )
 from forge.persistence.queries.task_usage_totals import FinalizedSourceFact, TaskUsageTotalsQuery
@@ -89,6 +90,7 @@ class _HistoricalJob:
     state: str
     proposal_digest: str | None
     event_at: datetime
+    task_kind: str
 
 
 async def _historical_jobs(
@@ -123,6 +125,7 @@ async def _historical_jobs(
         rows.extend((await session.execute(select(
             BrainstormJobRow.id, BrainstormJobRow.epic_id, BrainstormJobRow.project_id,
             BrainstormJobRow.state, BrainstormJobRow.proposal, BrainstormJobRow.proposal_digest,
+            BrainstormJobRow.snapshot["kind"].as_string().label("job_kind"),
             BrainstormJobRow.current_attempt_id, BrainstormJobRow.created_at,
             BrainstormJobRow.updated_at,
         ).where(
@@ -188,7 +191,8 @@ async def _historical_jobs(
         if lower is not None and at < lower:
             continue
         result.append(_HistoricalJob(job.id, job.project_id, state,
-                                     job.proposal_digest if state == "proposed" else None, at))
+                                     job.proposal_digest if state == "proposed" else None, at,
+                                     _job_task_kind(job.job_kind)))
     return result
 
 
@@ -379,12 +383,32 @@ class TaskUsageBaselineQuery:
                 binding.subject.subject_id,
             ):
                 raise ValueError("baseline binding is not the durable admitted work unit")
-            policy_row = await session.scalar(
-                select(TaskUsagePolicyRevision)
-                .where(TaskUsagePolicyRevision.project_id == binding.subject.project_id)
-                .order_by(TaskUsagePolicyRevision.revision.desc())
-                .limit(1)
+            admission = await session.get(
+                TaskUsageSubjectAdmissionRow,
+                (
+                    binding.subject.project_id,
+                    binding.subject.kind,
+                    binding.subject.subject_id,
+                ),
             )
+            if admission is not None:
+                if admission.configured_route_digest != binding.configured_route.fingerprint:
+                    raise ValueError("work-unit route differs from subject admission")
+                frozen_at = admission.admitted_at
+                if admission.policy_revision is None:
+                    return None
+                policy_row = await session.get(
+                    TaskUsagePolicyRevision,
+                    (binding.subject.project_id, admission.policy_revision),
+                )
+            else:
+                # Legacy subjects did not capture admission-time policy/route.
+                policy_row = await session.scalar(
+                    select(TaskUsagePolicyRevision)
+                    .where(TaskUsagePolicyRevision.project_id == binding.subject.project_id)
+                    .order_by(TaskUsagePolicyRevision.revision.desc())
+                    .limit(1)
+                )
             if policy_row is None:
                 return None
             policy = policy_from_row(policy_row)
@@ -396,12 +420,13 @@ class TaskUsageBaselineQuery:
                 as_of=frozen_at,
                 window_days=policy.window_days,
             )
+            target_task_kind = await _subject_task_kind(session, binding)
             history = tuple(
                 sample
                 for sample in history
                 if sample.subject_id != binding.subject.subject_id
                 and sample.subject_kind == binding.subject.kind
-                and sample.task_kind == _task_kind(binding.subject.kind)
+                and sample.task_kind == target_task_kind
             )
             rules = SamplingRules(
                 history_limit=policy.history_limit,
@@ -418,7 +443,7 @@ class TaskUsageBaselineQuery:
                 as_of=frozen_at,
                 project_ids=accessible_projects,
                 subject_kind=binding.subject.kind,
-                task_kind=_task_kind(binding.subject.kind),
+                task_kind=target_task_kind,
                 configured_route=binding.configured_route.fingerprint,
                 effective_route=binding.effective_route.fingerprint,
                 target_project_id=binding.subject.project_id,
@@ -580,7 +605,7 @@ class TaskUsageBaselineQuery:
                 job.project_id,
                 "authoring_job",
                 job.id,
-                "authoring",
+                job.task_kind,
                 job.state,
                 job.state == "proposed" and job.proposal_digest is not None,
                 False,
@@ -654,6 +679,7 @@ class TaskUsageBaselineQuery:
             failed_attempt_count = failed_counts.get(identity, 0) if kind == "run" else 0
             bound_sources = {(unit.source_kind, unit.source_id) for unit in units}
             inventory_complete = bound_sources == inventory.get(key, set())
+            bindings = tuple(decode_binding(unit) for unit in units) if inventory_complete else ()
             source_final = bool(subject_totals.source_count) and subject_totals.final_source_count == subject_totals.source_count
             supported_total = _supported_total(subject_totals.input_tokens, subject_totals.output_tokens)
             fully_measured = (
@@ -663,8 +689,8 @@ class TaskUsageBaselineQuery:
                 and supported_total is not None
             )
             total_tokens = supported_total if fully_measured else None
-            configured = _route_composition(facts, "configured_route") if inventory_complete else None
-            effective = _route_composition(facts, "effective_route") if inventory_complete else None
+            configured = _route_composition(bindings, "configured_route")
+            effective = _route_composition(bindings, "effective_route")
             samples.append(
                 BaselineSample(
                     project_id=project,
@@ -678,7 +704,7 @@ class TaskUsageBaselineQuery:
                     configured_route=configured,
                     effective_route=effective,
                     task_kind=task_kind,
-                    route_members=_routes(facts) if inventory_complete else (),
+                    route_members=_routes(bindings),
                     phase_role_breakdown=(
                         _phase_role_facts(facts, roles) if inventory_complete else ()
                     ),
@@ -796,7 +822,9 @@ class TaskUsageBaselineQuery:
             bound_rows = units_by_subject[(project, kind, subject)]
             bound_sources = {(unit.source_kind, unit.source_id) for unit in bound_rows}
             if (
-                subject_totals.completeness != "complete"
+                subject_totals.final_source_count != subject_totals.source_count
+                or not subject_totals.source_count
+                or subject_totals.completeness != "complete"
                 or _supported_total(subject_totals.input_tokens, subject_totals.output_tokens) is None
                 or bound_sources != inventory.get((project, kind, subject), set())
             ):
@@ -1086,8 +1114,22 @@ def _outcome(
     return "unknown"
 
 
-def _task_kind(subject_kind: str) -> str:
-    return "authoring" if subject_kind == "authoring_job" else "implementation"
+def _job_task_kind(snapshot: object) -> str:
+    """Keep a legacy unknown authoring kind separate from typed job cohorts."""
+    if isinstance(snapshot, dict):
+        snapshot = snapshot.get("kind")
+    if isinstance(snapshot, str) and snapshot in {"brainstorm", "decomposition"}:
+        return snapshot
+    return "authoring"
+
+
+async def _subject_task_kind(session: AsyncSession, binding: WorkUnitBinding) -> str:
+    if binding.subject.kind == "run":
+        return "implementation"
+    job = await session.get(BrainstormJobRow, binding.subject.subject_id)
+    if job is None or job.project_id != binding.subject.project_id:
+        raise ValueError("authoring subject is missing its immutable job snapshot")
+    return _job_task_kind(job.snapshot)
 
 
 def _digest(value: object) -> str:
@@ -1158,10 +1200,9 @@ def _reference_from_row(row: TaskUsageBaseline, binding: WorkUnitBinding) -> Bas
     )
 
 
-def _routes(facts: tuple[FinalizedSourceFact, ...]) -> tuple[tuple[str, str, str, str | None], ...]:
+def _routes(bindings: tuple[WorkUnitBinding, ...]) -> tuple[tuple[str, str, str, str | None], ...]:
     members: set[tuple[str, str, str, str | None]] = set()
-    for fact in facts:
-        binding = fact.binding
+    for binding in bindings:
         route = binding.effective_route
         for member in route.members:
             members.add((member.role, member.provider, member.model, member.reasoning_effort))
@@ -1170,14 +1211,14 @@ def _routes(facts: tuple[FinalizedSourceFact, ...]) -> tuple[tuple[str, str, str
     )
 
 
-def _route_composition(facts: tuple[FinalizedSourceFact, ...], name: str) -> str | None:
+def _route_composition(bindings: tuple[WorkUnitBinding, ...], name: str) -> str | None:
     fingerprints = {
         (
-            fact.binding.configured_route
+            binding.configured_route
             if name == "configured_route"
-            else fact.binding.effective_route
+            else binding.effective_route
         ).fingerprint
-        for fact in facts
+        for binding in bindings
     }
     if not fingerprints:
         return None

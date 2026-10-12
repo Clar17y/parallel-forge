@@ -9,10 +9,13 @@ from uuid import UUID
 from forge.domain.task_usage_contract import (
     BaselineReference,
     CheckpointRecord,
+    CheckpointState,
     MonitoringPolicy,
     Observation,
     OwnerCommand,
+    RouteCohort,
     SubjectKey,
+    TaskUsageSubjectAdmission,
     WorkUnitBinding,
 )
 from pydantic import StrictBool, StrictInt
@@ -108,6 +111,41 @@ class TaskUsageRepository(Protocol):
     async def apply_owner_command(self, command: OwnerCommand) -> OwnerCommandReceipt: ...
 
 
+class TaskUsageCheckpointRepository(Protocol):
+    async def get(self, checkpoint_id: UUID) -> CheckpointRecord | None: ...
+    async def receipt_for_command(self, command: OwnerCommand) -> OwnerCommandReceipt | None: ...
+    async def list_for_subject(self, subject: SubjectKey) -> tuple[CheckpointRecord, ...]: ...
+    async def active_for_subject(self, subject: SubjectKey) -> CheckpointRecord | None: ...
+    async def latest_for_subject(self, subject: SubjectKey) -> CheckpointRecord | None: ...
+    async def request(self, checkpoint: CheckpointRecord) -> CheckpointRecord: ...
+    async def transition(
+        self,
+        checkpoint_id: UUID,
+        *,
+        expected_version: int,
+        state: CheckpointState,
+        process_settled: bool,
+    ) -> CheckpointRecord: ...
+    async def apply_owner_command(
+        self,
+        command: OwnerCommand,
+        *,
+        state: CheckpointState,
+        affected_snapshot: str,
+        warnings: tuple[str, ...] = (),
+        next_checkpoint_threshold_tokens: int | None = None,
+        usage_pauses_disabled: bool | None = None,
+        monitoring_policy_revision: int | None = None,
+    ) -> OwnerCommandReceipt: ...
+
+
+class TaskUsageAdmissionRepository(Protocol):
+    async def get(self, subject: SubjectKey) -> TaskUsageSubjectAdmission | None: ...
+    async def admit(
+        self, subject: SubjectKey, configured_route: RouteCohort
+    ) -> TaskUsageSubjectAdmission: ...
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class OwnerCommandReceipt:
     command_id: UUID
@@ -136,6 +174,7 @@ class OwnerCommandReceipt:
             "resolve",
             "set_policy",
             "override_checkpoint",
+            "stop",
         } or self.state not in {state.value for state in CheckpointState}:
             raise ValueError("receipt action/state invalid")
         if type(self.replayed) is not bool or any(
@@ -145,9 +184,42 @@ class OwnerCommandReceipt:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class UsageSourceReport:
+    binding: WorkUnitBinding
+    phase: str
+    role: str
+    delegated: StrictBool | None
+    input_tokens: StrictInt | None
+    output_tokens: StrictInt | None
+    completeness: str
+    context_occupied_tokens: StrictInt | None = None
+    context_peak_tokens: StrictInt | None = None
+    context_capacity_tokens: StrictInt | None = None
+    compaction_count: StrictInt | None = None
+
+    def __post_init__(self) -> None:
+        from forge.domain.task_usage_contract import ContextWindow, TokenCounts, _positive
+
+        if not isinstance(self.binding, WorkUnitBinding) or not self.phase or not self.role:
+            raise ValueError("source report identity is invalid")
+        if (self.delegated is not None and type(self.delegated) is not bool) or self.completeness not in {
+            "complete", "lower_bound", "unknown"
+        }:
+            raise ValueError("source report status is invalid")
+        TokenCounts(input_tokens=self.input_tokens, output_tokens=self.output_tokens)
+        ContextWindow(
+            occupied_tokens=self.context_occupied_tokens,
+            capacity_tokens=self.context_capacity_tokens,
+            compaction_count=self.compaction_count,
+        )
+        if self.context_peak_tokens is not None:
+            _positive(self.context_peak_tokens, "observed context peak", allow_zero=True)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class UsageReport:
     binding: WorkUnitBinding
-    policy_revision: StrictInt
+    policy_revision: StrictInt | None
     baseline: BaselineReference | None
     input_tokens: StrictInt | None
     output_tokens: StrictInt | None
@@ -157,7 +229,9 @@ class UsageReport:
     cached_input_tokens: StrictInt | None = None
     reasoning_output_tokens: StrictInt | None = None
     context_capacity_tokens: StrictInt | None = None
+    context_peak_tokens: StrictInt | None = None
     compaction_count: StrictInt | None = None
+    sources: tuple[UsageSourceReport, ...] = ()
     completeness: str = "unknown"
     checkpoint: CheckpointRecord | None = None
     warning: str | None = None
@@ -171,7 +245,8 @@ class UsageReport:
             raise TypeError("report binding/baseline invalid")
         if self.baseline is not None and self.baseline.binding.subject != self.binding.subject:
             raise ValueError("report baseline belongs to another subject")
-        _positive(self.policy_revision, "policy revision")
+        if self.policy_revision is not None:
+            _positive(self.policy_revision, "policy revision")
         if self.checkpoint_version is not None:
             _positive(self.checkpoint_version, "checkpoint version", allow_zero=True)
         TokenCounts(
@@ -185,6 +260,14 @@ class UsageReport:
             capacity_tokens=self.context_capacity_tokens,
             compaction_count=self.compaction_count,
         )
+        if self.context_peak_tokens is not None:
+            _positive(self.context_peak_tokens, "observed context peak", allow_zero=True)
+        if any(
+            not isinstance(source, UsageSourceReport)
+            or source.binding.subject != self.binding.subject
+            for source in self.sources
+        ):
+            raise ValueError("report source belongs to another subject")
         if self.completeness not in {
             "complete",
             "lower_bound",

@@ -4,6 +4,14 @@ import { PlanPanel } from './plan-panel';
 import { projection } from '@/test/projection';
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+test.each([null, 0, 116000])('shows the configured token limit %s without inventing a cap', (limit) => {
+  const view = projection();
+  view.plan.output_artifact_digest = null;
+  view.budgets.token_limit = limit;
+  render(<PlanPanel projection={view} />);
+  expect(screen.getByText(limit === null ? 'Unbounded' : String(limit))).toBeInTheDocument();
+});
+
 test('shows structured plan evidence as text alongside the bound base and policy', async () => {
   const plan = { summary: 'Implement the approved feature', assumptions: ['Repository available'], affected_components: ['api'],
     steps: ['Add the endpoint'], required_checks: ['unit-tests'], risks: ['Compatibility'],

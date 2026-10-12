@@ -513,18 +513,20 @@ async def _seed_and_check(url: str):
                     "event": "event-1",
                 },
             )
-            child_checkpoint = uuid4()
-            await db.execute(
-                checkpoint_insert,
-                {
-                    "id": child_checkpoint,
-                    "project": a,
-                    "unit": subscription_params["unit"],
-                    "baseline": unit,
-                    "run": run,
-                    "event": "child-event",
-                },
-            )
+            with pytest.raises(IntegrityError) as rejected:
+                async with db.begin_nested():
+                    await db.execute(
+                        checkpoint_insert,
+                        {
+                            "id": uuid4(),
+                            "project": a,
+                            "unit": subscription_params["unit"],
+                            "baseline": unit,
+                            "run": run,
+                            "event": "child-event",
+                        },
+                    )
+            assert _constraint(rejected.value) == "uq_task_usage_checkpoints_active_subject"
             await db.execute(
                 observation,
                 {
@@ -549,10 +551,10 @@ async def _seed_and_check(url: str):
                             "snapshot": "f" * 64,
                         },
                     )
-            assert (
-                _constraint(rejected.value)
-                == "fk_task_usage_checkpoints_baseline_work_unit_id_baselines"
-            )
+            assert _constraint(rejected.value) in {
+                "fk_task_usage_checkpoints_baseline_work_unit_id_baselines",
+                "uq_task_usage_checkpoints_active_subject",
+            }
             other_execution, other_unit = uuid4(), uuid4()
             await db.execute(
                 text(
@@ -627,10 +629,10 @@ async def _seed_and_check(url: str):
                             "event": "event-1",
                         },
                     )
-            assert (
-                _constraint(rejected.value)
-                == "fk_task_usage_checkpoints_work_unit_id_task_usage_observations"
-            )
+            assert _constraint(rejected.value) in {
+                "fk_task_usage_checkpoints_work_unit_id_task_usage_observations",
+                "uq_task_usage_checkpoints_active_subject",
+            }
             with pytest.raises(IntegrityError) as rejected:
                 async with db.begin_nested():
                     await db.execute(
@@ -710,7 +712,7 @@ def test_additive_migration_and_lineage(test_database_url, alembic_config_factor
             async with engine.connect() as db:
                 assert (
                     await db.scalar(text("SELECT version_num FROM alembic_version"))
-                    == "20261010_0039"
+                    == "20261011_0040"
                 )
                 for table in (
                     "task_usage_work_units",
@@ -779,7 +781,7 @@ def test_empty_usage_downgrade_reupgrade_preserves_legacy_history(
 
     asyncio.run(check("20261007_0037"))
     command.upgrade(config, "head")
-    asyncio.run(check("20261010_0039"))
+    asyncio.run(check("20261011_0040"))
 
 
 @pytest.mark.integration
@@ -1065,7 +1067,7 @@ def test_downgrade_refuses_each_retained_usage_shape(
             async with engine.connect() as db:
                 assert (
                     await db.scalar(text("SELECT version_num FROM alembic_version"))
-                    == "20261010_0039"
+                    == "20261011_0040"
                 )
                 assert await db.scalar(text(f"SELECT count(*) FROM {table}")) == 1
                 assert (
@@ -1141,7 +1143,7 @@ async def test_downgrade_waits_for_writer_then_refuses_committed_evidence(
                     await asyncio.gather(downgrade, return_exceptions=True)
         async with engine.connect() as db:
             assert (
-                await db.scalar(text("SELECT version_num FROM alembic_version")) == "20261010_0039"
+                await db.scalar(text("SELECT version_num FROM alembic_version")) == "20261011_0040"
             )
             assert (
                 await db.scalar(

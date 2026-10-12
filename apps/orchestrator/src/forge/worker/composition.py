@@ -95,6 +95,13 @@ from forge.application.services.subscription_task_controls import (
     SubscriptionTaskControlService,
     TaskControlUnitOfWork,
 )
+from forge.application.services.task_usage_composition import (
+    AdmissionFreezingObservationStore,
+    admitted_run_cohort,
+    bind_agent_execution_usage,
+    compose_task_usage,
+)
+from forge.application.services.task_usage_monitor import RunTaskUsageMonitor
 from forge.application.services.task_usage_policy import budget_for_frozen_admission
 from forge.application.services.tool_recovery import ToolRecoveryService
 from forge.application.services.tools import ControlledToolService
@@ -145,6 +152,7 @@ from forge.worker.subscription_invocation import SubscriptionInvocationWorker
 from forge.worker.subscription_session import ControlledSubscriptionSessionFactory
 from forge.worker.subscription_status import SubscriptionRuntimeReporter
 from forge.worker.subscription_tools import SubscriptionToolServiceFactory
+from forge.worker.task_usage_monitor import MonitoringObservationSink
 
 
 class WorkerCompositionError(RuntimeError):
@@ -167,6 +175,7 @@ class WorkerHandlers(dict[str, CommandHandler]):
         self.subscription_handoffs: SubscriptionHandoffApplication | None = None
         self.subscription_candidates: SubscriptionCandidateApplication | None = None
         self.subscription_invocations: Callable[[str], SubscriptionInvocationWorker] | None = None
+        self.task_usage_monitor: RunTaskUsageMonitor | None = None
         self.subscription_status: SubscriptionRuntimeReporter | None = None
 
     async def aclose(self) -> None:
@@ -267,6 +276,7 @@ class BoundPlanningGateway:
         runtime_factory: AgentRuntimeFactory | None = None,
         search_ranking: SearchRankingConfiguration | None = None,
         jev_service: JevService | None = None,
+        usage_bindings: AdmissionFreezingObservationStore | None = None,
     ) -> None:
         self._search_ranking = search_ranking or SearchRankingConfiguration()
         self._jev_service = jev_service
@@ -280,6 +290,7 @@ class BoundPlanningGateway:
         self._currency = currency
         self._underlying_gateway_factory = underlying_gateway_factory
         self._runtime_factory = runtime_factory
+        self._usage_bindings = usage_bindings
 
     async def execute(self, request: AgentRequest) -> AgentResult:
         if type(request) is not AgentRequest:
@@ -449,6 +460,21 @@ class BoundPlanningGateway:
                 or current_policy != policy_record
             ):
                 raise AgentGatewayError("planning authority changed")
+            configured_usage_route = (
+                await admitted_run_cohort(
+                    uow, project_id=project_id, run_id=request.run_id, policy=policy
+                )
+                if self._usage_bindings is not None
+                else None
+            )
+        if self._usage_bindings is not None and configured_usage_route is not None:
+            await bind_agent_execution_usage(
+                self._usage_bindings,
+                request=request,
+                project_id=project_id,
+                configured_route=configured_usage_route,
+                admitted_phase_id="plan",
+            )
         return await gateway.execute(request)
 
 
@@ -469,6 +495,8 @@ def compose_worker_handlers(
 ) -> WorkerHandlers:
     """Compose production worker command handlers with verified dependencies."""
     shared_redactor = redactor or Redactor()
+    task_usage = compose_task_usage(session_factory)
+    task_usage_monitor = RunTaskUsageMonitor(session_factory, task_usage.totals)
     artifact_store = FilesystemArtifactStore(settings.artifact_root)
 
     prompt_root = settings.prompt_root or Path("agents")
@@ -541,6 +569,7 @@ def compose_worker_handlers(
             runtime_factory=runtime_factory,
             search_ranking=search_ranking,
             jev_service=jev_service,
+            usage_bindings=task_usage.admitted_observations,
         )
     else:
         runtime_factory = AgentRuntimeFactory(subscription_adapters=subscription_adapters)
@@ -598,6 +627,7 @@ def compose_worker_handlers(
             git_factory=delivery_dependencies.git,
             tool_service_factory=delivery_tools,
             gateway_factory=delivery_provider,
+            usage_bindings=task_usage.admitted_observations,
         )
 
     def make_repository_reader(policy: ProjectPolicy) -> RepositoryReader:
@@ -755,11 +785,18 @@ def compose_worker_handlers(
             runtime_factory.subscription_gateway_for(request, broker=broker, lifecycle=lifecycle)
         ),
     )
+    handlers.task_usage_monitor = task_usage_monitor
     handlers.subscription_invocations = lambda owner: SubscriptionInvocationWorker(
         uow_factory,
         sessions,
         artifacts=artifact_store,
         owner=owner,
+        usage_sink=MonitoringObservationSink(
+            task_usage.observations,
+            task_usage_monitor,
+        ),
+        usage_bindings=task_usage.admitted_observations,
+        usage_monitor=task_usage_monitor,
         reservation=settings.subscription_attempt_budget,
         candidates=handlers.subscription_candidates,
         acceptance=subscription_acceptance,

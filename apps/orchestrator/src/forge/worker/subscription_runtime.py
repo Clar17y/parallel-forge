@@ -21,9 +21,12 @@ from forge.application.ports.subscription_gateway import (
     SubscriptionInvocationRequest,
     SubscriptionInvocationResult,
 )
+from forge.application.ports.task_usage import TaskUsageObserver
 from forge.application.ports.unit_of_work import UnitOfWork
 from forge.application.services.subscription_execution import SubscriptionDecisionExecutor
 from forge.domain.lease import validate_lease_seconds
+from forge.domain.task_usage_contract import WorkUnitBinding
+from forge.persistence.repositories.scheduling import UsageCheckpointLeaseRevoked
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +69,8 @@ class SubscriptionAttemptRunner:
         revoke: Callable[[], Awaitable[None]],
         *,
         stop_event: asyncio.Event | None = None,
+        usage_binding: WorkUnitBinding | None = None,
+        usage_sink: TaskUsageObserver | None = None,
     ) -> SubscriptionAttemptOutcome:
         if (
             not isinstance(admission, SubscriptionAdmission)
@@ -76,7 +81,11 @@ class SubscriptionAttemptRunner:
         ):
             raise ValueError("invocation request differs from admission")
         stop = stop_event if stop_event is not None else asyncio.Event()
-        operation = asyncio.create_task(self._execute(admission, request, gateway, revoke, stop))
+        if (usage_binding is None) != (usage_sink is None):
+            raise ValueError("usage binding and sink must be paired")
+        operation = asyncio.create_task(
+            self._execute(admission, request, gateway, revoke, stop, usage_binding, usage_sink)
+        )
         cancelled = False
         while True:
             try:
@@ -100,6 +109,8 @@ class SubscriptionAttemptRunner:
         gateway: SubscriptionGateway,
         revoke: Callable[[], Awaitable[None]],
         stop: asyncio.Event,
+        usage_binding: WorkUnitBinding | None,
+        usage_sink: TaskUsageObserver | None,
     ) -> SubscriptionAttemptOutcome:
         deadline = asyncio.get_running_loop().time() + request.budget.max_duration_seconds
         stopping = asyncio.create_task(stop.wait())
@@ -111,6 +122,12 @@ class SubscriptionAttemptRunner:
             if failure is None:
 
                 async def invoke() -> SubscriptionInvocationResult:
+                    observed = getattr(gateway, "execute_observed", None)
+                    if usage_binding is not None and usage_sink is not None and callable(observed):
+                        result: SubscriptionInvocationResult = await observed(
+                            request, usage_binding=usage_binding, usage_sink=usage_sink
+                        )
+                        return result
                     return await gateway.execute(request)
 
                 provider = asyncio.create_task(invoke())
@@ -132,7 +149,9 @@ class SubscriptionAttemptRunner:
                         break
                     # Also renew after provider completion. A completion racing a
                     # failed renewal cannot become a successful decision.
-                    failure = await self._renew_until(admission, stopping, deadline)
+                    failure = await self._renew_until(
+                        admission, stopping, deadline, completed=provider.done()
+                    )
                     if provider.done():
                         break
             revoked = await self._revoke(revoke)
@@ -169,7 +188,12 @@ class SubscriptionAttemptRunner:
             await asyncio.gather(stopping, return_exceptions=True)
 
     async def _renew_until(
-        self, admission: SubscriptionAdmission, stopping: asyncio.Task[bool], deadline: float
+        self,
+        admission: SubscriptionAdmission,
+        stopping: asyncio.Task[bool],
+        deadline: float,
+        *,
+        completed: bool = False,
     ) -> SubscriptionFailure | None:
         if stopping.done():
             return SubscriptionFailure.INTERRUPTED
@@ -198,6 +222,8 @@ class SubscriptionAttemptRunner:
                 if asyncio.get_running_loop().time() >= deadline
                 else SubscriptionFailure.UNCERTAIN
             )
+        except UsageCheckpointLeaseRevoked:
+            return None if completed else SubscriptionFailure.INTERRUPTED
         except SchedulingLeaseRevoked:
             return SubscriptionFailure.INTERRUPTED
         except Exception:  # noqa: BLE001 - failed renewal cannot establish continued ownership

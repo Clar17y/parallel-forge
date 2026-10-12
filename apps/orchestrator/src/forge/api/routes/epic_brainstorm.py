@@ -18,6 +18,11 @@ from forge.api.schemas.epic_brainstorm import (
     ProposalAdopt,
     TurnAppend,
 )
+from forge.api.schemas.task_usage import (
+    TaskUsageCheckpointResponse,
+    TaskUsageOwnerCommandRequest,
+    TaskUsageOwnerCommandResponse,
+)
 from forge.application.services.auth import AuthenticatedActor
 from forge.application.services.epic_brainstorm import EpicBrainstormService
 from forge.domain.epic_brainstorm import (
@@ -28,6 +33,8 @@ from forge.domain.epic_brainstorm import (
     BrainstormThread,
     BrainstormTurn,
 )
+from forge.persistence.repositories.task_usage_checkpoints import CheckpointConflict
+from forge.persistence.repositories.task_usage_policy import MonitoringPolicyConflict
 
 
 def _service(request: Request) -> EpicBrainstormService:
@@ -40,7 +47,7 @@ def _service(request: Request) -> EpicBrainstormService:
 def _error(error: Exception) -> HTTPException:
     if isinstance(error, BrainstormNotFound):
         return HTTPException(status_code=404, detail=str(error))
-    if isinstance(error, BrainstormConflict):
+    if isinstance(error, (BrainstormConflict, CheckpointConflict, MonitoringPolicyConflict)):
         return HTTPException(status_code=409, detail=str(error))
     if isinstance(error, ValueError):
         return HTTPException(status_code=422, detail=str(error))
@@ -221,6 +228,62 @@ def router_for() -> APIRouter:
             )
             return {"brief_revision_id": revision_id}
         except ValueError as error:
+            raise _error(error) from None
+
+    @router.get("/epics/{epic_id}/brainstorm-jobs/{job_id}/usage-checkpoint")
+    async def usage_checkpoint(
+        epic_id: UUID,
+        job_id: UUID,
+        request: Request,
+        project_id: UUID = Query(),
+        _actor: AuthenticatedActor = Depends(require_operator),
+    ) -> TaskUsageCheckpointResponse:
+        from forge.api.schemas.task_usage import TaskUsageCheckpointResponse
+
+        try:
+            record, report = await _service(request).usage_checkpoint_view(
+                epic_id=epic_id, project_id=project_id, job_id=job_id
+            )
+            return TaskUsageCheckpointResponse(checkpoint=record, report=report)
+        except ValueError as error:
+            raise _error(error) from None
+
+    @router.post("/epics/{epic_id}/brainstorm-jobs/{job_id}/usage-checkpoint/commands")
+    async def apply_checkpoint_command(
+        epic_id: UUID,
+        job_id: UUID,
+        body: TaskUsageOwnerCommandRequest,
+        request: Request,
+        project_id: UUID = Query(),
+        actor: AuthenticatedActor = Depends(require_operator_mutation),
+    ) -> TaskUsageOwnerCommandResponse:
+        from uuid import uuid4
+
+        from forge.api.schemas.task_usage import TaskUsageOwnerCommandResponse
+        from forge.domain.task_usage_contract import OwnerCommand
+
+        try:
+            command = OwnerCommand(
+                command_id=uuid4(),
+                checkpoint_id=body.checkpoint_id,
+                expected_version=body.expected_version,
+                idempotency_key=body.idempotency_key,
+                action=body.action,
+                actor_id=actor.actor_id,
+                continue_mode=body.continue_mode,
+                requested_policy=body.requested_policy,
+                override_note=body.override_note,
+            )
+            receipt, checkpoint = await _service(request).apply_checkpoint_command(
+                epic_id=epic_id, project_id=project_id, job_id=job_id, actor=actor, command=command
+            )
+            _, report = await _service(request).usage_checkpoint_view(
+                epic_id=epic_id, project_id=project_id, job_id=job_id
+            )
+            return TaskUsageOwnerCommandResponse(
+                receipt=receipt, checkpoint=checkpoint, report=report
+            )
+        except (ValueError, MonitoringPolicyConflict) as error:
             raise _error(error) from None
 
     return router

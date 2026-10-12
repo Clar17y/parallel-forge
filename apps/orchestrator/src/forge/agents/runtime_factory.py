@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, cast, runtime_checkable
 
 from forge.agents.adk_gateway import AdkToolProvider, GoogleAdkGateway
 from forge.agents.adk_runtime import AdkRuntimeProtocol
@@ -12,14 +12,17 @@ from forge.agents.errors import AgentGatewayError
 from forge.agents.prompt_loader import PromptLoader
 from forge.application.ports.agents import AgentGateway
 from forge.application.ports.subscription_gateway import (
+    ObservableSubscriptionGateway,
     SubscriptionFailure,
     SubscriptionGateway,
     SubscriptionInterrupted,
     SubscriptionInvocationRequest,
     SubscriptionInvocationResult,
 )
+from forge.application.ports.task_usage import TaskUsageObserver
 from forge.domain.agent import AgentRequest, AgentResult
 from forge.domain.subscription import AuthMode, BillingMode, RouteBinding, RouteSpec
+from forge.domain.task_usage_contract import WorkUnitBinding
 from forge.observability.usage import PricingCatalog
 
 if TYPE_CHECKING:
@@ -117,6 +120,8 @@ class AgentRuntimeFactory:
             raise RouteUnavailable() from None
         if not isinstance(gateway, SubscriptionGateway):
             raise RouteUnavailable()
+        if callable(getattr(gateway, "execute_observed", None)):
+            return _PinnedObservableSubscriptionGateway(request, gateway)
         return _PinnedSubscriptionGateway(request, gateway)
 
     @classmethod
@@ -167,6 +172,37 @@ class _PinnedSubscriptionGateway:
             raise RouteUnavailable()
         try:
             result = await self.gateway.execute(request)
+        except SubscriptionInterrupted as interruption:
+            if (
+                type(interruption.result) is not SubscriptionInvocationResult
+                or interruption.result.attempt != request.attempt
+            ):
+                raise SubscriptionInterrupted(
+                    SubscriptionInvocationResult(
+                        attempt=request.attempt, failure=SubscriptionFailure.PROTOCOL
+                    )
+                ) from None
+            raise
+        if type(result) is not SubscriptionInvocationResult or result.attempt != request.attempt:
+            raise RouteUnavailable()
+        return result
+
+
+@dataclass(frozen=True, slots=True)
+class _PinnedObservableSubscriptionGateway(_PinnedSubscriptionGateway):
+    async def execute_observed(
+        self,
+        request: SubscriptionInvocationRequest,
+        *,
+        usage_binding: WorkUnitBinding,
+        usage_sink: TaskUsageObserver,
+    ) -> SubscriptionInvocationResult:
+        if type(request) is not SubscriptionInvocationRequest or request != self.request:
+            raise RouteUnavailable()
+        try:
+            result = await cast(ObservableSubscriptionGateway, self.gateway).execute_observed(
+                request, usage_binding=usage_binding, usage_sink=usage_sink
+            )
         except SubscriptionInterrupted as interruption:
             if (
                 type(interruption.result) is not SubscriptionInvocationResult

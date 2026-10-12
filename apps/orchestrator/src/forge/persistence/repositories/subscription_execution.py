@@ -21,6 +21,7 @@ from forge.application.ports.subscription_gateway import (
 from forge.application.services.tools import _safe_metadata
 from forge.domain.command import CommandEnvelope
 from forge.domain.operation import canonical_digest
+from forge.domain.paths import policy_path_key
 from forge.domain.payload import validate_durable_payload
 from forge.domain.plan import PlanOutput
 from forge.domain.provider_quota import QuotaExhaustion
@@ -55,6 +56,7 @@ from forge.persistence.models.subscription import (
 )
 from forge.persistence.models.subscription_results import SubscriptionAttemptResult
 from forge.persistence.models.subscription_usage import SubscriptionAttemptConsumption
+from forge.persistence.models.task_usage import TaskUsageCheckpoint
 from forge.persistence.repositories.commands import PostgresCommandRepository
 from forge.persistence.repositories.runs import PostgresRunRepository
 from forge.persistence.repositories.scheduling import PostgresSchedulingRepository
@@ -101,6 +103,20 @@ class PostgresSubscriptionExecutionRepository:
         self._session = session
         self._quota = quota or PostgresSubscriptionQuotaRepository(session)
 
+    async def _usage_checkpoint_active(self, run_id: UUID) -> bool:
+        return (
+            await self._session.scalar(
+                select(TaskUsageCheckpoint.id)
+                .where(
+                    TaskUsageCheckpoint.subject_kind == "run",
+                    TaskUsageCheckpoint.subject_id == run_id,
+                    TaskUsageCheckpoint.state.in_(("checkpoint_requested", "pausing", "paused")),
+                )
+                .limit(1)
+            )
+            is not None
+        )
+
     async def resume_paused_attempts(
         self, resume: CommandEnvelope, pause: CommandEnvelope
     ) -> tuple[SubscriptionResumption, ...]:
@@ -128,6 +144,8 @@ class PostgresSubscriptionExecutionRepository:
             raise TypeError("typed admission required")
         lease = admission.lease
         run = await PostgresRunRepository(self._session).get_for_update(lease.run_id)
+        if await self._usage_checkpoint_active(lease.run_id):
+            raise SubscriptionConflict("run usage checkpoint fences invocation")
         if not run_allows_subscription_attempt(run.state, run.pending_gate) or (
             await PostgresCommandRepository(session=self._session).has_pending_current_control_stop(
                 run_id=run.id, expected_run_version=run.version
@@ -172,7 +190,8 @@ class PostgresSubscriptionExecutionRepository:
             or task.cancel_requested
             or scheduled is None
             or scheduled.state != "leased"
-            or tuple(scheduled.owned_paths) != admission.task.owned_paths
+            or tuple(scheduled.owned_paths)
+            != tuple(policy_path_key(path) for path in admission.task.owned_paths)
             or tuple(scheduled.dependency_task_ids) != admission.task.dependency_task_ids
             or scheduled.parent_task_id != admission.task.parent_task_id
             or scheduled.provider != admission.task.route.effective.provider
@@ -220,6 +239,8 @@ class PostgresSubscriptionExecutionRepository:
 
     async def admit(self, lease: TaskLease, attempt_id: UUID) -> SubscriptionAdmission:
         await PostgresRunRepository(self._session).get_for_update(lease.run_id)
+        if await self._usage_checkpoint_active(lease.run_id):
+            raise SubscriptionConflict("run usage checkpoint fences admission")
         subscription = PostgresSubscriptionRepository(self._session)
         envelope = await subscription.envelope_for_run(lease.run_id)
         task = await self._session.scalar(
@@ -628,6 +649,18 @@ class PostgresSubscriptionExecutionRepository:
             task.state = "queued"
             task.version += 1
             disposition = "quota_deferred"
+            accepted = True
+        elif failure is SubscriptionFailure.INTERRUPTED and await self._usage_checkpoint_active(
+            identity.run_id
+        ):
+            # The attempt and telemetry are settled, but the checkpoint revoked
+            # execution authority. A fresh provider attempt after continuation
+            # must not spend repair capacity for this control interruption.
+            await PostgresSchedulingRepository(self._session, quota=self._quota).defer_quota(lease)
+            attempt.status = "terminal"
+            task.state = "queued"
+            task.version += 1
+            disposition = "usage_checkpoint_deferred"
             accepted = True
         elif role_violation:
             stale_plan = (

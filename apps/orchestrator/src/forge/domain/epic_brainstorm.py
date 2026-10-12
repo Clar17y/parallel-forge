@@ -263,6 +263,7 @@ class AuthoringReceipt(_Closed):
     state: Literal[
         "queued",
         "running",
+        "paused",
         "quota_wait",
         "capacity_wait",
         "cancel_requested",
@@ -280,6 +281,7 @@ type BrainstormDimension = Literal[
 type BrainstormState = Literal[
     "queued",
     "running",
+    "paused",
     "quota_wait",
     "capacity_wait",
     "cancel_requested",

@@ -4,6 +4,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from forge.api.app import create_app
+from forge.api.schemas.projections import BudgetSection
 from forge.application.services.projects import _digest
 from forge.domain.policy import CommandSpec, ProjectPolicy, StepKind
 from forge.domain.run import RunSnapshot
@@ -14,6 +15,21 @@ from httpx import ASGITransport, AsyncClient
 
 pytest_plugins = ("apps.orchestrator.tests.persistence.conftest",)
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
+
+
+async def test_budget_projection_preserves_unbounded_token_limit() -> None:
+    common = {
+        "local_remediation_count": 0,
+        "local_remediation_limit": 0,
+        "local_remediation_remaining": 0,
+        "remote_remediation_count": 0,
+        "remote_remediation_limit": 0,
+        "remote_remediation_remaining": 0,
+        "cost_limit_minor": 0,
+        "duration_limit_seconds": 0,
+    }
+    assert BudgetSection.model_validate({**common, "token_limit": None}).token_limit is None
+    assert BudgetSection.model_validate({**common, "token_limit": 0}).token_limit == 0
 
 
 @pytest.mark.parametrize("recovery_hold", [False, True])
