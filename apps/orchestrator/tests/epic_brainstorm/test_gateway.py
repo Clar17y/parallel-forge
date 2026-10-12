@@ -1038,6 +1038,37 @@ class _ScriptedSession:
         self.settled = True
 
 
+def _guard_proposal_settlement(
+    session: _ScriptedSession,
+    tools: AuthoringTools,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    uncertain: bool,
+) -> list[str]:
+    events: list[str] = []
+    original_wait = session.wait_closed
+
+    async def diagnostic(kind: str, **_fields: object) -> None:
+        events.append(kind)
+
+    async def wait_closed() -> None:
+        events.append("settlement_started")
+        assert "proposal_received" in events
+        if uncertain:
+            raise ClientSettlementUncertain(ClientProcessResult(
+                receipt=ClientProcessReceipt("scripted", 1, "scripted", 0),
+                return_code=None, frames=(), stdout_byte_count=0, stderr="",
+                stderr_byte_count=0, stdout_truncated=False, stderr_truncated=False,
+                outcome="unsettled", stop_confirmed=False,
+            ))
+        await original_wait()
+        events.append("process_settled")
+
+    tools.diagnostic = diagnostic
+    monkeypatch.setattr(session, "wait_closed", wait_closed)
+    return events
+
+
 def test_authoring_usage_sparse_zero_large_and_invalid_updates_are_atomic() -> None:
     usage = AuthoringUsage()
     usage.observe(
@@ -1166,6 +1197,7 @@ async def test_observed_antigravity_authoring_actual_stream_settles_before_final
     async def close(*, completed: bool = False):
         session.closed = True
         assert completed is (case != "invalid")
+        session.settled = True
         return ClientProcessResult(
             receipt=ClientProcessReceipt("scripted", 1, "scripted", 0.0),
             return_code=0, frames=(), stdout_byte_count=0, stderr="",
@@ -1288,6 +1320,8 @@ async def test_observed_gemini_authoring_final_follows_classification_and_close(
             "cap_unsettled", "cap_rejected", "nonzero", "large_success", "sparse_zero",
             "delivery_deadline", "delivery_cancel_twice",
         })
+        if case != "cap_unsettled":
+            session.settled = True
         return ClientProcessResult(
             receipt=ClientProcessReceipt("scripted", 1, "scripted", 0.0),
             return_code=1 if case == "nonzero" else 0,
@@ -1381,7 +1415,10 @@ async def test_observed_gemini_authoring_final_follows_classification_and_close(
 
 
 @pytest.mark.asyncio
-async def test_gemini_authoring_uses_acp_and_preserves_unknown_usage(tmp_path: Path) -> None:
+@pytest.mark.parametrize("uncertain", [False, True])
+async def test_gemini_authoring_uses_acp_and_preserves_unknown_usage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, uncertain: bool
+) -> None:
     job = _make_snapshot()
     session = _ScriptedSession(
         [
@@ -1429,20 +1466,28 @@ async def test_gemini_authoring_uses_acp_and_preserves_unknown_usage(tmp_path: P
     tools = AuthoringTools(
         BrainstormReadOnlyTools(RepositoryReader(root=str(tmp_path), secret_paths=())), 10, usage
     )
+    events = _guard_proposal_settlement(session, tools, monkeypatch, uncertain=uncertain)
     await tools.start()
     try:
-        proposal = await gemini_exchange(
-            session, job, (), tools, usage, model="scripted-brainstorm", cwd=str(tmp_path)
-        )
+        if uncertain:
+            with pytest.raises(ClientSettlementUncertain):
+                await gemini_exchange(
+                    session, job, (), tools, usage, model="scripted-brainstorm", cwd=str(tmp_path)
+                )
+        else:
+            proposal = await gemini_exchange(
+                session, job, (), tools, usage, model="scripted-brainstorm", cwd=str(tmp_path)
+            )
+            assert proposal.problem == "ACP proposal"
     finally:
         await tools.close()
-    assert proposal.problem == "ACP proposal"
     assert [item["method"] for item in session.sent] == [
         "initialize",
         "session/new",
         "session/prompt",
     ]
-    assert session.stdin_closed and session.settled
+    assert session.stdin_closed and session.settled is not uncertain
+    assert events.index("proposal_received") < events.index("settlement_started")
     assert usage.telemetry(1).input_tokens is None
 
 
@@ -1701,7 +1746,10 @@ async def test_gemini_authoring_rejects_unverified_tool_transition(
 
 
 @pytest.mark.asyncio
-async def test_antigravity_authoring_uses_stream_result_and_real_usage(tmp_path: Path) -> None:
+@pytest.mark.parametrize("uncertain", [False, True])
+async def test_antigravity_authoring_uses_stream_result_and_real_usage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, uncertain: bool
+) -> None:
     job = _make_snapshot()
     session = _ScriptedSession(
         [
@@ -1726,17 +1774,24 @@ async def test_antigravity_authoring_uses_stream_result_and_real_usage(tmp_path:
     tools = AuthoringTools(
         BrainstormReadOnlyTools(RepositoryReader(root=str(tmp_path), secret_paths=())), 10, usage
     )
-    proposal = await antigravity_exchange(session, job, (), tools, usage, model="gemini-test")
-    assert proposal.problem == "Stream proposal"
+    events = _guard_proposal_settlement(session, tools, monkeypatch, uncertain=uncertain)
+    if uncertain:
+        with pytest.raises(ClientSettlementUncertain):
+            await antigravity_exchange(session, job, (), tools, usage, model="gemini-test")
+    else:
+        proposal = await antigravity_exchange(session, job, (), tools, usage, model="gemini-test")
+        assert proposal.problem == "Stream proposal"
     assert session.sent[0]["event"] == "user"
-    assert session.stdin_closed and session.settled
+    assert session.stdin_closed and session.settled is not uncertain
+    assert events.index("proposal_received") < events.index("settlement_started")
     assert usage.telemetry(1).input_tokens == 3
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("init_before_settings", [True, False])
+@pytest.mark.parametrize("uncertain", [False, True])
 async def test_claude_authoring_uses_stream_json_mcp_handshake(
-    tmp_path: Path, init_before_settings: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, init_before_settings: bool, uncertain: bool
 ) -> None:
     import hashlib
 
@@ -1823,11 +1878,17 @@ async def test_claude_authoring_uses_stream_json_mcp_handshake(
     tools = AuthoringTools(
         BrainstormReadOnlyTools(RepositoryReader(root=str(tmp_path), secret_paths=())), 10, usage
     )
-    proposal = await claude_exchange(session, gateway, job, (), tools, usage)
-    assert proposal.problem == "Claude proposal"
+    events = _guard_proposal_settlement(session, tools, monkeypatch, uncertain=uncertain)
+    if uncertain:
+        with pytest.raises(ClientSettlementUncertain):
+            await claude_exchange(session, gateway, job, (), tools, usage)
+    else:
+        proposal = await claude_exchange(session, gateway, job, (), tools, usage)
+        assert proposal.problem == "Claude proposal"
     assert session.sent[0]["request_id"] == "forge_initialize"
     assert session.sent[-1]["type"] == "user"
-    assert session.stdin_closed and session.settled
+    assert session.stdin_closed and session.settled is not uncertain
+    assert events.index("proposal_received") < events.index("settlement_started")
     assert usage.telemetry(1).output_tokens == 6
 
 

@@ -833,10 +833,10 @@ async def claude_exchange(
             value = terminal.get("usage")
             if isinstance(value, Mapping):
                 usage.observe_claude(value)
-            await session.close_stdin()
-            await session.wait_closed()
             proposal = proposal_from_output(terminal.get("structured_output"), job)
             await tools.record("proposal_received")
+            await session.close_stdin()
+            await session.wait_closed()
             return proposal
     raise ProtocolError("Claude authoring ended before terminal result")
 
@@ -1029,10 +1029,10 @@ async def gemini_exchange(
                 cached_input_tokens=usage.cached_input_tokens,
             )
             publisher.capture_terminal(tokens=tokens)
-        await session.close_stdin()
-        await session.wait_closed()
         proposal = proposal_from_output(parse_json("".join(parts)), job)
         await tools.record("proposal_received")
+        await session.close_stdin()
+        await session.wait_closed()
         return proposal
     raise ProtocolError("Gemini authoring ended before terminal result")
 
@@ -1114,9 +1114,9 @@ async def antigravity_exchange(
                 output_key="output_tokens",
                 cache_key="cache_read_tokens",
             )
-        await session.close_stdin()
-        await session.wait_closed()
         proposal = proposal_from_output(payload.get("structured_output"), job)
         await tools.record("proposal_received")
+        await session.close_stdin()
+        await session.wait_closed()
         return proposal
     raise ProtocolError("Antigravity authoring ended before result")
