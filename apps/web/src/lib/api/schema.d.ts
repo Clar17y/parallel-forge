@@ -4584,7 +4584,7 @@ export interface components {
              * Revision
              * @default 1
              */
-            revision: number;
+            revision: number | string;
             /**
              * Warning Multiplier
              * @default 1.5
@@ -4618,7 +4618,7 @@ export interface components {
              */
             project_id: string;
             /** Revision */
-            revision: number;
+            revision: number | string;
             /** Warning Multiplier */
             warning_multiplier: number;
             /** Window Days */
@@ -4634,7 +4634,7 @@ export interface components {
             /** Checkpoint Multiplier */
             checkpoint_multiplier?: number | null;
             /** Expected Revision */
-            expected_revision: number;
+            expected_revision: number | string;
             /** Hard Context Cap */
             hard_context_cap?: (number | string) | null;
             /** Hard Token Cap */
@@ -4680,7 +4680,7 @@ export interface components {
              */
             replayed: boolean;
             /** Result Version */
-            result_version: number;
+            result_version: number | string;
             /** State */
             state: string;
             /**
@@ -6610,7 +6610,7 @@ export interface components {
             /** Continue Mode */
             continue_mode?: ("next_checkpoint" | "without_usage_pauses") | null;
             /** Expected Version */
-            expected_version: number;
+            expected_version: number | string;
             /** Idempotency Key */
             idempotency_key: string;
             /** Override Note */

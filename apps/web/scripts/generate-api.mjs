@@ -8,9 +8,9 @@ const policyExactFields = ['hard_token_cap', 'hard_context_cap', 'manual_estimat
 const tokenCapFields = ['max_input_tokens', 'max_output_tokens'];
 const exactFields = {
   AgentModelPolicy: tokenCapFields,
-  MonitoringPolicy: policyExactFields,
-  MonitoringPolicyResponse: policyExactFields,
-  MonitoringPolicyRevisionRequest: policyExactFields,
+  MonitoringPolicy: [...policyExactFields, 'revision'],
+  MonitoringPolicyResponse: [...policyExactFields, 'revision'],
+  MonitoringPolicyRevisionRequest: [...policyExactFields, 'expected_revision'],
   TaskBudget: tokenCapFields,
   TokenBudgetDefaultsInput: tokenCapFields,
   BaselineReference: ['checkpoint_threshold_tokens', 'warning_threshold_tokens',
@@ -18,6 +18,8 @@ const exactFields = {
     'policy_revision', 'sample_count', 'source_count', 'window_limit'],
   CheckpointRecord: ['generation', 'monitoring_policy_revision',
     'next_checkpoint_threshold_tokens', 'policy_revision', 'version'],
+  OwnerCommandReceipt: ['result_version'],
+  TaskUsageOwnerCommandRequest: ['expected_version'],
   TaskUsageHistoryResponse: ['failed_attempt_count', 'excluded_outcomes'],
   UsageHistoryFiltersResponse: ['history_limit', 'minimum_comparables', 'window_days'],
   UsageHistorySummaryResponse: ['coverage_count', 'eligible_count', 'excluded_count',

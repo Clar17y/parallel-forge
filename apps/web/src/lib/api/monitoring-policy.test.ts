@@ -176,8 +176,9 @@ describe('monitoring-policy API and integer validation', () => {
     });
 
     test('rejects unsafe or non-positive revision numbers', async () => {
-      await expect(getMonitoringPolicyRevision(projectId, 0)).rejects.toThrow('Revision must be a valid positive safe integer');
-      await expect(getMonitoringPolicyRevision(projectId, Number.MAX_SAFE_INTEGER + 1)).rejects.toThrow('Revision must be a valid positive safe integer');
+      await expect(getMonitoringPolicyRevision(projectId, 0)).rejects.toThrow('Revision must be a valid positive signed 64-bit integer');
+      await expect(getMonitoringPolicyRevision(projectId, Number.MAX_SAFE_INTEGER + 1)).rejects.toThrow('Revision must be a valid positive signed 64-bit integer');
+      await expect(getMonitoringPolicyRevision(projectId, '9223372036854775808')).rejects.toThrow('Revision must be a valid positive signed 64-bit integer');
     });
   });
 
@@ -253,7 +254,16 @@ describe('monitoring-policy API and integer validation', () => {
     test('rejects unsafe expected_revision', async () => {
       await expect(
         reviseMonitoringPolicy(projectId, { expected_revision: -1 })
-      ).rejects.toThrow('Expected revision must be a valid nonnegative safe integer');
+      ).rejects.toThrow('Expected revision must be a valid nonnegative signed 64-bit integer');
+      await expect(reviseMonitoringPolicy(projectId, { expected_revision: '9223372036854775807' }))
+        .rejects.toThrow('Expected revision must be a valid nonnegative signed 64-bit integer');
+    });
+    test('retains exact high expected and result revisions', async () => {
+      vi.mocked(mutate).mockResolvedValue({ revision: '9007199254740994' } as MonitoringPolicyResponse);
+      const result = await reviseMonitoringPolicy(projectId, { expected_revision: '9007199254740993' });
+      expect(mutate).toHaveBeenCalledWith(`/projects/${projectId}/monitoring-policy`,
+        { expected_revision: '9007199254740993' }, expect.any(Object));
+      expect(result.revision).toBe('9007199254740994');
     });
     test('rejects negative, zero, fractional and unsafe cap values before transport', async () => {
       for (const cap of [-1, 0, 1.5, Number.MAX_SAFE_INTEGER + 1]) {

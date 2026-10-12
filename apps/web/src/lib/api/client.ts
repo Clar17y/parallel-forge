@@ -122,9 +122,13 @@ export function mutate<T>(path: string, body: Record<string, unknown>, options: 
   signal?: AbortSignal;
 }): Promise<T | undefined> {
   const payload = options.expectedVersion === undefined ? body : { ...body, expected_run_version: options.expectedVersion };
+  const ownerVersionFields = /\/usage-checkpoint\/commands(?:\?|$)/.test(path)
+    ? new Set(['expected_version', 'revision'])
+    : /^\/projects\/[^/]+\/monitoring-policy(?:\?|$)/.test(path)
+      ? new Set(['expected_revision']) : undefined;
   return api<T>(path, {
     method: options.method ?? 'POST', signal: options.signal,
     headers: { 'Content-Type': 'application/json', 'Idempotency-Key': options.idempotencyKey },
-    body: stringifyExactJson(payload),
+    body: stringifyExactJson(payload, ownerVersionFields),
   });
 }

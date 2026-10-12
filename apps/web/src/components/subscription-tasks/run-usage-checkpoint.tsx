@@ -7,6 +7,8 @@ import { useApi } from '@/hooks/use-api';
 import type { components } from '@/lib/api/schema';
 import type { MonitoringPolicyResponse } from '@/lib/api/monitoring-policy';
 import { retainedPolicyIntegersAreSafe, knownReportTotal } from '@/components/task-usage/retained-policy-integers';
+import { matchesOwnerReceipt, nextVersion, versionValue } from '@/components/task-usage/owner-version';
+import { MAX_SIGNED_64 } from '@/lib/api/exact-integer';
 
 type CheckpointResponse = components['schemas']['TaskUsageCheckpointResponse'];
 type CommandRequest = components['schemas']['TaskUsageOwnerCommandRequest'];
@@ -61,22 +63,24 @@ export function RunUsageCheckpoint({ runId, runAllowsExecution, runIsTerminal, q
   useEffect(() => { const controller = new AbortController(); lifecycle.current = controller; return () => controller.abort(); }, []);
 
   const settled = checkpoint?.state === 'paused' && checkpoint.process_settled;
+  const versionCanAdvance = checkpoint != null && versionValue(checkpoint.version, MAX_SIGNED_64 - 1n) !== null;
   const total = knownTotal(report);
   // The owner is recording a monitoring choice. Provider quota is checked again
   // by scheduler admission and must not prevent recording that choice.
-  const canContinue = settled && runAllowsExecution && !runIsTerminal && !manualPause;
+  const canContinue = settled && versionCanAdvance && runAllowsExecution && !runIsTerminal && !manualPause;
   const canNext = canContinue && total !== null && report?.baseline != null;
   const canBypass = canContinue;
   const currentPolicy = policy.value ?? null;
+  const policyRevisionCanAdvance = currentPolicy !== null && nextVersion(currentPolicy.revision) !== null;
   const modeIsValid = currentPolicy !== null && isMode(currentPolicy.mode);
   const warnValue = Number(warning);
   const thresholdValue = Number(threshold);
   const policyValid = modeIsValid && Number.isFinite(warnValue) && warnValue >= 1
     && Number.isFinite(thresholdValue) && thresholdValue >= warnValue
     && !!currentPolicy && retainedPolicyIntegersAreSafe(currentPolicy)
-    && Number.isSafeInteger(currentPolicy?.revision + 1);
-  const canChangePolicy = settled && !runIsTerminal && !!currentPolicy;
-  const canStop = settled && !runIsTerminal;
+    && policyRevisionCanAdvance;
+  const canChangePolicy = settled && versionCanAdvance && !runIsTerminal && !!currentPolicy;
+  const canStop = settled && versionCanAdvance && !runIsTerminal;
 
   async function submit(body: CommandRequest) {
     if (busy.current || !checkpoint || !lifecycle.current) return;
@@ -86,10 +90,7 @@ export function RunUsageCheckpoint({ runId, runAllowsExecution, runIsTerminal, q
     try {
       const result = await mutate<CommandResponse>(`/runs/${runId}/usage-checkpoint/commands`, selected.body as unknown as Record<string, unknown>,
         { idempotencyKey: selected.key, signal });
-      if (!result || result.receipt.checkpoint_id !== selected.body.checkpoint_id
-        || result.receipt.action !== selected.body.action || result.checkpoint.checkpoint_id !== selected.body.checkpoint_id
-        || !Number.isSafeInteger(result.receipt.result_version) || result.receipt.result_version < selected.body.expected_version + 1
-        || result.receipt.result_version > Number(result.checkpoint.version)) {
+      if (!result || !matchesOwnerReceipt(selected.body, result)) {
         throw new Error('Owner command receipt unavailable');
       }
       if (!signal.aborted) {
@@ -120,16 +121,19 @@ export function RunUsageCheckpoint({ runId, runAllowsExecution, runIsTerminal, q
 
   function command(action: CommandRequest['action'], continueMode?: CommandRequest['continue_mode'], requestedPolicy?: Policy) {
     if (!checkpoint) return;
+    if (versionValue(checkpoint.version, MAX_SIGNED_64 - 1n) === null) return;
     const key = crypto.randomUUID();
-    void submit({ checkpoint_id: checkpoint.checkpoint_id, expected_version: Number(checkpoint.version),
+    void submit({ checkpoint_id: checkpoint.checkpoint_id, expected_version: checkpoint.version,
       idempotency_key: key, action, continue_mode: continueMode ?? null, requested_policy: requestedPolicy ?? null,
       override_note: note.trim() || null });
   }
 
   function changePolicy() {
     if (!currentPolicy || !isMode(currentPolicy.mode) || !policyValid || !projectId) return;
+    const revision = nextVersion(currentPolicy.revision);
+    if (revision === null) return;
     const requested: Policy = {
-      project_id: projectId, revision: currentPolicy.revision + 1, mode,
+      project_id: projectId, revision, mode,
       warning_multiplier: warnValue, checkpoint_multiplier: thresholdValue,
       history_limit: currentPolicy.history_limit, minimum_comparables: currentPolicy.minimum_comparables,
       window_days: currentPolicy.window_days, allow_cross_project_fallback: currentPolicy.allow_cross_project_fallback,
@@ -160,6 +164,7 @@ export function RunUsageCheckpoint({ runId, runAllowsExecution, runIsTerminal, q
       {report ? <UsageDetails report={report} /> : <p>Usage totals and frozen reference are unknown; no report is available.</p>}
       {report?.warning ? <p role="status">Monitoring warning: {report.warning}</p> : null}
       {checkpoint && checkpoint.state === 'paused' && !checkpoint.process_settled ? <p role="alert">Owner continuation is unavailable until process and effects have settled.</p> : null}
+      {checkpoint && settled && !versionCanAdvance ? <p role="alert">Checkpoint version cannot be incremented within signed 64-bit storage. Owner actions are unavailable.</p> : null}
       {manualPause ? <p role="status">An independent manual task pause remains active. Monitoring continuation cannot clear it.</p> : null}
       {!runAllowsExecution && !runIsTerminal ? <p role="status">Run controls currently block execution. Resolve the manual pause or cancellation through the existing run controls first.</p> : null}
       {quotaBlocked ? <p role="status">A subscription task on this page is waiting for provider quota eligibility. Recording a monitoring choice does not clear the quota wait.</p> : null}
@@ -187,7 +192,7 @@ export function RunUsageCheckpoint({ runId, runAllowsExecution, runIsTerminal, q
           </select></label>
           <label className="grid gap-1">Warning multiplier<input type="number" min="1" step="0.1" value={warning} onChange={event => setWarning(event.target.value)} className="rounded border border-slate-400 p-2" /></label>
           <label className="grid gap-1">Checkpoint multiplier<input type="number" min="1" step="0.1" value={threshold} aria-invalid={!policyValid} onChange={event => setThreshold(event.target.value)} className="rounded border border-slate-400 p-2" /></label>
-          {currentPolicy && !retainedPolicyIntegersAreSafe(currentPolicy) ? <p role="alert">Cannot save this monitoring revision because an existing manual estimate or hard cap exceeds safe browser integer precision; it has not been changed. Use POST /api/projects/{projectId}/monitoring-policy with a client that preserves signed 64-bit integers.</p> : !policyValid ? <p role="alert">Multipliers must be finite, at least 1, and the checkpoint must be at or above the warning level.</p> : null}
+          {!policyRevisionCanAdvance ? <p role="alert">Monitoring revision cannot be incremented within signed 64-bit storage.</p> : currentPolicy && !retainedPolicyIntegersAreSafe(currentPolicy) ? <p role="alert">Cannot save this monitoring revision because an existing manual estimate or hard cap exceeds safe browser integer precision; it has not been changed. Use POST /api/projects/{projectId}/monitoring-policy with a client that preserves signed 64-bit integers.</p> : !policyValid ? <p role="alert">Multipliers must be finite, at least 1, and the checkpoint must be at or above the warning level.</p> : null}
           <button type="button" disabled={pending || !!binding || !policyValid} onClick={changePolicy} className="rounded border border-slate-400 px-3 py-2">Save monitoring revision</button>
           <Link href={`/projects/${projectId}`}>Open project policy and hard-cap settings</Link>
         </fieldset> : null}

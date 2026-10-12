@@ -3,6 +3,7 @@
 import { useRef, useState, type FormEvent } from 'react';
 import { Button } from '@/components/ui/button';
 import { ApiError } from '@/lib/api/client';
+import { MAX_SIGNED_64 } from '@/lib/api/exact-integer';
 import {
   validateSafeInteger,
   type MonitoringMode,
@@ -54,7 +55,7 @@ export function MonitoringPolicyEditor({
   onRefresh,
   onCancel,
 }: MonitoringPolicyEditorProps) {
-  const [expectedRevision, setExpectedRevision] = useState<number>(initial?.revision ?? 0);
+  const [expectedRevision, setExpectedRevision] = useState<number | string>(initial?.revision ?? 0);
   const [mode, setMode] = useState<MonitoringMode>(
     (initial?.mode as MonitoringMode) ?? 'checkpoint'
   );
@@ -136,6 +137,11 @@ export function MonitoringPolicyEditor({
 
     setError(null);
     setFieldErrors({});
+    if (!validateSafeInteger(expectedRevision, { allowSigned64: true, allowZero: true,
+      allowNull: false, min: 0, max: MAX_SIGNED_64 - 1n }).valid) {
+      setError('The monitoring revision cannot be incremented within signed 64-bit storage.');
+      return;
+    }
     const errors: Record<string, string> = {};
 
     // Validate multipliers

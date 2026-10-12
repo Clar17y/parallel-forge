@@ -6,6 +6,8 @@ import { useApi } from '@/hooks/use-api';
 import type { components } from '@/lib/api/schema';
 import type { MonitoringPolicyResponse } from '@/lib/api/monitoring-policy';
 import { retainedPolicyIntegersAreSafe, knownReportTotal } from '@/components/task-usage/retained-policy-integers';
+import { matchesOwnerReceipt, nextVersion, versionValue } from '@/components/task-usage/owner-version';
+import { MAX_SIGNED_64 } from '@/lib/api/exact-integer';
 
 type CheckpointResponse = components['schemas']['TaskUsageCheckpointResponse'];
 type CommandRequest = components['schemas']['TaskUsageOwnerCommandRequest'];
@@ -52,12 +54,14 @@ export function AuthoringUsageCheckpoint({ epicId, projectId, jobId, kind, locke
   const reportProjectId = report?.binding.subject.project_id ?? checkpoint?.binding.subject.project_id ?? projectId;
   const currentPolicy = useApi<MonitoringPolicyResponse | null>(reportProjectId ? `/projects/${reportProjectId}/monitoring-policy` : null, { keepPreviousOnRefresh: true, keepPreviousOnError: true });
   const policy = currentPolicy.value ?? null;
+  const policyRevisionCanAdvance = policy !== null && nextVersion(policy.revision) !== null;
   const warningValue = Number(warning);
   const thresholdValue = Number(threshold);
   const policyValid = !!policy && Number.isFinite(warningValue) && warningValue >= 1
-    && Number.isFinite(thresholdValue) && thresholdValue >= warningValue && Number.isSafeInteger(policy.revision + 1)
+    && Number.isFinite(thresholdValue) && thresholdValue >= warningValue && policyRevisionCanAdvance
     && retainedPolicyIntegersAreSafe(policy);
   const settled = checkpoint?.state === 'paused' && checkpoint.process_settled;
+  const versionCanAdvance = checkpoint != null && versionValue(checkpoint.version, MAX_SIGNED_64 - 1n) !== null;
   const total = knownReportTotal(report);
   const totalIsSafe = total !== null;
 
@@ -68,9 +72,7 @@ export function AuthoringUsageCheckpoint({ epicId, projectId, jobId, kind, locke
     running.current = true; setPending(true); setRetry(selected); setMessage(''); setReceipt(null);
     try {
       const result = await mutate<CommandResponse>(`${base}/commands${projectQuery}`, selected.body as unknown as Record<string, unknown>, { idempotencyKey: selected.key, signal });
-      if (!result || result.receipt.checkpoint_id !== selected.body.checkpoint_id || result.receipt.action !== selected.body.action
-        || result.checkpoint.checkpoint_id !== selected.body.checkpoint_id || !Number.isSafeInteger(result.receipt.result_version)
-        || result.receipt.result_version < selected.body.expected_version + 1 || result.receipt.result_version > Number(result.checkpoint.version)) throw new Error('No matching durable receipt');
+      if (!result || !matchesOwnerReceipt(selected.body, result)) throw new Error('No matching durable receipt');
       if (signal.aborted) return;
       setRetry(null); setReceipt(result.receipt); setMessage('Owner command recorded. The authoring scheduler will recheck independent controls before continuing.');
       data.refresh();
@@ -91,20 +93,23 @@ export function AuthoringUsageCheckpoint({ epicId, projectId, jobId, kind, locke
 
   function command(action: CommandRequest['action'], continueMode?: CommandRequest['continue_mode']) {
     if (!checkpoint) return;
+    if (versionValue(checkpoint.version, MAX_SIGNED_64 - 1n) === null) return;
     const key = crypto.randomUUID();
-    void submit({ checkpoint_id: checkpoint.checkpoint_id, expected_version: Number(checkpoint.version), idempotency_key: key,
+    void submit({ checkpoint_id: checkpoint.checkpoint_id, expected_version: checkpoint.version, idempotency_key: key,
       action, continue_mode: continueMode ?? null, requested_policy: null, override_note: null });
   }
 
   function changePolicy() {
     if (!checkpoint || !policy || !policyValid || !reportProjectId) return;
-    const requested: Policy = { project_id: reportProjectId, revision: policy.revision + 1, mode,
+    const revision = nextVersion(policy.revision);
+    if (revision === null || versionValue(checkpoint.version, MAX_SIGNED_64 - 1n) === null) return;
+    const requested: Policy = { project_id: reportProjectId, revision, mode,
       warning_multiplier: warningValue, checkpoint_multiplier: thresholdValue, history_limit: policy.history_limit,
       minimum_comparables: policy.minimum_comparables, window_days: policy.window_days,
       allow_cross_project_fallback: policy.allow_cross_project_fallback, manual_estimate_tokens: policy.manual_estimate_tokens,
       hard_token_cap: policy.hard_token_cap, hard_context_cap: policy.hard_context_cap };
     const key = crypto.randomUUID();
-    void submit({ checkpoint_id: checkpoint.checkpoint_id, expected_version: Number(checkpoint.version), idempotency_key: key,
+    void submit({ checkpoint_id: checkpoint.checkpoint_id, expected_version: checkpoint.version, idempotency_key: key,
       action: 'set_policy', continue_mode: null, requested_policy: requested, override_note: null });
     setShowPolicy(false);
   }
@@ -118,14 +123,15 @@ export function AuthoringUsageCheckpoint({ epicId, projectId, jobId, kind, locke
       <p>{checkpoint ? `Checkpoint ${checkpoint.state} · generation ${value(checkpoint.generation)} · version ${value(checkpoint.version)} · ${checkpoint.process_settled ? 'process settled' : 'process settlement pending'}` : 'No usage checkpoint is recorded for this authoring job.'}</p>
       {report ? <AuthoringReport report={report} /> : <p>Measured usage and frozen reference: Unknown.</p>}
       {report?.completeness === 'lower_bound' ? <p>Next checkpoint uses the known measured lower bound; unknown token dimensions remain Unknown.</p> : null}
+      {settled && !versionCanAdvance ? <p role="alert">Checkpoint version cannot be incremented within signed 64-bit storage. Owner actions are unavailable.</p> : null}
       {settled ? <div className="flex flex-wrap gap-2">
-        <button type="button" disabled={pending || !!retry || locked || !totalIsSafe || report?.baseline == null}
+        <button type="button" disabled={pending || !!retry || locked || !versionCanAdvance || !totalIsSafe || report?.baseline == null}
           onClick={() => command('continue', 'next_checkpoint')}>Continue to next checkpoint</button>
-        <button type="button" disabled={pending || !!retry || locked} onClick={() => command('continue', 'without_usage_pauses')}>Continue without usage pauses</button>
-        <button type="button" disabled={pending || !!retry || locked} onClick={() => {
+        <button type="button" disabled={pending || !!retry || locked || !versionCanAdvance} onClick={() => command('continue', 'without_usage_pauses')}>Continue without usage pauses</button>
+        <button type="button" disabled={pending || !!retry || locked || !versionCanAdvance} onClick={() => {
           if (policy) { setMode(['checkpoint', 'warn', 'report_only'].includes(policy.mode) ? policy.mode as typeof mode : 'checkpoint'); setWarning(String(policy.warning_multiplier)); setThreshold(String(policy.checkpoint_multiplier)); setShowPolicy(open => !open); }
         }}>Change monitoring settings</button>
-        <button type="button" disabled={pending || !!retry || locked} onClick={() => command('stop')}>Stop authoring job</button>
+        <button type="button" disabled={pending || !!retry || locked || !versionCanAdvance} onClick={() => command('stop')}>Stop authoring job</button>
       </div> : null}
       {settled && showPolicy && policy ? <fieldset className="space-y-2 rounded border border-[var(--border)] p-3" disabled={pending || !!retry || locked}>
         <legend className="font-semibold">New monitoring revision</legend>
@@ -133,8 +139,8 @@ export function AuthoringUsageCheckpoint({ epicId, projectId, jobId, kind, locke
         <label className="grid gap-1">Monitoring mode<select value={mode} onChange={event => setMode(event.target.value as typeof mode)}><option value="report_only">Report only</option><option value="warn">Warn</option><option value="checkpoint">Checkpoint</option></select></label>
         <label className="grid gap-1">Warning multiplier<input type="number" min="1" step="0.1" value={warning} onChange={event => setWarning(event.target.value)} /></label>
         <label className="grid gap-1">Checkpoint multiplier<input type="number" min="1" step="0.1" value={threshold} onChange={event => setThreshold(event.target.value)} /></label>
-        {policy && !retainedPolicyIntegersAreSafe(policy) ? <p role="alert">Cannot save this monitoring revision because an existing manual estimate or hard cap exceeds safe browser integer precision; it has not been changed. Use POST /api/projects/{reportProjectId}/monitoring-policy with a client that preserves signed 64-bit integers.</p> : !policyValid ? <p role="alert">Multipliers must be finite and at least 1; checkpoint cannot be below warning.</p> : null}
-        <button type="button" disabled={pending || !!retry || locked || !policyValid} onClick={changePolicy}>Save monitoring revision</button>
+        {!policyRevisionCanAdvance ? <p role="alert">Monitoring revision cannot be incremented within signed 64-bit storage.</p> : policy && !retainedPolicyIntegersAreSafe(policy) ? <p role="alert">Cannot save this monitoring revision because an existing manual estimate or hard cap exceeds safe browser integer precision; it has not been changed. Use POST /api/projects/{reportProjectId}/monitoring-policy with a client that preserves signed 64-bit integers.</p> : !policyValid ? <p role="alert">Multipliers must be finite and at least 1; checkpoint cannot be below warning.</p> : null}
+        <button type="button" disabled={pending || !!retry || locked || !versionCanAdvance || !policyValid} onClick={changePolicy}>Save monitoring revision</button>
       </fieldset> : null}
     </> : null}
     {retry ? <button type="button" disabled={pending} onClick={() => void submit(retry.body)}>Retry same request</button> : null}

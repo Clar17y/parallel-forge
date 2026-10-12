@@ -288,6 +288,12 @@ async def _storage_snapshot(database_url: str, scenario: dict[str, str]) -> dict
                 "SELECT profile_id, version, payload "
                 "FROM subscription_profile_versions ORDER BY profile_id, version"
             ))).all()
+            owner_commands = (await db.execute(text(
+                "SELECT c.checkpoint_id, c.action, c.expected_version, c.result_version "
+                "FROM task_usage_owner_commands c JOIN task_usage_checkpoints p "
+                "ON p.id = c.checkpoint_id WHERE p.subject_id IN (:job, :run) "
+                "ORDER BY c.created_at, c.id"
+            ), {"job": scenario["job_id"], "run": scenario["run_id"]})).all()
             budget = decode_subscription_record(budget_row[1]) if budget_row else None
             if budget_row is not None and not isinstance(budget, TaskBudget):
                 raise TypeError("stored epic ceiling was not a task budget")
@@ -314,6 +320,7 @@ async def _storage_snapshot(database_url: str, scenario: dict[str, str]) -> dict
                     "window_days": None if policy[6] is None else str(policy[6]),
                     "hard_context_cap": None if policy[7] is None else str(policy[7]),
                 },
+                "policy_revision_exact": str(policy[0]),
                 "epic": [epic[0], str(epic[1]) if epic[1] else None],
                 "job": [job[0], job[1], job[2], str(job[3]) if job[3] else None],
                 "run": list(run), "checkpoints": [list(row) for row in checkpoint],
@@ -337,7 +344,52 @@ async def _storage_snapshot(database_url: str, scenario: dict[str, str]) -> dict
                     "max_output_tokens": project_policy[2],
                 },
                 "profile_versions": stored_profile_versions,
+                "owner_commands": [[str(row[0]), row[1], str(row[2]), str(row[3])]
+                                   for row in owner_commands],
             }
+    finally:
+        await engine.dispose()
+
+
+async def _seed_high_owner_versions(database_url: str, scenario: dict[str, str]) -> dict[str, object]:
+    """Test-only counter seeding; subsequent actions still cross the real API and worker."""
+    engine = create_engine(database_url)
+    try:
+        async with engine.begin() as db:
+            seeded = {}
+            for kind, subject, version in (
+                ("run", scenario["run_id"], 9007199254740993),
+                ("authoring_job", scenario["job_id"], 9223372036854775805),
+            ):
+                row = (await db.execute(text(
+                    "UPDATE task_usage_checkpoints SET version = :version "
+                    "WHERE subject_kind = :kind AND subject_id = :subject "
+                    "AND state = 'paused' AND process_settled RETURNING id, version"
+                ), {"version": version, "kind": kind, "subject": subject})).one()
+                seeded[kind] = {"checkpoint_id": str(row[0]), "version": str(row[1])}
+            return seeded
+    finally:
+        await engine.dispose()
+
+
+async def _seed_high_monitoring_revision(database_url: str, scenario: dict[str, str]) -> str:
+    """Seed only the disposable fixture's next owner revision boundary."""
+    engine = create_engine(database_url)
+    try:
+        async with engine.begin() as db:
+            row = (await db.execute(text(
+                "INSERT INTO task_usage_policy_revisions "
+                "(project_id, revision, mode, warning_multiplier, checkpoint_multiplier, "
+                "history_limit, minimum_comparables, window_days, hard_token_cap, "
+                "hard_context_cap, manual_estimate_tokens, allow_cross_project_fallback, actor_id) "
+                "SELECT project_id, 9223372036854775806, mode, warning_multiplier, "
+                "checkpoint_multiplier, history_limit, minimum_comparables, window_days, "
+                "hard_token_cap, hard_context_cap, manual_estimate_tokens, "
+                "allow_cross_project_fallback, actor_id FROM task_usage_policy_revisions "
+                "WHERE project_id = :project ORDER BY revision DESC LIMIT 1 "
+                "RETURNING revision"
+            ), {"project": scenario["project_id"]})).one()
+            return str(row[0])
     finally:
         await engine.dispose()
 
@@ -410,6 +462,22 @@ def main() -> None:
                         scenario["unknown_project_id"] = str(unknown_project)
 
                     class Redirect(BaseHTTPRequestHandler):
+                        def do_POST(self) -> None:
+                            if self.path not in ("/seed-high-owner-versions", "/seed-high-monitoring-revision"):
+                                self.send_error(404)
+                                return
+                            value = json.dumps(asyncio.run(
+                                _seed_high_owner_versions(database_url, scenario)
+                                if self.path == "/seed-high-owner-versions" else
+                                _seed_high_monitoring_revision(database_url, scenario)
+                            ))
+                            body = value.encode("utf-8")
+                            self.send_response(200)
+                            self.send_header("Content-Type", "application/json")
+                            self.send_header("Content-Length", str(len(body)))
+                            self.end_headers()
+                            self.wfile.write(body)
+
                         def do_GET(self) -> None:
                             if self.path == "/snapshot":
                                 value = json.dumps(asyncio.run(_storage_snapshot(database_url, scenario)))

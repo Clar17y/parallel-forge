@@ -60,11 +60,11 @@ export function parseExactJson(source: string): unknown {
 }
 
 /** Serialize supported exact decimal strings as JSON integers for the numeric API. */
-export function stringifyExactJson(value: unknown): string {
+export function stringifyExactJson(value: unknown, additionalExactFields?: ReadonlySet<string>): string {
   const replacements: string[] = [];
   const nonce = crypto.randomUUID();
   const encoded = JSON.stringify(value, (key, item: unknown) => {
-    if (!exactFields.has(key) || item == null) return item;
+    if (!(exactFields.has(key) || additionalExactFields?.has(key)) || item == null) return item;
     if (typeof item === 'number') {
       if (!Number.isSafeInteger(item)) throw new TypeError(`${key} is an unsafe JavaScript integer`);
       return item;

@@ -8,14 +8,14 @@
     103,
     106
   ],
-  "status": "Required local acceptance and the existing integrated review are complete; final test-only precision correction passed 18 cases and self-review. Latest-head automatic PR/Codex acceptance follows this pre-push snapshot and is retained on PR112 and locally.",
-  "feature_complete": "Required local acceptance established; publication acceptance is separate and merging remains unauthorized.",
+  "status": "Required local acceptance is complete after C3 and its combined-transition validation repair. The existing independent production review is retained; the primary verified the test-only V1 delta. Latest-head automatic PR/Codex acceptance follows this stable pre-push snapshot.",
+  "feature_complete": "Required local acceptance established with candidate-bound results and explicit limitations; current-head publication acceptance follows separately and merging remains unauthorized.",
   "source": {
     "base": "17552fb2a8529c460d9dca249ff0d931aa1b504a",
-    "parent_head": "626e760c487f9cc44d20c7679112197a2111a207",
+    "parent_head": "3190f6bc09cafdb27850038c83e1e562f062dcdb",
     "branch": "codex/usage-monitoring-final",
-    "recorded_at_utc": "2026-10-12T19:33:02.012842+00:00",
-    "code_input_sha256": "09b85f291455a69c61e99dc23fe139d3a29f4691378c9eee72f36175124ef3e0",
+    "recorded_at_utc": "2026-10-12T20:16:33.197959+00:00",
+    "code_input_sha256": "dfdfb044b0ac429ec62ccb6c58186860eb877444824a891a467a61e7dc978faa",
     "inputs": [
       {
         "path": "apps/orchestrator/tests/task_usage_contract/test_migration.py",
@@ -31,15 +31,15 @@
       },
       {
         "path": "apps/web/scripts/generate-api.mjs",
-        "sha256": "60a74625facefe252433fcecc0314d6be33c39fd356cba7f824a4a0675cd7115"
+        "sha256": "0acbacf0d21f93d776dc42b101529d3807c43ee6670d97269e5bae400e1b00a8"
       },
       {
         "path": "apps/web/src/components/epics/authoring-usage-checkpoint.test.tsx",
-        "sha256": "dedd8c7424d2ff09e3c5ef689276b242470b07bd14d8207c79c46432fa6bcaa1"
+        "sha256": "d1920e1d249171b3b68c41e8a6257ea262a42149423efe08367eb7da641134da"
       },
       {
         "path": "apps/web/src/components/epics/authoring-usage-checkpoint.tsx",
-        "sha256": "6d5ab0143ddc171455a814c3d3b3be4a232fdaff451b8acb0a8c62bcc49b1256"
+        "sha256": "c84ba05902cbbe893e62e228e9d148764f05ccf88c3e98b8a1d12dfaf5defe8b"
       },
       {
         "path": "apps/web/src/components/epics/epic-budget-panel.test.tsx",
@@ -67,11 +67,11 @@
       },
       {
         "path": "apps/web/src/components/projects/monitoring-policy-editor.test.tsx",
-        "sha256": "73c641fd7a36dda757c171d49e5fd36171acc6d5c963a5f26b10416211d7b39a"
+        "sha256": "f56fbf081da1ef2ba6d6edb553e178f6989bb234354e5ed1a674c67be05234d9"
       },
       {
         "path": "apps/web/src/components/projects/monitoring-policy-editor.tsx",
-        "sha256": "84b3d59f35795453667df60868296847addc11614119f65967c18b7dfe5011c0"
+        "sha256": "eeb46d0d672d5fbc7f11d51d13012e87aa630d4da690b250dd38aad792e51419"
       },
       {
         "path": "apps/web/src/components/projects/monitoring-policy-summary.test.tsx",
@@ -107,11 +107,11 @@
       },
       {
         "path": "apps/web/src/components/subscription-tasks/run-usage-checkpoint.test.tsx",
-        "sha256": "be4f14c5bbd1e13a24c31264ba3eed10cbd21df5d0ba46ccba5f7fda6beebc60"
+        "sha256": "aaa92c4aff012db788d9a75cf315bf0a80bcbeec0b46dc1c90853090e0e5c69d"
       },
       {
         "path": "apps/web/src/components/subscription-tasks/run-usage-checkpoint.tsx",
-        "sha256": "06109ea952ab5fb74807d1527d1af88016ca866836367cb040a159123b5a2e7f"
+        "sha256": "aa8543b9b6df54b36535c7f6096c0fa94691ad262b92dfb3d456476a3c42e1c9"
       },
       {
         "path": "apps/web/src/components/task-usage/historical-usage-report.test.tsx",
@@ -120,6 +120,14 @@
       {
         "path": "apps/web/src/components/task-usage/historical-usage-report.tsx",
         "sha256": "5da869cb4a5af33782a082006b394c733f514a561ff85234d74030d9948c2341"
+      },
+      {
+        "path": "apps/web/src/components/task-usage/owner-version.test.ts",
+        "sha256": "613bb55c7e3540644dd8cfaa54f18af0430e06d5a473a5d7500d196ec4105387"
+      },
+      {
+        "path": "apps/web/src/components/task-usage/owner-version.ts",
+        "sha256": "3a94f712c720ef9b25b109b6dbaccf2d76b0f794ff963614a5bc777deb65e48c"
       },
       {
         "path": "apps/web/src/components/task-usage/retained-policy-integers.test.ts",
@@ -139,11 +147,11 @@
       },
       {
         "path": "apps/web/src/lib/api/client.test.ts",
-        "sha256": "f0ebf1d7302b7f450b1ba4b7a116c4b1f375f7da084f8dcfb75d9dd1c0d9076f"
+        "sha256": "ff44a2bfccd2b70358aad1e3d962291d65e2cca3ded1e7067c4ae182464e300d"
       },
       {
         "path": "apps/web/src/lib/api/client.ts",
-        "sha256": "78f43fdcf33c294564f6e7a2754cf0edf56455ac18968247a72c5ed75af568ce"
+        "sha256": "d54ca74f921dff96f52b843644a4412fc3bee146a82e92ac785cd1cf78aa3649"
       },
       {
         "path": "apps/web/src/lib/api/exact-integer.test.ts",
@@ -151,19 +159,19 @@
       },
       {
         "path": "apps/web/src/lib/api/exact-integer.ts",
-        "sha256": "d5bad938544b15e0dd8d411e42068d982c49e50357a92ec4a9d0021e2dbc32e9"
+        "sha256": "a6178416f501a8bb59426c60a2cd9a9e80f64203b1e2bf211bd6264367fd5978"
       },
       {
         "path": "apps/web/src/lib/api/monitoring-policy.test.ts",
-        "sha256": "0f99c2e587705aeb6c4e6b048ec73d8a86a80e872ea35063421e603dd6acccf9"
+        "sha256": "081324237d2271e2ddbab8c9e171be0f5f9b717a3ba667ebca6cc1414e3878a9"
       },
       {
         "path": "apps/web/src/lib/api/monitoring-policy.ts",
-        "sha256": "04096aeb1b19bf706850671e5ed2a5748670b2f816a2199e6eab655b3010a02a"
+        "sha256": "e4a1e00d00f28dc512aef5644687a235e61a59068416bf8ed1af850a463de5c0"
       },
       {
         "path": "apps/web/src/lib/api/schema.d.ts",
-        "sha256": "ba650e4effb1fc4007f8dddd1407766b21cfb8a29e482327d264214879511dae"
+        "sha256": "4845310d5c82b9693f958e931368394d012ada33a9b55ecb1990c8ef90e679da"
       },
       {
         "path": "tests/acceptance/process_harness.py",
@@ -171,11 +179,11 @@
       },
       {
         "path": "tests/acceptance/task_usage_monitoring_browser.mjs",
-        "sha256": "439eff4d86ecfda8e38389ccd23f0d8d46e278c20da7d756024c049f934c873a"
+        "sha256": "ede79b52a78b5091ec5addd55c673225a9c7493a8eed3f710986d797bea12eec"
       },
       {
         "path": "tests/acceptance/task_usage_monitoring_browser_fixture.py",
-        "sha256": "56ee8b249714f166279979f6bf5770241450d8ca288eea7ac136b11c1789e509"
+        "sha256": "f3e42973add3710db12d5658110cc38b77a5bdfe486c40482c069e7d8bebebc8"
       },
       {
         "path": "tests/acceptance/test_task_usage_final_only_process.py",
@@ -244,14 +252,15 @@
     {
       "invariant": "Versioned policy and direct authenticated owner controls",
       "cases": [
-        "Browser saves all six supported signed64 monitoring settings, optional notes, stale rebase, exact revisions and explicit clears; authenticated session/CSRF and idempotent controls retained."
+        "Browser saves all six supported signed64 monitoring settings, optional notes, stale rebase, exact revisions and explicit clears; authenticated session/CSRF and idempotent controls retained.",
+        "Seeded high checkpoint versions followed by actual authenticated run set_policy/continue and authoring set_policy/stop; exact numeric expected/result pairs match PostgreSQL owner receipts up to INT64_MAX. Monitoring revision MAX-1 to MAX saves exactly; impossible increment refused without POST."
       ],
       "check": [
         "tests/acceptance/task_usage_monitoring_browser.mjs",
         "docs/usage-monitoring-checkpoints-validation.json"
       ],
       "status": "proved locally",
-      "evidence": ".llm-output/usage-final/integration/candidate.md and candidate-bound command receipts; earlier named unchanged cases retain their original candidates."
+      "evidence": ".llm-output/usage-final/integration/c3/final5/ exact API/SQL and browser receipts, command-receipts.json and primary matching-input/wire/SQL assertions; high retry/409/next-mode branches use component evidence."
     },
     {
       "invariant": "Comparable units and robust baselines",
@@ -316,15 +325,17 @@
       "cases": [
         "MAX_SAFE, +1, +2, INT64_MAX; six monitoring fields, epic execution caps, profile and API-backed model caps; raw numeric API wire and exact PostgreSQL equality; invalid/unsafe/fraction/overflow refusal; null/clear and stale rebase.",
         "Actual browser outbound epic PUT bodies contain unquoted numeric tokens at all four boundaries; a serializer failure precedes pending replay reservation, while uncertain valid requests retain the identical body/key.",
-        "Actual profile creation and append versions1-4 save all four boundaries with numeric StrictInt POST bodies, exact per-version GET and PostgreSQL equality; version5 clears both caps while earlier immutable rows retain their values. NaN/Infinity cannot silently clear an epic cap through frozen-request copying."
+        "Actual profile creation and append versions1-4 save all four boundaries with numeric StrictInt POST bodies, exact per-version GET and PostgreSQL equality; version5 clears both caps while earlier immutable rows retain their values. NaN/Infinity cannot silently clear an epic cap through frozen-request copying.",
+        "Supported checkpoint expected/result versions and monitoring revisions use exact decimal state, route-scoped numeric serialization and shared BigInt comparisons. Valid older durable replay receipts remain accepted; ordinary int32 version payloads remain compatible."
       ],
       "check": [
         "apps/web/src/lib/api/exact-integer.test.ts",
         "apps/web/src/lib/api/monitoring-policy.test.ts",
-        "tests/acceptance/task_usage_monitoring_browser.mjs"
+        "tests/acceptance/task_usage_monitoring_browser.mjs",
+        "apps/web/src/components/task-usage/owner-version.test.ts"
       ],
       "status": "proved locally",
-      "evidence": ".llm-output/usage-final/integration/hook-red.log, hook-final53.log, browser-epic-outbound.json, browser-review-delta-receipt.json, exact API/SQL snapshots and source-bound review-delta-receipts.json. C1 final actual profile write evidence: .llm-output/usage-final/integration/profile-browser-final/ and profile-repair-receipts.json. Earlier profile rendering was not this proof."
+      "evidence": ".llm-output/usage-final/integration/hook-red.log, hook-final53.log, browser-epic-outbound.json, browser-review-delta-receipt.json, exact API/SQL snapshots and source-bound review-delta-receipts.json. C1 final actual profile write evidence: .llm-output/usage-final/integration/profile-browser-final/ and profile-repair-receipts.json. Earlier profile rendering was not this proof. Final C3 full browser repeats prior epic/profile/policy/model/report surfaces on changed shared transport; 195 affected tests and exact owner-command/policy-revision API/SQL receipts are in integration/c3/."
     },
     {
       "invariant": "Real multi-project access and reporting filters",
@@ -416,18 +427,15 @@
       "raw_log": ".llm-output/usage-final/integration/transport16.log"
     },
     "api_types_web_typing_style_build": {
-      "result": "API/client generation, web typing/lint/build passed on the final C1 candidate.",
-      "receipt": ".llm-output/usage-final/integration/model-cap-receipts.json",
-      "final_delta_receipt": ".llm-output/usage-final/integration/profile-repair-receipts.json"
+      "result": "passed on final C3 source candidate",
+      "receipt": ".llm-output/usage-final/integration/c3/command-receipts.json"
     },
     "actual_browser": {
-      "result": "passed",
-      "receipt": ".llm-output/usage-final/integration/profile-browser-final/receipt.json",
-      "api": ".llm-output/usage-final/integration/profile-browser-final/browser-profile-api.json",
-      "sql": ".llm-output/usage-final/integration/profile-browser-final/browser-sql-snapshot.json",
-      "outbound_epic_http": ".llm-output/usage-final/integration/profile-browser-final/browser-epic-outbound.json",
-      "supersedes": ".llm-output/usage-final/integration/browser-review-delta-receipt.json",
-      "outbound_profile_http": ".llm-output/usage-final/integration/profile-browser-final/browser-profile-outbound.json"
+      "result": "passed on the final C3 source candidate",
+      "receipt": ".llm-output/usage-final/integration/c3/final5/receipt.json",
+      "api": ".llm-output/usage-final/integration/c3/final5/browser-high-owner-api.json",
+      "sql": ".llm-output/usage-final/integration/c3/final5/browser-sql-snapshot.json",
+      "prior_receipts_retained": true
     },
     "adk_reuse": {
       "passed": 100,
@@ -603,16 +611,167 @@
       "scope": "Test-only correction; raw numeric token assertions remain an independent oracle, with exact readback from the rebase mock. Production source unchanged; matched browser/backend/build receipts reused.",
       "self_review": "Reuse existing lossless decoder in the mock, type the projection honestly, preserve safe/null assertions and avoid redundant wrappers. No additional independent round warranted for this small test-only fix.",
       "jev_search_exemption": "Exact reported test file/locations and localized assertion/mock repair; no substantial behavioral search."
+    },
+    "C3_exact_owner_versions": {
+      "passed": 195,
+      "files": 10,
+      "counts_overlap": true,
+      "raw_log": ".llm-output/usage-final/integration/c3/affected-final2.log",
+      "receipt": ".llm-output/usage-final/integration/c3/command-receipts.json",
+      "red_receipts": {
+        "max_editor": "red-max-editor.log: 1 expected failure, 22 passed",
+        "panels": "red-panels.log: 2 expected failures, 38 passed",
+        "max_checkpoint": "red-max-checkpoint.log: 2 expected failures",
+        "terminal_panel": "red-max-checkpoint.log: 2 expected failures"
+      },
+      "source_inputs": [
+        {
+          "path": "apps/web/scripts/generate-api.mjs",
+          "sha256": "0acbacf0d21f93d776dc42b101529d3807c43ee6670d97269e5bae400e1b00a8"
+        },
+        {
+          "path": "apps/web/src/components/epics/authoring-usage-checkpoint.test.tsx",
+          "sha256": "86a56ff3bbc2f248cb394e75cb3f7843f8c9f0045be303b27fe62b9fc0ed2096"
+        },
+        {
+          "path": "apps/web/src/components/epics/authoring-usage-checkpoint.tsx",
+          "sha256": "c84ba05902cbbe893e62e228e9d148764f05ccf88c3e98b8a1d12dfaf5defe8b"
+        },
+        {
+          "path": "apps/web/src/components/projects/monitoring-policy-editor.test.tsx",
+          "sha256": "f56fbf081da1ef2ba6d6edb553e178f6989bb234354e5ed1a674c67be05234d9"
+        },
+        {
+          "path": "apps/web/src/components/projects/monitoring-policy-editor.tsx",
+          "sha256": "eeb46d0d672d5fbc7f11d51d13012e87aa630d4da690b250dd38aad792e51419"
+        },
+        {
+          "path": "apps/web/src/components/subscription-tasks/run-usage-checkpoint.test.tsx",
+          "sha256": "2437a369e6a9453398b03d160efa837e4ded826436f21b7ab8c11c1325d21932"
+        },
+        {
+          "path": "apps/web/src/components/subscription-tasks/run-usage-checkpoint.tsx",
+          "sha256": "aa8543b9b6df54b36535c7f6096c0fa94691ad262b92dfb3d456476a3c42e1c9"
+        },
+        {
+          "path": "apps/web/src/components/task-usage/owner-version.test.ts",
+          "sha256": "613bb55c7e3540644dd8cfaa54f18af0430e06d5a473a5d7500d196ec4105387"
+        },
+        {
+          "path": "apps/web/src/components/task-usage/owner-version.ts",
+          "sha256": "3a94f712c720ef9b25b109b6dbaccf2d76b0f794ff963614a5bc777deb65e48c"
+        },
+        {
+          "path": "apps/web/src/lib/api/client.test.ts",
+          "sha256": "ff44a2bfccd2b70358aad1e3d962291d65e2cca3ded1e7067c4ae182464e300d"
+        },
+        {
+          "path": "apps/web/src/lib/api/client.ts",
+          "sha256": "d54ca74f921dff96f52b843644a4412fc3bee146a82e92ac785cd1cf78aa3649"
+        },
+        {
+          "path": "apps/web/src/lib/api/exact-integer.ts",
+          "sha256": "a6178416f501a8bb59426c60a2cd9a9e80f64203b1e2bf211bd6264367fd5978"
+        },
+        {
+          "path": "apps/web/src/lib/api/monitoring-policy.test.ts",
+          "sha256": "081324237d2271e2ddbab8c9e171be0f5f9b717a3ba667ebca6cc1414e3878a9"
+        },
+        {
+          "path": "apps/web/src/lib/api/monitoring-policy.ts",
+          "sha256": "e4a1e00d00f28dc512aef5644687a235e61a59068416bf8ed1af850a463de5c0"
+        },
+        {
+          "path": "apps/web/src/lib/api/schema.d.ts",
+          "sha256": "4845310d5c82b9693f958e931368394d012ada33a9b55ecb1990c8ef90e679da"
+        },
+        {
+          "path": "tests/acceptance/task_usage_monitoring_browser.mjs",
+          "sha256": "ede79b52a78b5091ec5addd55c673225a9c7493a8eed3f710986d797bea12eec"
+        },
+        {
+          "path": "tests/acceptance/task_usage_monitoring_browser_fixture.py",
+          "sha256": "f3e42973add3710db12d5658110cc38b77a5bdfe486c40482c069e7d8bebebc8"
+        }
+      ],
+      "actual_browser": ".llm-output/usage-final/integration/c3/final5/receipt.json",
+      "actual_numeric_owner_pairs": [
+        {
+          "kind": "run",
+          "expected": "9007199254740993",
+          "resultVersion": "9007199254740994",
+          "action": "set_policy"
+        },
+        {
+          "kind": "run",
+          "expected": "9007199254740994",
+          "resultVersion": "9007199254740995",
+          "action": "continue"
+        },
+        {
+          "kind": "authoring_job",
+          "expected": "9223372036854775805",
+          "resultVersion": "9223372036854775806",
+          "action": "set_policy"
+        },
+        {
+          "kind": "authoring_job",
+          "expected": "9223372036854775806",
+          "resultVersion": "9223372036854775807",
+          "action": "stop"
+        }
+      ],
+      "actual_monitoring_revision": {
+        "seededExpected": "9223372036854775806",
+        "saved": "9223372036854775807",
+        "numericWire": true,
+        "overflowRefusedLocally": true
+      },
+      "api_typing_lint_build_fixture_checks": {
+        "node": "node --check browser script: exit 0",
+        "affected": "npm run test --workspace @parallel-forge/web -- --run src/components/task-usage/owner-version.test.ts src/components/subscription-tasks/run-usage-checkpoint.test.tsx src/components/epics/authoring-usage-checkpoint.test.tsx src/components/projects/monitoring-policy-editor.test.tsx src/lib/api/monitoring-policy.test.ts src/lib/api/client.test.ts src/lib/api/exact-integer.test.ts src/components/subscription-profiles/profile-list.test.tsx src/components/subscription-profiles/profile-editor.test.tsx src/hooks/epics/use-epic-mutations.test.tsx; affected-final2.log exit0 195/195",
+        "build": "build-final3.log exit0",
+        "typecheck": "typecheck-final3.log exit0",
+        "lint": "lint-final3.log exit0",
+        "ruff": "ruff check browser fixture: exit 0",
+        "final_c3": "focused-final2.log: 112/112",
+        "browser": "final5/browser.log exit0; full authenticated browser and four high owner commands, high monitoring revision and local max refusal",
+        "api": "api-check.log: exit 0"
+      },
+      "primary_evidence_check": ".llm-output/usage-final/c3-primary-acceptance.json",
+      "limits": "High retained counters were seeded in disposable PostgreSQL. High-version uncertain retry/409 and next-checkpoint mode have component evidence; they are not extra browser claims.",
+      "candidate_code_input_sha256": "5b0b287f863fcf0e1b6d5c3aed450e4450cbc272d090987e3507dc7e74482313",
+      "reuse": "195 tests ran on the original C3 candidate. Production and browser inputs are unchanged; V1 changes only two panel test files and supersedes their 44 cases with 50. Counts overlap, not a fresh whole 195 run."
+    },
+    "C3_V1_combined_transitions": {
+      "passed": 50,
+      "files": 2,
+      "six_new_combined_cases": true,
+      "receipt": ".llm-output/usage-final/integration/c3/v1-command-receipts.json",
+      "raw_log": ".llm-output/usage-final/integration/c3/v1-panels.log",
+      "source_inputs": [
+        {
+          "path": "apps/web/src/components/epics/authoring-usage-checkpoint.test.tsx",
+          "sha256": "d1920e1d249171b3b68c41e8a6257ea262a42149423efe08367eb7da641134da"
+        },
+        {
+          "path": "apps/web/src/components/subscription-tasks/run-usage-checkpoint.test.tsx",
+          "sha256": "aaa92c4aff012db788d9a75cf315bf0a80bcbeec0b46dc1c90853090e0e5c69d"
+        }
+      ],
+      "cases": "Both panels: high uncertain policy request with high revisions/caps, newer checkpoint and older valid receipt, identical raw body/key; high409 recovery and new exact version/key; successful high next-checkpoint command. Full numeric-token assertions.",
+      "typecheck_lint_diff": "passed on V1 tests; build/API/browser and other source evidence reused for unchanged inputs",
+      "limitations": "High uncertain replay, 409, and next-checkpoint combinations are mocked component transitions, not new browser/API/PostgreSQL executions."
     }
   },
   "counts_overlap": true,
   "evidence_policy": "Historical broad runs retain actual failures and later scoped repairs; no final whole-backend pass is claimed. Raw logs and transcript summaries are labelled. Matching source/config evidence is reused; four test files only lost blank EOF lines after102 run. Final delta retains red numeric-wire and scripted-cancellation failures, followed by raw green receipts. A learned reference admission alone is not cited as complete successor acceptance.",
   "browser_summary": {
-    "observedAt": "2026-10-12T18:55:22.462Z",
+    "observedAt": "2026-10-12T20:05:07.334Z",
     "surfaces": [
       {
         "kind": "authoring",
-        "pathname": "/epics/7a80353d-222c-4ba9-9321-b570bc161b47",
+        "pathname": "/epics/d735a1c3-aeac-47e7-866d-64a37335849b",
         "rendered": true,
         "checkpoint": true,
         "measured": true,
@@ -620,7 +779,7 @@
       },
       {
         "kind": "run",
-        "pathname": "/runs/0ae5ef42-7b7b-4b3b-b900-35d068bf2405",
+        "pathname": "/runs/ff4f4d8b-135c-4454-bbab-6e6e9f29c623",
         "rendered": true,
         "checkpoint": true,
         "measured": true,
@@ -628,7 +787,7 @@
       },
       {
         "kind": "project",
-        "pathname": "/projects/e3500314-edc5-4056-994a-99cd49831702",
+        "pathname": "/projects/6e8e0750-f71c-47f2-a119-ab2803a14587",
         "rendered": true
       },
       {
@@ -638,7 +797,7 @@
       }
     ],
     "epicCaps": {
-      "epicId": "509957c5-03cc-4c7f-994e-d71624019ad6",
+      "epicId": "74d57a21-df88-4db4-bb49-e5153074839d",
       "savedCaps": [
         "9007199254740991",
         "9007199254740992",
@@ -659,12 +818,12 @@
       "comparableCohorts": 1
     },
     "multiProjectHistory": {
-      "measuredProject": "bb298b28-cdba-4e0c-bd6b-18ea872739cf",
-      "unknownProject": "1762773b-4c93-4ba1-810b-556477d24629",
+      "measuredProject": "da31697a-18cc-4a52-ae48-a6225bc9696b",
+      "unknownProject": "0b83318a-6520-4ce7-993b-f69fe1693f25",
       "projects": [
-        "1762773b-4c93-4ba1-810b-556477d24629",
-        "bb298b28-cdba-4e0c-bd6b-18ea872739cf",
-        "e3500314-edc5-4056-994a-99cd49831702"
+        "0b83318a-6520-4ce7-993b-f69fe1693f25",
+        "6e8e0750-f71c-47f2-a119-ab2803a14587",
+        "da31697a-18cc-4a52-ae48-a6225bc9696b"
       ],
       "measuredSamples": 2,
       "excluded": 3,
@@ -700,40 +859,85 @@
       "staleRebased": true
     },
     "profileCaps": {
-      "profileId": "e8fba53c-3b8a-4fdf-8602-a024e59c763e",
+      "profileId": "ec1fb8b3-6ae0-45f0-b393-d69d414d2a8f",
       "versions": [
         [
-          "e8fba53c-3b8a-4fdf-8602-a024e59c763e",
+          "ec1fb8b3-6ae0-45f0-b393-d69d414d2a8f",
           1,
           "9007199254740991",
           "9007199254740991"
         ],
         [
-          "e8fba53c-3b8a-4fdf-8602-a024e59c763e",
+          "ec1fb8b3-6ae0-45f0-b393-d69d414d2a8f",
           2,
           "9007199254740992",
           "9007199254740992"
         ],
         [
-          "e8fba53c-3b8a-4fdf-8602-a024e59c763e",
+          "ec1fb8b3-6ae0-45f0-b393-d69d414d2a8f",
           3,
           "9007199254740993",
           "9007199254740993"
         ],
         [
-          "e8fba53c-3b8a-4fdf-8602-a024e59c763e",
+          "ec1fb8b3-6ae0-45f0-b393-d69d414d2a8f",
           4,
           "9223372036854775807",
           "9223372036854775807"
         ],
         [
-          "e8fba53c-3b8a-4fdf-8602-a024e59c763e",
+          "ec1fb8b3-6ae0-45f0-b393-d69d414d2a8f",
           5,
           null,
           null
         ]
       ],
       "numericPostBodies": 5
+    },
+    "highOwnerVersions": {
+      "seededCounters": {
+        "run": {
+          "checkpoint_id": "c48139df-0082-5426-b3c0-d5d26b06acc0",
+          "version": "9007199254740993"
+        },
+        "authoring_job": {
+          "checkpoint_id": "6d2a2713-c897-5cd7-901a-51ceaeb65dfc",
+          "version": "9223372036854775805"
+        }
+      },
+      "actions": [
+        {
+          "kind": "run",
+          "expected": "9007199254740993",
+          "resultVersion": "9007199254740994",
+          "action": "set_policy"
+        },
+        {
+          "kind": "run",
+          "expected": "9007199254740994",
+          "resultVersion": "9007199254740995",
+          "action": "continue"
+        },
+        {
+          "kind": "authoring_job",
+          "expected": "9223372036854775805",
+          "resultVersion": "9223372036854775806",
+          "action": "set_policy"
+        },
+        {
+          "kind": "authoring_job",
+          "expected": "9223372036854775806",
+          "resultVersion": "9223372036854775807",
+          "action": "stop"
+        }
+      ],
+      "sqlExact": true
+    },
+    "highMonitoringRevision": {
+      "seededExpected": "9223372036854775806",
+      "saved": "9223372036854775807",
+      "numericWire": true,
+      "overflowRefusedLocally": true
     }
   },
   "owner_controls": "Direct authenticated actions authorize their concrete effect; notes optional; cap/reference changes do not waive real settlement, quota/manual pause/cancel, tool/route or merge boundaries.",
@@ -742,14 +946,15 @@
     "applied": [
       "Share signed64 maximum constant across transport/validators/retained-policy checks",
       "Reuse identical generator field arrays without changing schema scope",
-      "Remove only blank test EOF lines reported by diff check"
+      "Remove only blank test EOF lines reported by diff check",
+      "Share exact checkpoint version validation, increment and durable receipt comparisons between run and authoring panels; scope serializer version fields to their supported routes."
     ],
     "review_dimensions": [
       "reuse",
       "quality",
       "efficiency"
     ],
-    "independent_review": "One full integrated review covered reuse, quality and efficiency. Named A1-A3 and C1/nonfinite-copy repair follow-ups reuse unchanged review evidence; no additional justified simplifications remained."
+    "independent_review": "One full integrated review plus named A1-A3, C1 and C3 follow-ups reused matching unchanged evidence. C3 reuse/quality/efficiency found no additional justified refactor; its evidence gap was resolved by test-only V1 checks and primary adjudication."
   },
   "remaining_limitations": [
     "Foreign-host identity/lease manipulation is a controlled local simulation; genuine execution on a second physical host is unrun.",
@@ -758,7 +963,8 @@
     "Optional direct mypy on acceptance fixtures reports baseline/import and new fixture typing errors; no production Python source changed. Normal source typing remains distinct.",
     "Downgrade proof covers named populated shapes/targets on disposable PostgreSQL, not blanket production downgrade authorization.",
     "Disposable browser fixture directories remain intact after automatic cleanup approval review rejected removal.",
-    "Context-triggered automatic pauses and progress-stall intervention remain separate follow-ups."
+    "Context-triggered automatic pauses and progress-stall intervention remain separate follow-ups.",
+    "C3 high retained counters are controlled PostgreSQL fixture seeds. High-version network-uncertain retry/409 and next-checkpoint mode have component coverage, not a separate fresh browser journey."
   ],
   "publication": {
     "snapshot": "Final local repair candidate before update push; latest-head hosted acceptance recorded subsequently on PR and privately.",
@@ -789,6 +995,13 @@
         "smoke_url": "https://github.com/Clar17y/parallel-forge/actions/runs/38296466761",
         "codex": "completed with substantiated C2 test precision finding",
         "finding": "https://github.com/Clar17y/parallel-forge/pull/112#discussion_r4251565162"
+      },
+      {
+        "head": "3190f6bc09cafdb27850038c83e1e562f062dcdb",
+        "smoke": "passed",
+        "smoke_url": "https://github.com/Clar17y/parallel-forge/actions/runs/38298487304",
+        "codex": "completed with substantiated C3 version precision finding; C1 and C2 conversations resolved",
+        "finding": "https://github.com/Clar17y/parallel-forge/pull/112#discussion_r4251691927"
       }
     ]
   },
@@ -812,6 +1025,17 @@
       "code_input_sha256": "300c8d1b89bb685d162e904e90ccc2be07f60ea97ed396eceb78a69d1bfdbec4",
       "evidence": ".llm-output/usage-final/integration/profile-repair-receipts.json",
       "full_review_reused_for_unchanged_paths": true
+    },
+    "C3_followup": {
+      "reason": "Named unresolved question: exact owner-version request/replay/receipt and policy-revision boundaries after C3; reuse the full integrated review for unchanged code.",
+      "status": "Completed: no material production-code defect. Evidence finding C3-V1 substantiated and resolved by six combined high-version panel tests; primary inspected the repair against the finding and verified 50 passing cases. No source behavior changed for V1.",
+      "code_input_sha256": "5b0b287f863fcf0e1b6d5c3aed450e4450cbc272d090987e3507dc7e74482313",
+      "reviewed_code_input_sha256": "5b0b287f863fcf0e1b6d5c3aed450e4450cbc272d090987e3507dc7e74482313",
+      "final_code_input_sha256": "dfdfb044b0ac429ec62ccb6c58186860eb877444824a891a467a61e7dc978faa",
+      "reviewed_integrated_diff_sha256": "b1bfb3d8b491154ec3152e8c84225ee4bf61b32945fff99060ec0283e52b00f5",
+      "report": ".llm-output/usage-final/c3-independent-review.md",
+      "validation_repair": ".llm-output/usage-final/integration/c3/v1-command-receipts.json",
+      "jev_status": "partial: hunk and operation budget limits; advisory only"
     }
   },
   "post_publish_repair": {
@@ -824,5 +1048,14 @@
     "caller_audit": "Other JSON uses serve display, local storage/comparison keys or UUID/version/action-only writes. Monitoring/project actual mutation sends use the shared exact serializer.",
     "receipt": ".llm-output/usage-final/integration/profile-repair-receipts.json",
     "earlier_red_and_failed_browser_receipts_retained": true
+  },
+  "post_publish_repair_C3": {
+    "prior_head": "3190f6bc09cafdb27850038c83e1e562f062dcdb",
+    "finding": "https://github.com/Clar17y/parallel-forge/pull/112#discussion_r4251691927",
+    "adjudication": "Substantiated: PostgreSQL BIGINT and StrictInt request bounds support unsafe-for-JavaScript checkpoint versions; both panels rounded expected versions and rejected exact receipt strings. Related monitoring revision paths were consolidated under the same integration owner.",
+    "scope": "Checkpoint owner requests/receipts, monitoring revision editor/helper, route-scoped serializer and supported generated types; ordinary int32 application versions excluded.",
+    "receipt": ".llm-output/usage-final/integration/c3/command-receipts.json",
+    "earlier_failed_receipts_retained": true,
+    "independent_evidence_gap": "C3-V1: prior prose incorrectly combined high successes/helper cases with ordinary retry/409/next transitions. Those claims are now supported by six combined high-version panel tests; original195/browser receipts retained with their inputs."
   }
 }

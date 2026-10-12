@@ -3,7 +3,7 @@ import { cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { AuthoringUsageCheckpoint } from './authoring-usage-checkpoint';
 import type { components } from '@/lib/api/schema';
-import { parseExactJson } from '@/lib/api/exact-integer';
+import { parseExactJson, stringifyExactJson } from '@/lib/api/exact-integer';
 
 const binding: components['schemas']['WorkUnitBinding'] = {
   subject: { project_id: 'project-1', kind: 'authoring_job', subject_id: 'job-1', schema_version: 1 },
@@ -30,6 +30,138 @@ const report: components['schemas']['UsageReport'] = {
 };
 const response: components['schemas']['TaskUsageCheckpointResponse'] = { checkpoint, report };
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+const exactOwnerJson = (value: unknown) => stringifyExactJson(value, new Set(['version', 'revision', 'result_version']));
+const hasExactToken = (body: string, field: string, digits: string) =>
+  expect(body).toMatch(new RegExp(`"${field}":${digits}(?=[,}])`));
+
+test('replays high authoring policy edit after uncertain response and newer checkpoint with original body/key', async () => {
+  const original = '9007199254740993';
+  const receiptVersion = '9007199254740994';
+  const currentVersion = '9007199254740995';
+  const requestedRevision = '9007199254740993';
+  const highPolicy = { ...retainedPolicy, revision: '9007199254740992',
+    hard_token_cap: '9223372036854775807', manual_estimate_tokens: '9007199254740992' };
+  let visible = { ...response, checkpoint: { ...checkpoint, version: original } };
+  const posts: { body: string; key: string | null }[] = [];
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    if (init?.method === 'POST') {
+      posts.push({ body: String(init.body), key: new Headers(init.headers).get('Idempotency-Key') });
+      if (posts.length === 1) throw new TypeError('response lost');
+      return new Response(exactOwnerJson({ receipt: { checkpoint_id: checkpoint.checkpoint_id,
+        action: 'set_policy', state: 'paused', result_version: receiptVersion, replayed: true },
+        checkpoint: { ...checkpoint, version: currentVersion }, report }), { status: 200 });
+    }
+    return new Response(exactOwnerJson(String(input).endsWith('/monitoring-policy') ? highPolicy : visible), { status: 200 });
+  });
+  const user = userEvent.setup();
+  render(<AuthoringUsageCheckpoint epicId="epic-1" projectId="project-1" jobId="job-1" kind="brainstorm" locked={false} />);
+  await user.click(await screen.findByRole('button', { name: 'Change monitoring settings' }));
+  await user.click(screen.getByRole('button', { name: 'Save monitoring revision' }));
+  await screen.findByRole('button', { name: 'Retry same request' });
+  visible = { ...visible, checkpoint: { ...checkpoint, version: currentVersion } };
+  await user.click(screen.getByRole('button', { name: 'Refresh authoring usage' }));
+  await screen.findByText(/version 9,007,199,254,740,995/);
+  await user.click(screen.getByRole('button', { name: 'Retry same request' }));
+  expect(await screen.findByText(/Owner command recorded/)).toBeVisible();
+  expect(screen.queryByRole('button', { name: 'Retry same request' })).toBeNull();
+  expect(posts).toHaveLength(2);
+  expect(posts[1]).toEqual(posts[0]);
+  expect(posts[0].key).toBe(JSON.parse(posts[0].body).idempotency_key);
+  hasExactToken(posts[0].body, 'expected_version', original);
+  hasExactToken(posts[0].body, 'revision', requestedRevision);
+  hasExactToken(posts[0].body, 'hard_token_cap', '9223372036854775807');
+  hasExactToken(posts[0].body, 'manual_estimate_tokens', '9007199254740992');
+});
+
+test('clears high authoring checkpoint 409 binding and submits a fresh exact request/key', async () => {
+  const first = '9007199254740992';
+  const current = '9007199254740993';
+  const resultVersion = '9007199254740994';
+  let visible = { ...response, checkpoint: { ...checkpoint, version: first } };
+  const posts: { body: string; key: string | null }[] = [];
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
+    if (init?.method === 'POST') {
+      posts.push({ body: String(init.body), key: new Headers(init.headers).get('Idempotency-Key') });
+      if (posts.length === 1) return new Response('{"detail":"stale-project-policy"}', { status: 409 });
+      return new Response(exactOwnerJson({ receipt: { checkpoint_id: checkpoint.checkpoint_id,
+        action: 'continue', state: 'resumed', result_version: resultVersion },
+        checkpoint: { ...checkpoint, state: 'resumed', version: resultVersion }, report }), { status: 200 });
+    }
+    return new Response(exactOwnerJson(visible), { status: 200 });
+  });
+  const user = userEvent.setup();
+  render(<AuthoringUsageCheckpoint epicId="epic-1" projectId="project-1" jobId="job-1" kind="brainstorm" locked={false} />);
+  await user.click(await screen.findByRole('button', { name: 'Continue without usage pauses' }));
+  expect(await screen.findByText(/checkpoint changed/i)).toBeVisible();
+  expect(screen.queryByRole('button', { name: 'Retry same request' })).toBeNull();
+  visible = { ...visible, checkpoint: { ...checkpoint, version: current } };
+  await user.click(screen.getByRole('button', { name: 'Refresh authoring usage' }));
+  await screen.findByText(/version 9,007,199,254,740,993/);
+  await user.click(screen.getByRole('button', { name: 'Continue without usage pauses' }));
+  expect(await screen.findByText(/Owner command recorded/)).toBeVisible();
+  expect(posts).toHaveLength(2);
+  expect(posts[0].key).not.toBe(posts[1].key);
+  hasExactToken(posts[0].body, 'expected_version', first);
+  hasExactToken(posts[1].body, 'expected_version', current);
+  expect(posts[1].key).toBe(JSON.parse(posts[1].body).idempotency_key);
+});
+
+test('sends high authoring next-checkpoint mode and accepts exact result version', async () => {
+  const expected = '9007199254740992';
+  const resultVersion = '9007199254740993';
+  const posts: string[] = [];
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
+    if (init?.method === 'POST') {
+      posts.push(String(init.body));
+      return new Response(exactOwnerJson({ receipt: { checkpoint_id: checkpoint.checkpoint_id,
+        action: 'continue', state: 'resumed', result_version: resultVersion },
+        checkpoint: { ...checkpoint, state: 'resumed', version: resultVersion }, report }), { status: 200 });
+    }
+    return new Response(exactOwnerJson({ ...response, checkpoint: { ...checkpoint, version: expected } }), { status: 200 });
+  });
+  render(<AuthoringUsageCheckpoint epicId="epic-1" projectId="project-1" jobId="job-1" kind="brainstorm" locked={false} />);
+  await userEvent.setup().click(await screen.findByRole('button', { name: 'Continue to next checkpoint' }));
+  expect(await screen.findByText(/Owner command recorded/)).toBeVisible();
+  expect(posts).toHaveLength(1);
+  expect(JSON.parse(posts[0]).continue_mode).toBe('next_checkpoint');
+  hasExactToken(posts[0], 'expected_version', expected);
+});
+
+test('continues authoring from an exact high checkpoint version', async () => {
+  const high = '9007199254740993';
+  const next = '9007199254740994';
+  const current = JSON.stringify({ ...response, checkpoint: { ...checkpoint, version: high } }).replace(`"version":"${high}"`, `"version":${high}`);
+  const completed = JSON.stringify({ receipt: { checkpoint_id: checkpoint.checkpoint_id, action: 'continue', state: 'resumed', result_version: next },
+    checkpoint: { ...checkpoint, state: 'resumed', version: next }, report }).replace(`"result_version":"${next}"`, `"result_version":${next}`).replace(`"version":"${next}"`, `"version":${next}`);
+  let sent = '';
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
+    if ((init?.method ?? 'GET') === 'POST') { sent = String(init?.body); return new Response(completed, { status: 200 }); }
+    return new Response(current, { status: 200 });
+  });
+  render(<AuthoringUsageCheckpoint epicId="epic-1" projectId="project-1" jobId="job-1" kind="brainstorm" locked={false} />);
+  await userEvent.setup().click(await screen.findByRole('button', { name: 'Continue without usage pauses' }));
+  hasExactToken(sent, 'expected_version', high);
+  expect(await screen.findByText(/Owner command recorded/)).toBeVisible();
+});
+
+test('disables authoring actions when checkpoint version cannot increment', async () => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify({ ...response,
+    checkpoint: { ...checkpoint, version: '9223372036854775807' } }), { status: 200 }));
+  render(<AuthoringUsageCheckpoint epicId="epic-1" projectId="project-1" jobId="job-1" kind="brainstorm" locked={false} />);
+  expect(await screen.findByRole('button', { name: 'Continue without usage pauses' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'Stop authoring job' })).toBeDisabled();
+  expect(screen.getByText(/version cannot be incremented/i)).toBeInTheDocument();
+});
+
+test('explains an authoring monitoring revision at the terminal signed64 version', async () => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async input => new Response(JSON.stringify(
+    String(input).endsWith('/monitoring-policy') ? { ...retainedPolicy, revision: '9223372036854775807' } : response
+  ), { status: 200 }));
+  render(<AuthoringUsageCheckpoint epicId="epic-1" projectId="project-1" jobId="job-1" kind="brainstorm" locked={false} />);
+  await userEvent.setup().click(await screen.findByRole('button', { name: 'Change monitoring settings' }));
+  expect(await screen.findByText(/Monitoring revision cannot be incremented/i)).toBeVisible();
+  expect(screen.getByRole('button', { name: 'Save monitoring revision' })).toBeDisabled();
+});
 
 test('shows authoring report and posts direct commands to the correct scoped route', async () => {
   const calls: { url: string; body: Record<string, unknown> }[] = [];
@@ -217,7 +349,7 @@ test('refreshes project policy after set_policy so two consecutive edits use fre
       const body = JSON.parse(String(init.body)) as Record<string, unknown>;
       posts.push({ url: String(input), body });
       const nextVersion = (body.expected_version as number) + 1;
-      const requestedPolicy = body.requested_policy as typeof retainedPolicy;
+      const requestedPolicy = body.requested_policy as typeof currentPolicy;
       currentCheckpoint = { ...currentCheckpoint, version: nextVersion, monitoring_policy_revision: requestedPolicy.revision };
       currentPolicy = { ...requestedPolicy };
       return new Response(JSON.stringify({
@@ -271,7 +403,7 @@ test('refreshes project policy after set_policy so two consecutive edits use fre
 test('supports consecutive edits on decomposition route where checkpoint version and policy revision differ', async () => {
   const diffCheckpoint = { ...checkpoint, version: 7, policy_revision: 1 };
   let currentCheckpoint = diffCheckpoint;
-  let currentPolicy = { ...retainedPolicy, revision: 2 }; // checkpoint version 7 != policy revision 2
+  let currentPolicy: components['schemas']['MonitoringPolicyResponse'] = { ...retainedPolicy, revision: 2 }; // checkpoint version 7 != policy revision 2
   const posts: { url: string; body: Record<string, unknown> }[] = [];
 
   vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
@@ -279,9 +411,9 @@ test('supports consecutive edits on decomposition route where checkpoint version
       const body = JSON.parse(String(init.body)) as Record<string, unknown>;
       posts.push({ url: String(input), body });
       const nextVersion = (body.expected_version as number) + 1;
-      const requestedPolicy = body.requested_policy as typeof retainedPolicy;
+      const requestedPolicy = body.requested_policy as components['schemas']['MonitoringPolicy'];
       currentCheckpoint = { ...currentCheckpoint, version: nextVersion, monitoring_policy_revision: requestedPolicy.revision };
-      currentPolicy = { ...requestedPolicy };
+      currentPolicy = { ...currentPolicy, ...requestedPolicy };
       return new Response(JSON.stringify({
         receipt: { checkpoint_id: currentCheckpoint.checkpoint_id, action: 'set_policy', state: 'paused', result_version: nextVersion },
         checkpoint: currentCheckpoint,

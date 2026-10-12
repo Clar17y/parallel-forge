@@ -99,12 +99,11 @@ export async function getMonitoringPolicy(projectId: string): Promise<Monitoring
 
 export async function getMonitoringPolicyRevision(
   projectId: string,
-  revision: number
+  revision: number | string
 ): Promise<MonitoringPolicyResponse> {
-  if (!Number.isSafeInteger(revision) || revision < 1) {
-    throw new Error('Revision must be a valid positive safe integer');
-  }
-  const result = await api<MonitoringPolicyResponse>(`/projects/${projectId}/monitoring-policy/${revision}`);
+  const validated = validateSafeInteger(revision, { allowSigned64: true, min: 1, allowNull: false });
+  if (!validated.valid) throw new Error('Revision must be a valid positive signed 64-bit integer');
+  const result = await api<MonitoringPolicyResponse>(`/projects/${projectId}/monitoring-policy/${validated.value}`);
   if (!result) throw new Error('Monitoring policy revision unavailable');
   return result;
 }
@@ -114,9 +113,9 @@ export async function reviseMonitoringPolicy(
   request: MonitoringPolicyRevisionRequest,
   options: { idempotencyKey?: string } = {}
 ): Promise<MonitoringPolicyResponse> {
-  if (!Number.isSafeInteger(request.expected_revision) || request.expected_revision < 0) {
-    throw new Error('Expected revision must be a valid nonnegative safe integer');
-  }
+  const expected = validateSafeInteger(request.expected_revision, { allowSigned64: true,
+    min: 0, max: MAX_SIGNED_64 - 1n, allowZero: true, allowNull: false });
+  if (!expected.valid) throw new Error('Expected revision must be a valid nonnegative signed 64-bit integer');
   const signed64Fields = new Set([
     'hard_token_cap',
     'hard_context_cap',
@@ -125,7 +124,7 @@ export async function reviseMonitoringPolicy(
     'minimum_comparables',
     'window_days',
   ]);
-  const sanitizedRequest: MonitoringPolicyRevisionRequest = { ...request };
+  const sanitizedRequest: MonitoringPolicyRevisionRequest = { ...request, expected_revision: expected.value as number | string };
   for (const field of ['hard_token_cap', 'hard_context_cap', 'manual_estimate_tokens', 'history_limit', 'minimum_comparables', 'window_days'] as const) {
     const value = request[field];
     if (value != null) {
@@ -153,7 +152,9 @@ export async function reviseMonitoringPolicy(
     { idempotencyKey, method: 'POST' }
   );
   if (!result) throw new Error('Monitoring policy revision response unavailable');
-  if (!Number.isSafeInteger(result.revision) || result.revision < 1) throw new Error('Monitoring policy revision response has unsafe revision');
+  if (!validateSafeInteger(result.revision, { allowSigned64: true, min: 1, allowNull: false }).valid) {
+    throw new Error('Monitoring policy revision response has invalid revision');
+  }
   return result;
 }
 

@@ -148,6 +148,25 @@ describe('MonitoringPolicySummary and MonitoringPolicyEditor', () => {
   });
 
   describe('MonitoringPolicyEditor', () => {
+    test('retains high exact expected revision through save and stale rebase', async () => {
+      const save = vi.fn().mockRejectedValueOnce(new ApiError(409, 'stale-projection'))
+        .mockResolvedValue({ ...samplePolicy, revision: '9007199254740994' });
+      const refresh = vi.fn().mockResolvedValue({ ...samplePolicy, revision: '9007199254740993' });
+      render(<MonitoringPolicyEditor projectId={projectId} initial={{ ...samplePolicy, revision: '9007199254740992' }} onSave={save} onRefresh={refresh} />);
+      await userEvent.click(screen.getByRole('button', { name: /Save monitoring policy/i }));
+      expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ expected_revision: '9007199254740992' }));
+      await screen.findByText(/Monitoring policy revision conflict/i);
+      await userEvent.click(screen.getByRole('button', { name: /Load current revision and keep edits/i }));
+      await userEvent.click(screen.getByRole('button', { name: /Save monitoring policy/i }));
+      expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ expected_revision: '9007199254740993' }));
+    });
+    test('refuses a revision beyond the signed64 successor boundary before saving', async () => {
+      const save = vi.fn();
+      render(<MonitoringPolicyEditor projectId={projectId} initial={{ ...samplePolicy, revision: '9223372036854775807' }} onSave={save} />);
+      await userEvent.click(screen.getByRole('button', { name: /Save monitoring policy/i }));
+      expect(save).not.toHaveBeenCalled();
+      expect(await screen.findByText(/cannot be incremented/i)).toBeInTheDocument();
+    });
     test('creates absent policy at revision zero and advances from returned receipt', async () => {
       const save = vi.fn().mockResolvedValueOnce({ ...samplePolicy, revision: 1 }).mockResolvedValueOnce({ ...samplePolicy, revision: 2 });
       render(<MonitoringPolicyEditor projectId={projectId} initial={null} onSave={save} />);

@@ -377,7 +377,98 @@ try {
     receipt.surfaces.push({ kind, pathname: new URL(page.url()).pathname, rendered: true });
     await page.screenshot({ path: join(dirname(outputPath), `browser-${kind}.png`), fullPage: true });
   }
+  const seededResponse = await page.request.post(`${controlOrigin}/seed-high-owner-versions`);
+  if (!seededResponse.ok()) throw new Error(`high owner-version fixture seed failed: ${seededResponse.status()}`);
+  const seededOwners = await seededResponse.json();
+  const highOwnerActions = [];
+  for (const [kind, path, button, initialVersion, expected, resultVersion, action] of [
+    ['run', scenario.run_path, 'Continue without usage pauses', '9007199254740993', '9007199254740994', '9007199254740995', 'continue'],
+    ['authoring_job', scenario.authoring_path, 'Stop authoring job', '9223372036854775805', '9223372036854775806', '9223372036854775807', 'stop'],
+  ]) {
+    await page.goto(webOrigin + path, { waitUntil: 'domcontentloaded' });
+    if (kind === 'run') await page.locator('button[data-section="tasks"]').click();
+    await page.getByRole('button', { name: 'Change monitoring settings' }).click();
+    const policyCommandResponse = page.waitForResponse(response => response.request().method() === 'POST'
+      && /\/usage-checkpoint\/commands(?:\?|$)/.test(response.url()));
+    await page.getByRole('button', { name: 'Save monitoring revision' }).click();
+    const policyCommand = await policyCommandResponse;
+    const policyOutbound = policyCommand.request().postData() ?? '';
+    const policyInbound = await policyCommand.text();
+    if (!policyCommand.ok() || !new RegExp(`"expected_version"\\s*:\\s*${initialVersion}\\b`).test(policyOutbound)
+        || !new RegExp(`"result_version"\\s*:\\s*${expected}\\b`).test(policyInbound)
+        || !/"action"\s*:\s*"set_policy"/.test(policyOutbound)) {
+      throw new Error(`${kind} high set_policy lost numeric precision: ${policyCommand.status()}: ${policyInbound.slice(0, 350)}`);
+    }
+    highOwnerActions.push({ kind, expected: initialVersion, resultVersion: expected,
+      action: 'set_policy', outbound: policyOutbound, inbound: policyInbound });
+    await page.goto(webOrigin + path, { waitUntil: 'domcontentloaded' });
+    if (kind === 'run') await page.locator('button[data-section="tasks"]').click();
+    const control = page.getByRole('button', { name: button, exact: true });
+    await control.waitFor({ timeout: 20000 });
+    const responsePromise = page.waitForResponse(response => response.request().method() === 'POST'
+      && /\/usage-checkpoint\/commands(?:\?|$)/.test(response.url()));
+    await control.click();
+    const ownerResponse = await responsePromise;
+    const outbound = ownerResponse.request().postData() ?? '';
+    const inbound = await ownerResponse.text();
+    if (!ownerResponse.ok()) throw new Error(`${kind} high owner action returned ${ownerResponse.status()}: ${inbound.slice(0, 500)}`);
+    if (!new RegExp(`"expected_version"\\s*:\\s*${expected}\\b`).test(outbound)
+        || !new RegExp(`"result_version"\\s*:\\s*${resultVersion}\\b`).test(inbound)
+        || !new RegExp(`"version"\\s*:\\s*${resultVersion}\\b`).test(inbound)) {
+      throw new Error(`${kind} high owner command lost numeric precision`);
+    }
+    const parsed = JSON.parse(inbound);
+    if (parsed.receipt.checkpoint_id !== seededOwners[kind].checkpoint_id || parsed.receipt.action !== action) {
+      throw new Error(`${kind} owner receipt identity mismatch`);
+    }
+    highOwnerActions.push({ kind, expected, resultVersion, action, outbound, inbound });
+    await page.screenshot({ path: join(dirname(outputPath), `browser-high-owner-${kind}.png`), fullPage: true });
+  }
+  const afterOwner = (await (await page.request.get(`${controlOrigin}/snapshot`)).json());
+  for (const action of highOwnerActions) {
+    const row = afterOwner.owner_commands.find(row => row[0] === seededOwners[action.kind].checkpoint_id
+      && row[1] === action.action && row[2] === action.expected && row[3] === action.resultVersion);
+    if (!row) throw new Error(`${action.kind} owner command receipt differs from PostgreSQL`);
+  }
+  receipt.highOwnerVersions = { seededCounters: seededOwners,
+    actions: highOwnerActions.map(({ kind, expected, resultVersion, action }) => ({ kind, expected, resultVersion, action })),
+    sqlExact: true };
+  const highPolicySeed = await page.request.post(`${controlOrigin}/seed-high-monitoring-revision`);
+  if (!highPolicySeed.ok() || await highPolicySeed.json() !== '9223372036854775806') {
+    throw new Error('high monitoring revision fixture seed failed');
+  }
+  await page.goto(`${webOrigin}/projects/${scenario.project_id}`, { waitUntil: 'domcontentloaded' });
+  const highPolicyForm = page.locator('form[aria-label="Revise task usage monitoring policy"]');
+  const policyResponsePromise = page.waitForResponse(response => response.request().method() === 'POST'
+    && /\/api\/projects\/[^/]+\/monitoring-policy$/.test(response.url()));
+  await highPolicyForm.getByRole('button', { name: 'Save monitoring policy' }).click();
+  const highPolicyResponse = await policyResponsePromise;
+  const highPolicyRequest = highPolicyResponse.request().postData() ?? '';
+  const highPolicyReadback = await highPolicyResponse.text();
+  if (!highPolicyResponse.ok()
+      || !/"expected_revision"\s*:\s*9223372036854775806\b/.test(highPolicyRequest)
+      || !/"revision"\s*:\s*9223372036854775807\b/.test(highPolicyReadback)) {
+    throw new Error(`high monitoring revision lost numeric precision: ${highPolicyResponse.status()}`);
+  }
+  const highPolicySql = (await (await page.request.get(`${controlOrigin}/snapshot`)).json()).policy_revision_exact;
+  if (highPolicySql !== '9223372036854775807') throw new Error('high monitoring revision differs from PostgreSQL');
+  await highPolicyForm.getByRole('heading', { name: /Revision 9223372036854775807/ }).waitFor({ timeout: 20000 });
+  let extraPolicyPosts = 0;
+  const countPolicyPost = request => {
+    if (request.method() === 'POST' && /\/api\/projects\/[^/]+\/monitoring-policy$/.test(request.url())) extraPolicyPosts++;
+  };
+  page.on('request', countPolicyPost);
+  await highPolicyForm.getByRole('button', { name: 'Save monitoring policy' }).click();
+  await highPolicyForm.getByText(/cannot be incremented within signed 64-bit storage/i).waitFor({ timeout: 10000 });
+  page.off('request', countPolicyPost);
+  if (extraPolicyPosts !== 0) throw new Error('monitoring revision beyond signed64 max reached API');
+  receipt.highMonitoringRevision = { seededExpected: '9223372036854775806', saved: highPolicySql,
+    numericWire: true, overflowRefusedLocally: true };
+  await page.screenshot({ path: join(dirname(outputPath), 'browser-high-monitoring-revision.png'), fullPage: true });
   const evidenceDir = dirname(outputPath);
+  await writeFile(join(evidenceDir, 'browser-high-owner-api.json'), JSON.stringify(highOwnerActions, null, 2), 'utf8');
+  await writeFile(join(evidenceDir, 'browser-high-policy-api.json'),
+    JSON.stringify({ outbound: highPolicyRequest, response: highPolicyReadback }, null, 2), 'utf8');
   await writeFile(join(evidenceDir, 'browser-epic-outbound.json'),
     JSON.stringify(outboundBudgetBodies, null, 2), 'utf8');
   await writeFile(join(evidenceDir, 'browser-profile-outbound.json'),
