@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { EpicBudgetPanel } from './epic-budget-panel';
 import { api, ApiError } from '@/lib/api/client';
+import { parseExactJson } from '@/lib/api/exact-integer';
 import type { EpicBudgetProjection } from '@/hooks/epics/types';
 
 vi.mock('@/lib/api/client', () => ({
@@ -128,9 +129,9 @@ describe('EpicBudgetPanel', () => {
 
     const putCalls = vi.mocked(api).mock.calls.filter(([path, init]) => path === `/epics/${epicId}/budget` && init?.method === 'PUT');
     expect(putCalls).toHaveLength(1);
-    const body = JSON.parse(putCalls[0][1]?.body as string);
-    expect(body.ceiling.max_input_tokens).toBe('9007199254740993');
-    expect(body.ceiling.max_output_tokens).toBe('9223372036854775807');
+    const body = putCalls[0][1]?.body as string;
+    expect(body).toMatch(/"max_input_tokens"\s*:\s*9007199254740993\s*[,}]/);
+    expect(body).toMatch(/"max_output_tokens"\s*:\s*9223372036854775807\s*[,}]/);
   });
 
   test('formats large exact signed64 ceilings with comma grouping on display', async () => {
@@ -660,7 +661,7 @@ describe('EpicBudgetPanel', () => {
   });
 
   test('preserves touched signed-64 ceiling drafts across conflict rebasing while updating untouched fields', async () => {
-    let currentBudget = {
+    let currentBudget: EpicBudgetProjection = {
       ...mockBudget,
       version: 1,
       ceiling: {
@@ -675,7 +676,10 @@ describe('EpicBudgetPanel', () => {
         return currentBudget as T;
       }
       if (path === `/epics/${epicId}/budget` && init?.method === 'PUT') {
-        const body = JSON.parse(init.body as string);
+        const body = parseExactJson(init.body as string) as {
+          expected_version: number;
+          ceiling: EpicBudgetProjection['ceiling'];
+        };
         if (body.expected_version !== currentBudget.version) {
           throw new ApiError(409, 'stale-projection');
         }
@@ -732,9 +736,11 @@ describe('EpicBudgetPanel', () => {
 
     const putCalls = vi.mocked(api).mock.calls.filter(([p, init]) => p === `/epics/${epicId}/budget` && init?.method === 'PUT');
     expect(putCalls).toHaveLength(2);
-    const lastBody = JSON.parse(putCalls[1][1]?.body as string);
+    const rawBody = putCalls[1][1]?.body as string;
+    const lastBody = JSON.parse(rawBody);
     expect(lastBody.expected_version).toBe(2);
-    expect(lastBody.ceiling.max_input_tokens).toBe('9223372036854775807');
+    expect(rawBody).toMatch(/"max_input_tokens"\s*:\s*9223372036854775807\s*[,}]/);
     expect(lastBody.ceiling.max_cost_minor).toBe(999);
+    expect(await screen.findByTestId('ceiling-input_tokens')).toHaveTextContent('9,223,372,036,854,775,807 tokens');
   });
 });

@@ -8,14 +8,14 @@
     103,
     106
   ],
-  "status": "Required local acceptance and independent integrated review with named repair follow-ups are complete. The final pre-push snapshot awaits latest-head automatic PR checks and Codex acceptance; those receipts are retained locally and on PR112.",
+  "status": "Required local acceptance and the existing integrated review are complete; final test-only precision correction passed 18 cases and self-review. Latest-head automatic PR/Codex acceptance follows this pre-push snapshot and is retained on PR112 and locally.",
   "feature_complete": "Required local acceptance established; publication acceptance is separate and merging remains unauthorized.",
   "source": {
     "base": "17552fb2a8529c460d9dca249ff0d931aa1b504a",
-    "parent_head": "518fae8659d8f376c144978900f536a5662d0a7f",
+    "parent_head": "626e760c487f9cc44d20c7679112197a2111a207",
     "branch": "codex/usage-monitoring-final",
-    "recorded_at_utc": "2026-10-12T18:57:21.081559+00:00",
-    "code_input_sha256": "300c8d1b89bb685d162e904e90ccc2be07f60ea97ed396eceb78a69d1bfdbec4",
+    "recorded_at_utc": "2026-10-12T19:33:02.012842+00:00",
+    "code_input_sha256": "09b85f291455a69c61e99dc23fe139d3a29f4691378c9eee72f36175124ef3e0",
     "inputs": [
       {
         "path": "apps/orchestrator/tests/task_usage_contract/test_migration.py",
@@ -43,7 +43,7 @@
       },
       {
         "path": "apps/web/src/components/epics/epic-budget-panel.test.tsx",
-        "sha256": "9afd201cccbbf3f57501b1d484e71813a803d780a2473382e94c71629c50fc02"
+        "sha256": "720efef6483eab52e9b00bbdebc5f88824ea3e5233a47fbb07642f0ef6e69608"
       },
       {
         "path": "apps/web/src/components/epics/epic-budget-panel.tsx",
@@ -591,6 +591,18 @@
       "command": "rtk proxy .venv/Scripts/python.exe -m ruff check tests/acceptance/task_usage_monitoring_browser_fixture.py",
       "exit_code": 0,
       "raw_log": ".llm-output/usage-final/c1-fixture-ruff.log"
+    },
+    "C2_epic_budget_tests": {
+      "cause": "Native JSON.parse in two exact-cap tests rounded numeric wire tokens; stale-rebase mock also needed lossless decoding. Production browser/API/SQL evidence was valid but this test file was not proved on the updated hook until this repair.",
+      "red_command": "rtk proxy npm run test --workspace @parallel-forge/web -- --run src/components/epics/epic-budget-panel.test.tsx",
+      "red": "2 failed,16 passed",
+      "red_log": ".llm-output/usage-final/c2-budget-red.log",
+      "green": "18 passed",
+      "green_log": ".llm-output/usage-final/c2-budget-green.log",
+      "typing_and_lint": "passed",
+      "scope": "Test-only correction; raw numeric token assertions remain an independent oracle, with exact readback from the rebase mock. Production source unchanged; matched browser/backend/build receipts reused.",
+      "self_review": "Reuse existing lossless decoder in the mock, type the projection honestly, preserve safe/null assertions and avoid redundant wrappers. No additional independent round warranted for this small test-only fix.",
+      "jev_search_exemption": "Exact reported test file/locations and localized assertion/mock repair; no substantial behavioral search."
     }
   },
   "counts_overlap": true,
@@ -770,6 +782,13 @@
         "adjudication": "generic-api-key finding is a verified source SHA256 for apps/web/scripts/generate-api.mjs in the validation input map. Reformatting as path/sha256 entries preserves the same hashes without rule suppression.",
         "redacted_evidence": ".llm-output/usage-final/gitleaks-86bf27c.tsv",
         "C1_thread": "repaired with evidence reply and resolved"
+      },
+      {
+        "head": "626e760c487f9cc44d20c7679112197a2111a207",
+        "smoke": "passed",
+        "smoke_url": "https://github.com/Clar17y/parallel-forge/actions/runs/38296466761",
+        "codex": "completed with substantiated C2 test precision finding",
+        "finding": "https://github.com/Clar17y/parallel-forge/pull/112#discussion_r4251565162"
       }
     ]
   },
