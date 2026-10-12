@@ -219,6 +219,7 @@ class ClientProcessResult:
     stderr_truncated: bool
     outcome: str
     stop_confirmed: bool
+    intentional_completed_stop: bool = False
 
 
 def terminal_launch_proof(result: ClientProcessResult) -> SubscriptionLaunchTerminalProof:
@@ -282,7 +283,7 @@ class _OwnedProcess(Protocol):
     def token(self) -> str: ...
     def resume(self) -> None: ...
     def wait(self, seconds: float) -> int: ...
-    def terminate_tree(self) -> None: ...
+    def terminate_tree(self) -> int | None: ...
     def close(self) -> None: ...
 
 
@@ -493,10 +494,56 @@ class _PosixProcess:
         except subprocess.TimeoutExpired:
             raise TimeoutError("process settlement deadline") from None
 
-    def terminate_tree(self) -> None:
-        with contextlib.suppress(ProcessLookupError):
-            if sys.platform != "win32":
+    def observe_exit(self, seconds: float) -> None:
+        """Observe without reaping so the root pins its process-group identity."""
+
+        if sys.platform == "win32":
+            return
+        deadline = time.monotonic() + max(0, seconds)
+        while True:
+            if not self.process._waitpid_lock.acquire(timeout=max(0, deadline - time.monotonic())):
+                raise TimeoutError("process settlement deadline")
+            try:
+                if self.process.returncode is not None:
+                    return
+                try:
+                    status = os.waitid(os.P_PID, self.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+                except ChildProcessError:
+                    # Only our Popen's recorded reap proves this was an owned exit.
+                    if self.process.returncode is not None:
+                        return
+                    raise
+                if status is not None:
+                    return
+            finally:
+                self.process._waitpid_lock.release()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("process settlement deadline")
+            time.sleep(min(0.05, remaining))
+
+    def terminate_tree(self) -> int | None:
+        if sys.platform == "win32":
+            return None
+        # Popen.wait and poll reap under this lock. Keep the child PID pinned
+        # through both signals so a concurrent reaper cannot expose it for reuse.
+        with self.process._waitpid_lock:
+            if self.process.returncode is not None:
+                return None
+            root_signalled = False
+            try:
+                status = os.waitid(os.P_PID, self.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+            except ChildProcessError:
+                return None
+            if status is None:
+                try:
+                    os.kill(self.pid, signal.SIGKILL)
+                    root_signalled = True
+                except ProcessLookupError:
+                    pass
+            with contextlib.suppress(ProcessLookupError):
                 os.killpg(self.pid, signal.SIGKILL)
+            return -signal.SIGKILL if root_signalled else None
 
     def close(self) -> None:
         for stream in (self.stdin, self.stdout, self.stderr):
@@ -617,8 +664,10 @@ class ClientProcessSession:
 
     async def _watch_exit(self) -> None:
         try:
+            observe_exit = getattr(self.process, "observe_exit", None)
             await asyncio.to_thread(
-                self.process.wait, max(0, self.deadline - asyncio.get_running_loop().time())
+                observe_exit or self.process.wait,
+                max(0, self.deadline - asyncio.get_running_loop().time()),
             )
             self._settle("exited")
         except TimeoutError:
@@ -820,6 +869,7 @@ class ClientProcessSession:
     async def _finish(self, outcome: str) -> ClientProcessResult:
         confirmed = outcome != "stop_uncertain"
         code = None
+        root_stop_code: int | None = None
         if self._before_stop is not None:
             callback = self._before_stop
 
@@ -835,7 +885,18 @@ class ClientProcessSession:
                 confirmed = False
                 self._failure = ClientProcessError("client authority revocation is uncertain")
         try:
-            self.process.terminate_tree()
+            if outcome == "completed":
+                try:
+                    observe_exit = getattr(self.process, "observe_exit", None)
+                    if observe_exit is not None:
+                        observe_exit(0)
+                    else:
+                        self.process.wait(0)
+                except TimeoutError:
+                    pass
+                else:
+                    outcome = "exited"
+            root_stop_code = self.process.terminate_tree()
             code = await asyncio.to_thread(self.process.wait, 2)
             wait_tree = getattr(self.process, "wait_tree", None)
             if wait_tree is not None:
@@ -869,6 +930,8 @@ class ClientProcessSession:
             self._err_bytes > self.spec.stderr_max_bytes,
             outcome if confirmed else "stop_uncertain",
             confirmed,
+            root_stop_code is not None and confirmed and outcome == "completed"
+            and code == root_stop_code,
         )
         self._queue.put_nowait(None)
         if self.lifecycle:
@@ -894,6 +957,18 @@ class ClientProcessSession:
         if self._exit_task and self._close_task is None:
             await asyncio.shield(self._exit_task)
         return await asyncio.shield(self._settle("exited"))
+
+    async def finish_completed(self, *, grace_seconds: float = 0.25) -> ClientProcessResult:
+        """Settle a completed exchange even if its client serves further requests."""
+
+        await self.close_stdin()
+        if self._exit_task is not None and self._close_task is None:
+            done, _ = await asyncio.wait((self._exit_task,), timeout=grace_seconds)
+            if done:
+                return await self.wait_closed()
+        if self._close_task is not None:
+            return await asyncio.shield(self._close_task)
+        return await self.close(completed=True)
 
     async def __aenter__(self) -> Self:
         return self

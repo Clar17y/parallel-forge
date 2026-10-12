@@ -78,6 +78,7 @@ class ValidatedDecompositionGateway:
                 telemetry=result.telemetry,
                 failure=result.failure or "invalid_output",
                 quota_reset_at=result.quota_reset_at,
+                quota_exhausted=result.quota_exhausted,
             )
         try:
             if (
@@ -98,13 +99,15 @@ class ValidatedDecompositionGateway:
                 raise ValueError("decomposition binding conflicts")
         except TypeError, ValueError:
             return DecompositionGatewayResult(
-                proposal=None, telemetry=result.telemetry, failure="invalid_output"
+                proposal=None, telemetry=result.telemetry, failure="invalid_output",
+                quota_reset_at=result.quota_reset_at, quota_exhausted=result.quota_exhausted,
             )
         return DecompositionGatewayResult(
             proposal=proposal,
             telemetry=result.telemetry,
             failure=result.failure,
             quota_reset_at=result.quota_reset_at,
+            quota_exhausted=result.quota_exhausted,
         )
 
 

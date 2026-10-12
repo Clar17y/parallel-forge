@@ -105,6 +105,9 @@ class BrainstormAttemptRow(Base, TimestampMixin):
     usage_known: Mapped[bool | None] = mapped_column()
     tool_calls_used: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     failure: Mapped[str | None] = mapped_column(String(64))
+    diagnostics: Mapped[dict[str, object]] = mapped_column(
+        JSONB, nullable=False, default=lambda: {"events": [], "dropped_events": 0}
+    )
 
 
 class BrainstormReceiptRow(Base, TimestampMixin):

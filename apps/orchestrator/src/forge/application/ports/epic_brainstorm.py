@@ -62,6 +62,7 @@ class BrainstormGatewayResult:
     telemetry: AttemptTelemetry | None
     failure: str | None = None
     quota_reset_at: str | None = None
+    quota_exhausted: bool = False
 
 
 class AuthoringGatewayResult(Protocol):
@@ -78,6 +79,9 @@ class AuthoringGatewayResult(Protocol):
 
     @property
     def quota_reset_at(self) -> str | None: ...
+
+    @property
+    def quota_exhausted(self) -> bool: ...
 
 
 class BrainstormGateway(Protocol):

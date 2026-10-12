@@ -12,6 +12,17 @@ afterEach(() => { cleanup(); vi.mocked(api).mockReset(); });
 function mockUsage(load: () => unknown | Promise<unknown>) {
   vi.mocked(api).mockImplementation(async <T,>(path: string) => {
     if (path.startsWith('/subscription-usage?')) return { items: [], has_more: false, assessment: null } as T;
+    if (path.startsWith('/task-usage-report')) return {
+      as_of: '2026-10-12T00:00:00Z',
+      overview: { status: 'insufficient_history', sample_count: 0, coverage_count: 0, eligible_count: 0,
+        excluded_count: 0, measured_coverage: null, cohort_source: 'none', labels: [], project_ids: [],
+        mean_tokens: null, median_tokens: null, p90_tokens: null, reference_tokens: null,
+        checkpoint_threshold_tokens: null, window_started_at: null, window_ended_at: null,
+        phase_role_breakdown: [] },
+      filters: { project_ids: [], history_limit: 50, minimum_comparables: 20, window_days: 30 },
+      comparable_references: {}, by_task_type: {}, by_model: {}, by_provider: {}, by_effort: {},
+      by_project: {}, excluded_outcomes: {}, failed_attempt_count: 0,
+    } as T;
     if (path.startsWith('/usage?')) return await load() as T;
     throw new Error(`Unexpected API request: ${path}`);
   });

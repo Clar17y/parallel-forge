@@ -38,6 +38,7 @@ from forge.domain.epic_brainstorm import (
     _MAX_USAGE,
     AuthoringJobSnapshot,
     BrainstormConflict,
+    BrainstormDiagnosticEvent,
     BrainstormTurn,
     duration_floor,
 )
@@ -49,6 +50,32 @@ from forge.persistence.repositories.epic_brainstorm import PostgresBrainstormRep
 from forge.tools.epic_brainstorm import BrainstormReadOnlyTools
 
 _OPERATION_GRACE_SECONDS = 10.0
+
+
+def _append_diagnostic(
+    attempt: BrainstormAttemptRow, kind: str, *, operation: str | None = None,
+    tool_name: str | None = None, duration_ms: int | None = None,
+    failure: str | None = None,
+) -> None:
+    state = dict(attempt.diagnostics or {})
+    stored_events = state.get("events", [])
+    dropped = state.get("dropped_events", 0)
+    if type(dropped) is not int or dropped < 0 or not isinstance(stored_events, list):
+        raise BrainstormConflict("invalid attempt diagnostics")
+    events = list(stored_events)
+    now = datetime.now(UTC)
+    event = BrainstormDiagnosticEvent.model_validate({
+        "sequence": dropped + len(events), "kind": kind,
+        "occurred_at": now,
+        "elapsed_ms": max(0, int((now - attempt.created_at).total_seconds() * 1000)),
+        "operation": operation, "tool_name": tool_name,
+        "duration_ms": duration_ms, "failure": failure,
+    })
+    events.append(event.model_dump(mode="json", exclude_none=True))
+    if len(events) > 128:
+        events.pop(0)
+        dropped += 1
+    attempt.diagnostics = {"events": events, "dropped_events": dropped}
 
 
 def _invocation_expired(created_at: datetime, reservation: Mapping[str, object]) -> bool:
@@ -122,6 +149,33 @@ class DurableBrainstormProcessLifecycle:
     ) -> None:
         self.sessions, self.attempt_id, self.fence, self.owner = sessions, attempt_id, fence, owner
 
+    async def diagnostic(
+        self, kind: str, *, operation: str | None = None, tool_name: str | None = None,
+        duration_ms: int | None = None, failure: str | None = None,
+    ) -> None:
+        """Persist only closed metadata while this attempt still owns the job."""
+        async with self.sessions() as session, session.begin():
+            job_id = await session.scalar(
+                select(BrainstormAttemptRow.job_id).where(BrainstormAttemptRow.id == self.attempt_id)
+            )
+            if job_id is None:
+                return
+            job = await session.get(BrainstormJobRow, job_id, with_for_update=True)
+            attempt = await session.get(BrainstormAttemptRow, self.attempt_id, with_for_update=True)
+            if (
+                attempt is None or attempt.fence != self.fence or attempt.owner != self.owner
+                or attempt.state != "admitted"
+                or job is None or job.current_attempt_id != self.attempt_id
+                or job.state != "running"
+                or attempt.lease_expires_at <= datetime.now(UTC)
+                or _invocation_expired(attempt.created_at, attempt.reservation or {})
+            ):
+                return
+            _append_diagnostic(
+                attempt, kind, operation=operation, tool_name=tool_name,
+                duration_ms=duration_ms, failure=failure,
+            )
+
     async def _transition(
         self,
         action: str,
@@ -184,6 +238,7 @@ class DurableBrainstormProcessLifecycle:
                     attempt.process_pid = receipt.pid
                     attempt.process_identity = receipt.process_start_token
                     attempt.process_started = True
+                    _append_diagnostic(attempt, "launch")
             else:
                 if attempt.process_settled:
                     return
@@ -210,6 +265,9 @@ class DurableBrainstormProcessLifecycle:
                     attempt.process_identity = receipt.process_start_token
                 attempt.terminal_proof = terminal_launch_proof(result).model_dump(mode="json")
                 attempt.process_settled = True
+                _append_diagnostic(
+                    attempt, "process_settled", operation="process_settlement"
+                )
             await session.flush()
         if revoke_started:
             raise BrainstormConflict("launch authority expired or cancelled")
@@ -646,8 +704,12 @@ class EpicBrainstormWorker:
             attempt.usage_known = False
             attempt.usage = self._host_usage(attempt, launched=False, recovery=True)
         cancelled = row.state == "cancel_requested" or row.failure == "cancelled"
-        timed_out = row.failure == "timeout" or _invocation_expired(
-            attempt.created_at, attempt.reservation or {}
+        # A worker that already recorded an interrupted reconciliation keeps
+        # that cause after the admission clock expires. An expired admitted
+        # attempt without that transition is still a timeout.
+        timed_out = row.failure == "timeout" or (
+            not (row.failure == "interrupted" and attempt.state == "reconciling")
+            and _invocation_expired(attempt.created_at, attempt.reservation or {})
         )
         if cancelled:
             row.state, row.failure = "cancelled", "cancelled"
@@ -667,6 +729,13 @@ class EpicBrainstormWorker:
         if row.state != "quota_wait":
             row.next_eligible_at = None
         attempt.state, attempt.failure = "settled", row.failure
+        _append_diagnostic(
+            attempt, "attempt_stopped",
+            failure=row.failure if row.failure in {
+                "cancelled", "timeout", "unavailable", "process_unsettled",
+                "invalid_output", "budget_exhausted", "quota_exhausted", "interrupted",
+            } else None,
+        )
         if checkpoint is not None and checkpoints is not None:
             if checkpoint.state is CheckpointState.REQUESTED:
                 checkpoint = await checkpoints.transition(
@@ -1095,6 +1164,11 @@ class EpicBrainstormWorker:
                 if row.state == "cancel_requested"
                 else ("failed", failure)
             )
+            _append_diagnostic(
+                attempt, "attempt_stopped",
+                failure=row.failure if row.failure in {"cancelled", "timeout", "interrupted"}
+                else "unavailable",
+            )
             row.version += 1
             repository = self._repository(session)
             await repository.quota_settle(row, attempt, exhausted=False, reset_at=None)
@@ -1129,6 +1203,9 @@ class EpicBrainstormWorker:
                 return
             repository = self._repository(session)
             reset_at = self._quota_reset(result)
+            quota_exhausted = result is not None and (
+                result.failure == "quota_exhausted" or result.quota_exhausted
+            )
             is_cancelled = row.state == "cancel_requested"
             interrupted = (
                 failure == "interrupted"
@@ -1148,7 +1225,7 @@ class EpicBrainstormWorker:
             elif not attempt.process_settled:
                 # Lease expiry, timeout, task cancellation, or gateway return is not
                 # proof that an external process stopped. Keep the reservation.
-                if result is not None and result.failure == "quota_exhausted":
+                if quota_exhausted:
                     await repository.quota_settle(
                         row,
                         attempt,
@@ -1171,6 +1248,12 @@ class EpicBrainstormWorker:
                 )
                 row.version += 1
                 attempt.state = "reconciling"
+                _append_diagnostic(
+                    attempt, "attempt_stopped", failure=(
+                        row.failure if row.failure in {"cancelled", "interrupted", "timeout"}
+                        else "process_unsettled"
+                    ),
+                )
                 if self.task_usage is not None:
                     from forge.domain.task_usage_contract import CheckpointState, SubjectKey
                     from forge.persistence.repositories.task_usage_checkpoints import (
@@ -1440,11 +1523,18 @@ class EpicBrainstormWorker:
                     )
 
             attempt.state = "settled"
+            _append_diagnostic(
+                attempt, "attempt_stopped",
+                failure=row.failure if row.failure in {
+                    "cancelled", "timeout", "unavailable", "process_unsettled",
+                    "invalid_output", "budget_exhausted", "quota_exhausted", "interrupted",
+                } else None,
+            )
             row.version += 1
             await repository.quota_settle(
                 row,
                 attempt,
-                exhausted=result is not None and result.failure == "quota_exhausted",
+                exhausted=quota_exhausted,
                 reset_at=reset_at,
                 succeeded=row.state == "proposed",
             )

@@ -116,26 +116,18 @@ test.each([
   const model = fields.getByLabelText('Primary model') as HTMLSelectElement;
   await userEvent.selectOptions(model, Array.from(model.options).find(option => option.textContent === 'Sol 6.1')!.value);
   await userEvent.click(fields.getAllByText('Advanced')[0]);
-  await userEvent.click(fields.getByRole('button', { name: 'Set Primary input token budget' }));
-  const input = fields.getByRole('slider', { name: 'Primary input token budget' });
-  const inputControls = within(input.parentElement!);
-  await userEvent.click(inputControls.getByRole('button', { name: '25%' }));
-  await userEvent.click(inputControls.getByLabelText('Exact value'));
-  const exact = fields.getByRole('spinbutton', { name: 'Primary input token budget exact value' });
-  const enableOutput = fields.getByRole('button', { name: 'Set Primary output token budget' });
+  const input = fields.getByRole('textbox', { name: 'Primary input token budget' });
+  await userEvent.type(input, '262500');
+  const output = fields.getByRole('textbox', { name: 'Primary output token budget' });
   await userEvent.click(fields.getByRole('button', { name: mode === 'create' ? 'Create profile version 1' : 'Append version 2' }));
   expect(input).toBeDisabled();
   expect(model).toBeDisabled();
   expect(fields.getByLabelText('Primary reasoning')).toBeDisabled();
-  expect(exact).toBeDisabled();
-  expect(inputControls.getByLabelText('Exact value')).toBeDisabled();
-  expect(inputControls.getByRole('button', { name: '50%' })).toBeDisabled();
-  expect(enableOutput).toBeDisabled();
-  expect(fields.getByRole('button', { name: 'Primary input tokens use run/task default' })).toBeDisabled();
+  expect(output).toBeDisabled();
   for (const operation of fields.getAllByRole('button', { name: mode === 'create' ? 'Remove role' : 'Add role preference' })) {
     expect(operation).toBeDisabled();
   }
-  await userEvent.click(inputControls.getByRole('button', { name: '50%' }));
+  await userEvent.type(input, '9');
   fireEvent.submit(form);
   expect(posted).toHaveLength(1);
   expect(input).toHaveValue('262500');
@@ -148,8 +140,9 @@ test.each([
   } else {
     expect(fields.getByRole('alert')).toHaveTextContent('Save failed');
     expect(input).toBeEnabled();
-    expect(exact).toHaveValue(262500);
-    await userEvent.click(inputControls.getByRole('button', { name: '50%' }));
+    expect(input).toHaveValue('262500');
+    await userEvent.clear(input);
+    await userEvent.type(input, '525000');
     expect(input).toHaveValue('525000');
     expect(posted).toHaveLength(1);
   }

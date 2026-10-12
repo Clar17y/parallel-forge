@@ -225,12 +225,14 @@ class EpicBrainstormGateway:
         duration = float(job.budget.max_duration_seconds)
         started = time.monotonic()
         usage = AuthoringUsage()
-        tools = AuthoringTools(reader, job.budget.max_tool_calls, usage)
+        diagnostic = getattr(lifecycle, "diagnostic", None)
+        tools = AuthoringTools(reader, job.budget.max_tool_calls, usage, diagnostic=diagnostic)
         session = None
         launch_files: GeminiLaunchDirectory | AntigravityAuthoringHome | None = None
         proposal: BrainstormProposal | DecompositionProposal | None = None
         failure: str | None = None
         quota_reset_at: str | None = None
+        quota_exhausted = False
         interrupted = False
         use_bridge = False
         try:
@@ -437,6 +439,11 @@ class EpicBrainstormGateway:
         except AuthoringProviderFailure as error:
             failure = error.failure
             quota_reset_at = error.quota_reset_at
+            quota_exhausted = failure == "quota_exhausted"
+            try:
+                await tools.record("provider_error", operation="provider_receive", failure=failure)
+            except asyncio.CancelledError:
+                interrupted = True
         except ProtocolError, ClientProcessError, ValueError, TypeError, KeyError:
             failure = "invalid_output"
         except Exception:  # noqa: BLE001 - provider and repository errors stay private
@@ -455,6 +462,13 @@ class EpicBrainstormGateway:
                         await tools.close()
                     except asyncio.CancelledError, Exception:  # noqa: BLE001 - still stop client
                         cleanup_failed = True
+                diagnostic = asyncio.create_task(
+                    tools.record("settlement_started", operation="process_settlement")
+                )
+                diagnostic.add_done_callback(lambda done: done.exception() if not done.cancelled() else None)
+                done, _ = await asyncio.wait((diagnostic,), timeout=0.1)
+                if not done:
+                    diagnostic.cancel()
                 if session is not None:
                     try:
                         receipt = await session.close(
@@ -466,7 +480,10 @@ class EpicBrainstormGateway:
                         if not receipt.stop_confirmed:
                             cleanup_failed = True
                         elif proposal is not None and (
-                            receipt.return_code != 0
+                            (
+                                receipt.return_code != 0
+                                and not receipt.intentional_completed_stop
+                            )
                             or receipt.outcome not in {"exited", "completed"}
                         ):
                             failure = "process_failed"
@@ -507,7 +524,8 @@ class EpicBrainstormGateway:
         ):
             failure, proposal = "budget_exhausted", None
         return BrainstormGatewayResult(
-            proposal=proposal, telemetry=telemetry, failure=failure, quota_reset_at=quota_reset_at
+            proposal=proposal, telemetry=telemetry, failure=failure,
+            quota_reset_at=quota_reset_at, quota_exhausted=quota_exhausted,
         )
 
     async def _execute_inner(

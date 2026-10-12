@@ -4,6 +4,10 @@ import { Panel } from '@/components/ui/panel';
 import { StatusBadge } from '@/components/ui/status-badge';
 import { EvidenceDetails } from './evidence-details';
 import type { AuthoringOutcome } from '@/hooks/epics/types';
+import {
+  formatUtcTimestamp,
+  readableDiagnosticEventLabel,
+} from './authoring-presentation';
 
 function formatState(state: string): string {
   return state.replaceAll('_', ' ');
@@ -64,6 +68,23 @@ export function AuthoringJobOutcome({
           <EvidenceDetails summary="Inspect held usage reservations">
             <span>{JSON.stringify(held)}</span>
             <span>{JSON.stringify(outcome.held_reasons)}</span>
+          </EvidenceDetails>
+        )}
+        {outcome.diagnostics && (
+          <EvidenceDetails summary="Inspect diagnostic timeline">
+            <span>attempt_id: {outcome.diagnostics.attempt_id}</span>
+            {outcome.diagnostics.dropped_events > 0 && (
+              <span>dropped_events: {outcome.diagnostics.dropped_events}</span>
+            )}
+            <ul className="list-disc pl-5 space-y-1 mt-1">
+              {outcome.diagnostics.events.map((event) => (
+                <li key={event.sequence}>
+                  #{event.sequence} · {formatUtcTimestamp(event.occurred_at)} · {readableDiagnosticEventLabel(event)} · elapsed {event.elapsed_ms.toLocaleString()} ms
+                  {event.duration_ms !== null && event.duration_ms !== undefined ? ` · duration ${event.duration_ms.toLocaleString()} ms` : ''}
+                  {event.failure ? ` · failure: ${formatState(event.failure)}` : ''}
+                </li>
+              ))}
+            </ul>
           </EvidenceDetails>
         )}
         <EvidenceDetails summary="Inspect job identity and version">

@@ -285,8 +285,13 @@ test('regression: uses updated offline fallback seeds and provides refresh model
   const review = defaults.find(p => p.purpose === 'independent_review');
   const routine = defaults.find(p => p.purpose === 'routine_implementation');
 
-  expect(complex?.preferred_route.model).toBe('gpt-6-sol');
+  expect(complex?.preferred_route.model).toBe('gpt-6.1-sol');
   expect(complex?.preferred_route.effort).toBe('medium');
+  for (const purpose of ['planning', 'security', 'integration']) {
+    const route = defaults.find(p => p.purpose === purpose)?.preferred_route;
+    expect(route?.model).toBe('gpt-6.1-sol');
+    expect(route?.effort).toBe(purpose === 'security' ? 'high' : 'medium');
+  }
   expect(review?.preferred_route.model).toBe('claude-opus-5-5');
   expect(routine?.fallback_routes[0]?.model).toBe('gpt-6-luna');
 

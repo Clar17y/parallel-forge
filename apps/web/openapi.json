@@ -1163,6 +1163,16 @@
             ],
             "title": "Currency"
           },
+          "diagnostics": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BrainstormDiagnostics"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "failure": {
             "anyOf": [
               {
@@ -1722,6 +1732,155 @@
           }
         },
         "title": "BrainstormAmounts",
+        "type": "object"
+      },
+      "BrainstormDiagnosticEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "duration_ms": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Ms"
+          },
+          "elapsed_ms": {
+            "minimum": 0.0,
+            "title": "Elapsed Ms",
+            "type": "integer"
+          },
+          "failure": {
+            "anyOf": [
+              {
+                "enum": [
+                  "unavailable",
+                  "timeout",
+                  "cancelled",
+                  "invalid_output",
+                  "quota_exhausted",
+                  "process_unsettled",
+                  "process_failed",
+                  "budget_exhausted",
+                  "interrupted"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure"
+          },
+          "kind": {
+            "enum": [
+              "launch",
+              "tool_started",
+              "tool_completed",
+              "tool_failed",
+              "provider_wait",
+              "provider_retry",
+              "provider_error",
+              "proposal_received",
+              "settlement_started",
+              "process_settled",
+              "attempt_stopped"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "title": "Occurred At",
+            "type": "string"
+          },
+          "operation": {
+            "anyOf": [
+              {
+                "enum": [
+                  "repository_read",
+                  "provider_receive",
+                  "process_settlement",
+                  "client_initialize",
+                  "account_read",
+                  "model_list",
+                  "config_read",
+                  "thread_start",
+                  "turn_start",
+                  "tool_reply"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Operation"
+          },
+          "sequence": {
+            "minimum": 0.0,
+            "title": "Sequence",
+            "type": "integer"
+          },
+          "tool_name": {
+            "anyOf": [
+              {
+                "enum": [
+                  "list_files",
+                  "read_file",
+                  "search",
+                  "read_instructions"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tool Name"
+          }
+        },
+        "required": [
+          "sequence",
+          "kind",
+          "occurred_at",
+          "elapsed_ms"
+        ],
+        "title": "BrainstormDiagnosticEvent",
+        "type": "object"
+      },
+      "BrainstormDiagnostics": {
+        "additionalProperties": false,
+        "properties": {
+          "attempt_id": {
+            "format": "uuid",
+            "title": "Attempt Id",
+            "type": "string"
+          },
+          "dropped_events": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Dropped Events",
+            "type": "integer"
+          },
+          "events": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/BrainstormDiagnosticEvent"
+            },
+            "maxItems": 128,
+            "title": "Events",
+            "type": "array"
+          }
+        },
+        "required": [
+          "attempt_id"
+        ],
+        "title": "BrainstormDiagnostics",
         "type": "object"
       },
       "BrainstormDimension": {

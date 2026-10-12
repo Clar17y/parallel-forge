@@ -8,8 +8,10 @@ import { Button } from '@/components/ui/button';
 import { profileLabel } from './labels';
 import {
   defaultRolePreferences,
+  offlineModelSuggestions,
   type Route,
   type Preference,
+  type ReasoningEffort,
   type SubscriptionModelCatalogPage,
 } from './models';
 import { JevSettings, type JevPolicy } from '@/components/projects/jev-settings';
@@ -193,7 +195,30 @@ export function ProfileEditor({
     : fetchedCatalogs;
 
   const availableCatalogs = catalogs.value?.catalogs;
-  const presets = useMemo(() => routePresets(availableCatalogs), [availableCatalogs]);
+  const presets = useMemo(() => {
+    const list = routePresets(availableCatalogs).map(p => {
+      if (p.model === 'gpt-6.1-sol' && p.source === 'suggestion') {
+        return { ...p, defaultEffort: 'maximum' as ReasoningEffort, efforts: ['maximum' as ReasoningEffort] };
+      }
+      return p;
+    });
+    const catalogReported = new Set(
+      availableCatalogs?.flatMap(c => c.models.map(m => `${c.provider.toLowerCase()}:${c.client.toLowerCase()}:${m.id}`)) ?? []
+    );
+    const extraSuggestions: RoutePreset[] = offlineModelSuggestions
+      .filter(s => !catalogReported.has(`${s.provider.toLowerCase()}:${s.client.toLowerCase()}:${s.id}`) &&
+                   !list.some(p => p.provider === s.provider && p.client === s.client && p.model === s.id))
+      .map(s => ({
+        provider: s.provider,
+        client: s.client,
+        model: s.id,
+        label: s.label,
+        efforts: (s.efforts.length ? s.efforts : ['low']) as ReasoningEffort[],
+        defaultEffort: (s.efforts[0] ?? 'low') as ReasoningEffort,
+        source: 'suggestion' as const,
+      }));
+    return [...list, ...extraSuggestions];
+  }, [availableCatalogs]);
 
   const [preferences, setPreferences] = useState<EditablePreference[]>(() =>
     (initial?.preferences ?? defaultRolePreferences()).map((value, i) => ({

@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import secrets
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
@@ -264,8 +264,12 @@ class AuthoringUsage:
 class AuthoringTools:
     """Read-only calls with worker reauthorization, bounded replies and replay checks."""
 
-    def __init__(self, reader: BrainstormReadOnlyTools, budget: int, usage: AuthoringUsage):
+    def __init__(
+        self, reader: BrainstormReadOnlyTools, budget: int, usage: AuthoringUsage,
+        diagnostic: Callable[..., Awaitable[None]] | None = None,
+    ):
         self.reader, self.budget, self.usage = reader, budget, usage
+        self.diagnostic = diagnostic
         self.closed = False
         self._replies: dict[str, tuple[str, str, dict[str, object]]] = {}
         self.bridge = GeminiMcpBridge(secrets.token_urlsafe(32), self.mcp)
@@ -294,6 +298,8 @@ class AuthoringTools:
         if self.usage.tool_calls >= self.budget:
             raise ProtocolError("authoring tool budget exhausted")
         self.usage.tool_calls += 1
+        await self.record("tool_started", operation="repository_read", tool_name=name)
+        started = asyncio.get_running_loop().time()
         try:
             if name == "list_files":
                 entries = await self.reader.list_files(arguments.get("path", "."))
@@ -323,11 +329,34 @@ class AuthoringTools:
             reply = {"status": "succeeded", "result": value}
         except Exception:  # noqa: BLE001 - never forward filesystem/authorization exception text
             reply = {"status": "failed", "error": "repository read unavailable"}
+        await self.record(
+            "tool_completed" if reply["status"] == "succeeded" else "tool_failed",
+            operation="repository_read", tool_name=name,
+            duration_ms=max(0, int((asyncio.get_running_loop().time() - started) * 1000)),
+            **({"failure": "unavailable"} if reply["status"] != "succeeded" else {}),
+        )
         if len(self._replies) >= max(1, self.budget):
             raise ProtocolError("too many authoring tool replies")
         self._replies[key] = (name, fingerprint, reply)
         self.issued_replies.add(json.dumps(reply, sort_keys=True, separators=(",", ":")))
         return reply
+
+    async def record(self, kind: str, **fields: object) -> None:
+        if self.diagnostic is None:
+            return
+        diagnostic: asyncio.Future[None] = asyncio.ensure_future(
+            self.diagnostic(kind, **fields)
+        )
+        diagnostic.add_done_callback(
+            lambda done: done.exception() if not done.cancelled() else None
+        )
+        try:
+            done, _ = await asyncio.wait((diagnostic,), timeout=0.1)
+        except asyncio.CancelledError:
+            diagnostic.cancel()
+            raise
+        if not done:
+            diagnostic.cancel()
 
     async def mcp(self, frame: Mapping[str, object]) -> Mapping[str, object] | None:
         if self.closed or frame.get("jsonrpc") != "2.0":
@@ -414,6 +443,7 @@ async def codex_exchange(
 ) -> BrainstormProposal | DecompositionProposal:
     error = _TerminalError(gateway._installation.quota_limit_id)
     rpc = gateway._rpc
+    await tools.record("provider_wait", operation="client_initialize")
     await rpc(
         session,
         1,
@@ -425,6 +455,7 @@ async def codex_exchange(
         terminal_error=error,
     )
     await session.send({"method": "initialized", "params": {}})
+    await tools.record("provider_wait", operation="account_read")
     account = await rpc(session, 2, "account/read", {"refreshToken": False}, terminal_error=error)
     identity = account.get("account")
     if (
@@ -434,6 +465,7 @@ async def codex_exchange(
         or codex_account_identity(identity["email"]) != gateway._installation.account
     ):
         raise ProtocolError("Codex authoring account differs")
+    await tools.record("provider_wait", operation="model_list")
     models = await rpc(
         session, 3, "model/list", {"includeHidden": True, "limit": 200}, terminal_error=error
     )
@@ -448,6 +480,7 @@ async def codex_exchange(
         for item in models["data"]
     ):
         raise ProtocolError("Codex authoring route unavailable")
+    await tools.record("provider_wait", operation="config_read")
     config = await rpc(
         session,
         4,
@@ -478,6 +511,7 @@ async def codex_exchange(
         if job.kind == "decomposition"
         else "You are a read-only epic brief authoring assistant."
     )
+    await tools.record("provider_wait", operation="thread_start")
     thread = await rpc(
         session,
         5,
@@ -498,6 +532,33 @@ async def codex_exchange(
     if thread.get("model") != gateway._installation.model:
         raise ProtocolError("Codex authoring thread model differs")
     thread_id = gateway._id(thread.get("thread"))
+
+    async def respond_tool(
+        frame: Mapping[str, Any], expected_turn_id: str, *, awaiting_ack: bool = False
+    ) -> None:
+        params = frame.get("params")
+        ident = frame.get("id")
+        if not isinstance(params, Mapping) or type(ident) not in (str, int):
+            raise ProtocolError("invalid Codex authoring callback")
+        assert isinstance(ident, (str, int))
+        if params.get("threadId") != thread_id or params.get("turnId") != expected_turn_id:
+            raise ProtocolError("foreign Codex authoring callback")
+        call = decode_tool_call(params, expected_namespace="forge")
+        if not call.name.startswith("forge_"):
+            raise ProtocolError("unregistered Codex authoring tool")
+        reply = await tools.call(call.call_key, call.name[6:], call.arguments)
+        await tools.record("provider_wait", operation="tool_reply")
+        await session.send(tool_result_frame(call, reply, ident))
+        await tools.record(
+            "provider_wait", operation="turn_start" if awaiting_ack else "provider_receive"
+        )
+
+    early_events: list[Mapping[str, Any]] = []
+
+    async def early_tool_call(frame: Mapping[str, Any], announced: str) -> None:
+        await respond_tool(frame, announced, awaiting_ack=True)
+
+    await tools.record("provider_wait", operation="turn_start")
     turn = await rpc(
         session,
         6,
@@ -512,11 +573,14 @@ async def codex_exchange(
         },
         thread_id=thread_id,
         terminal_error=error,
+        early_tool_call=early_tool_call,
+        early_events=early_events,
     )
     turn_id = gateway._id(turn.get("turn"))
+    await tools.record("provider_wait", operation="provider_receive")
     candidate: BrainstormProposal | DecompositionProposal | None = None
     for _ in range(4096):
-        frame = await session.receive()
+        frame = early_events.pop(0) if early_events else await session.receive()
         if frame is None:
             break
         if _client_status_notification(frame, thread_id=thread_id) or error.account_notification(
@@ -549,6 +613,8 @@ async def codex_exchange(
                     "quota_exhausted",
                     error.quota.reset_at.isoformat() if error.quota.reset_at else None,
                 )
+            if isinstance(completed.get("error"), Mapping):
+                await tools.record("provider_error", operation="provider_receive", failure="unavailable")
             if (
                 completed.get("status") != "completed"
                 or completed.get("error") is not None
@@ -556,8 +622,7 @@ async def codex_exchange(
                 or error.failure is not None
             ):
                 raise ProtocolError("Codex authoring turn failed")
-            await session.close_stdin()
-            await session.wait_closed()
+            await session.finish_completed()
             return candidate
         if params.get("turnId") != turn_id:
             raise ProtocolError("foreign Codex authoring turn")
@@ -571,15 +636,7 @@ async def codex_exchange(
                 cache_key="cachedInputTokens",
             )
         elif method == "item/tool/call":
-            ident = frame.get("id")
-            if type(ident) not in (str, int):
-                raise ProtocolError("invalid Codex authoring callback")
-            assert isinstance(ident, (str, int))
-            call = decode_tool_call(params, expected_namespace="forge")
-            if not call.name.startswith("forge_"):
-                raise ProtocolError("unregistered Codex authoring tool")
-            reply = await tools.call(call.call_key, call.name[6:], call.arguments)
-            await session.send(tool_result_frame(call, reply, ident))
+            await respond_tool(frame, turn_id)
         elif method == "item/completed":
             item = params.get("item")
             if not isinstance(item, Mapping):
@@ -591,6 +648,7 @@ async def codex_exchange(
                 if not isinstance(message, str):
                     raise ProtocolError("invalid Codex authoring message")
                 candidate = proposal_from_output(parse_json(message), job)
+                await tools.record("proposal_received")
             elif item.get("type") not in {
                 "agentMessage",
                 "reasoning",
@@ -616,6 +674,12 @@ async def codex_exchange(
         }:
             if method == "error":
                 error.notification(params, utc_now())
+                if params.get("willRetry") is True:
+                    await tools.record("provider_retry", operation="provider_receive")
+                else:
+                    await tools.record(
+                        "provider_error", operation="provider_receive", failure="unavailable"
+                    )
         else:
             raise ProtocolError("unrecognized Codex authoring event")
     raise ProtocolError("Codex authoring ended before completed turn")
@@ -724,6 +788,7 @@ async def claude_exchange(
             "message": {"role": "user", "content": authoring_prompt(job, turns)},
         }
     )
+    await tools.record("provider_wait", operation="provider_receive")
     for _ in range(4096):
         frame = await session.receive()
         if frame is None:
@@ -751,6 +816,7 @@ async def claude_exchange(
         quota.notification(frame, utc_now())
         if reply is not None:
             await session.send(reply)
+            await tools.record("provider_wait", operation="provider_receive")
         if codec.terminal is not None:
             terminal = codec.terminal
             if not init_received:
@@ -769,7 +835,9 @@ async def claude_exchange(
                 usage.observe_claude(value)
             await session.close_stdin()
             await session.wait_closed()
-            return proposal_from_output(terminal.get("structured_output"), job)
+            proposal = proposal_from_output(terminal.get("structured_output"), job)
+            await tools.record("proposal_received")
+            return proposal
     raise ProtocolError("Claude authoring ended before terminal result")
 
 
@@ -852,6 +920,7 @@ async def gemini_exchange(
     parts: list[str] = []
     size = 0
     pending_tools: set[str] = set()
+    await tools.record("provider_wait", operation="provider_receive")
     for _ in range(4096):
         frame = await tools.receive(session)
         if not isinstance(frame, Mapping):
@@ -962,7 +1031,9 @@ async def gemini_exchange(
             publisher.capture_terminal(tokens=tokens)
         await session.close_stdin()
         await session.wait_closed()
-        return proposal_from_output(parse_json("".join(parts)), job)
+        proposal = proposal_from_output(parse_json("".join(parts)), job)
+        await tools.record("proposal_received")
+        return proposal
     raise ProtocolError("Gemini authoring ended before terminal result")
 
 
@@ -996,6 +1067,7 @@ async def antigravity_exchange(
             },
         }
     )
+    await tools.record("provider_wait", operation="provider_receive")
     for _ in range(4096):
         frame = await tools.receive(session)
         if not isinstance(frame, Mapping):
@@ -1044,5 +1116,7 @@ async def antigravity_exchange(
             )
         await session.close_stdin()
         await session.wait_closed()
-        return proposal_from_output(payload.get("structured_output"), job)
+        proposal = proposal_from_output(payload.get("structured_output"), job)
+        await tools.record("proposal_received")
+        return proposal
     raise ProtocolError("Antigravity authoring ended before result")

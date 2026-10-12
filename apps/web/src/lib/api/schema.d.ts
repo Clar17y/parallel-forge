@@ -2151,6 +2151,7 @@ export interface components {
             cumulative_usage?: components["schemas"]["BrainstormAmounts"];
             /** Currency */
             currency?: string | null;
+            diagnostics?: components["schemas"]["BrainstormDiagnostics"] | null;
             failure?: components["schemas"]["BrainstormFailure"] | null;
             held_reasons?: components["schemas"]["BrainstormHeldReasons"];
             held_reservations?: components["schemas"]["BrainstormAmounts"];
@@ -2360,6 +2361,49 @@ export interface components {
              * @default 0
              */
             tool_call_count: number;
+        };
+        /** BrainstormDiagnosticEvent */
+        BrainstormDiagnosticEvent: {
+            /** Duration Ms */
+            duration_ms?: number | null;
+            /** Elapsed Ms */
+            elapsed_ms: number;
+            /** Failure */
+            failure?: ("unavailable" | "timeout" | "cancelled" | "invalid_output" | "quota_exhausted" | "process_unsettled" | "process_failed" | "budget_exhausted" | "interrupted") | null;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "launch" | "tool_started" | "tool_completed" | "tool_failed" | "provider_wait" | "provider_retry" | "provider_error" | "proposal_received" | "settlement_started" | "process_settled" | "attempt_stopped";
+            /**
+             * Occurred At
+             * Format: date-time
+             */
+            occurred_at: string;
+            /** Operation */
+            operation?: ("repository_read" | "provider_receive" | "process_settlement" | "client_initialize" | "account_read" | "model_list" | "config_read" | "thread_start" | "turn_start" | "tool_reply") | null;
+            /** Sequence */
+            sequence: number;
+            /** Tool Name */
+            tool_name?: ("list_files" | "read_file" | "search" | "read_instructions") | null;
+        };
+        /** BrainstormDiagnostics */
+        BrainstormDiagnostics: {
+            /**
+             * Attempt Id
+             * Format: uuid
+             */
+            attempt_id: string;
+            /**
+             * Dropped Events
+             * @default 0
+             */
+            dropped_events: number;
+            /**
+             * Events
+             * @default []
+             */
+            events: components["schemas"]["BrainstormDiagnosticEvent"][];
         };
         /** @enum {string} */
         BrainstormDimension: "duration_ms" | "tool_call_count" | "input_tokens" | "output_tokens" | "estimated_api_cost_minor";

@@ -19,6 +19,7 @@ from forge.agents.client_process import (
     ClientProcessError,
     ClientProcessReceipt,
     ClientProcessResult,
+    ClientProcessSession,
     ClientProcessSupervisor,
     ClientSettlementUncertain,
     ProcessIdentityStatus,
@@ -26,6 +27,7 @@ from forge.agents.client_process import (
 from forge.agents.codex_gateway import CodexGateway, codex_account_identity
 from forge.agents.epic_brainstorm_gateway import EpicBrainstormGateway
 from forge.agents.epic_brainstorm_protocol import (
+    AuthoringProviderFailure,
     AuthoringTools,
     AuthoringUsage,
     antigravity_exchange,
@@ -33,6 +35,7 @@ from forge.agents.epic_brainstorm_protocol import (
     gemini_exchange,
 )
 from forge.agents.subscription_protocol import ProtocolError
+from forge.application.ports.epic_decomposition import DecompositionGatewayResult
 from forge.domain.epic_brainstorm import (
     AuthoringJobSnapshot,
     BrainstormProposal,
@@ -63,6 +66,7 @@ from forge.domain.task_usage_contract import (
 )
 from forge.tools.epic_brainstorm import BrainstormReadOnlyTools
 from forge.tools.repository import RepositoryReader
+from forge.worker.epic_decomposition import ValidatedDecompositionGateway
 
 
 class MockLifecycle:
@@ -71,6 +75,10 @@ class MockLifecycle:
         self.launch_ids: list[str] = []
         self.receipts: list[object] = []
         self.results: list[object] = []
+        self.diagnostics: list[tuple[str, dict[str, object]]] = []
+
+    async def diagnostic(self, kind: str, **fields: object) -> None:
+        self.diagnostics.append((kind, fields))
 
     async def launch_intent(self, launch_id: str) -> None:
         self.launch_ids.append(launch_id)
@@ -121,6 +129,33 @@ class _CapturingSupervisor(ClientProcessSupervisor):
         self.launched_spec = spec
         self.session = await super().start(spec, **kwargs)
         return self.session
+
+
+@pytest.mark.asyncio
+async def test_authoring_tool_start_is_recorded_before_stuck_read_without_arguments() -> None:
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    events: list[tuple[str, dict[str, object]]] = []
+
+    class StuckReader:
+        async def read_file(self, _path):
+            entered.set()
+            await release.wait()
+
+    async def record(kind: str, **fields: object) -> None:
+        events.append((kind, fields))
+
+    tools = AuthoringTools(StuckReader(), 2, AuthoringUsage(), diagnostic=record)
+    operation = asyncio.create_task(tools.call("read-1", "read_file", {"path": "secret-path"}))
+    await asyncio.wait_for(entered.wait(), 2)
+    assert events == [
+        ("tool_started", {"operation": "repository_read", "tool_name": "read_file"})
+    ]
+    assert "secret-path" not in repr(events)
+    operation.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await operation
+    assert len(events) == 1
 
 
 def _sleeping_codex_installation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -526,7 +561,9 @@ async def test_gateway_explicit_failure_frame(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("outcome", ["success", "nonzero", "unknown_usage", "quota"])
+@pytest.mark.parametrize(
+    "outcome", ["success", "nonzero", "natural_exit_race", "unknown_usage", "quota", "quota_diagnostic_raises", "quota_diagnostic_stalls", "quota_diagnostic_cancelled", "long_lived", "retry", "stuck_setup", "tool_reply", "early_callback", "early_replay", "early_foreign", "early_terminal", "early_terminal_then_callback", "early_failed_terminal_then_callback", "closure_timeout", "blocked_settlement_diag"]
+)
 async def test_configured_codex_uses_app_server_authoring_protocol(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome: str
 ) -> None:
@@ -555,6 +592,7 @@ async def test_configured_codex_uses_app_server_authoring_protocol(
         }
     )
     script = tmp_path / "app_server_peer.py"
+    (tmp_path / "README.md").write_text("Safe read fixture", encoding="utf-8")
     script.write_text(
         "import json,sys\n"
         "def recv(method):\n"
@@ -564,29 +602,80 @@ async def test_configured_codex_uses_app_server_authoring_protocol(
         "recv('initialized')\n"
         "f=recv('account/read'); send({'id':f['id'],'result':{'account':{'type':'chatgpt','email':'codex@example.invalid'}}})\n"
         "f=recv('model/list'); send({'id':f['id'],'result':{'data':[{'id':'gpt-5.6-luna','supportedReasoningEfforts':[{'reasoningEffort':'medium'}]}]}})\n"
-        "f=recv('config/read'); send({'id':f['id'],'result':{'config':{}}})\n"
+        "f=recv('config/read'); "
+        + ("import time; time.sleep(30); " if outcome == "stuck_setup" else "")
+        + "send({'id':f['id'],'result':{'config':{}}})\n"
         "f=recv('thread/start'); assert f['params']['model']=='gpt-5.6-luna' and len(f['params']['dynamicTools'][0]['tools'])==4; send({'id':f['id'],'result':{'thread':{'id':'thread-1'},'model':'gpt-5.6-luna'}})\n"
-        "f=recv('turn/start'); schema=f['params']['outputSchema']; props=schema['properties']['proposal']['properties']; assert f['params']['effort']=='medium' and 'proposal' in schema['properties'] and '$defs' in schema and props['requirement_criteria']['type']=='array'; send({'id':f['id'],'result':{'turn':{'id':'turn-1'}}})\n"
-        f"proposal={{'proposal':{{'turn_id':'{job.prompt_turn_id}','problem':'Protocol proposal','requirements':['One'],'requirement_criteria':[{{'requirement':'One','criteria':['Within five minutes']}}]}}}}\n"
+        + f"proposal={{'proposal':{{'turn_id':'{job.prompt_turn_id}','problem':'Protocol proposal','requirements':['One'],'requirement_criteria':[{{'requirement':'One','criteria':['Within five minutes']}}]}}}}\n"
+        "f=recv('turn/start'); schema=f['params']['outputSchema']; props=schema['properties']['proposal']['properties']; assert f['params']['effort']=='medium' and 'proposal' in schema['properties'] and '$defs' in schema and props['requirement_criteria']['type']=='array'; "
+        + (
+            "send({'method':'turn/started','params':{'threadId':'thread-1','turn':{'id':'turn-1'}}}); "
+            + "send({'method':'item/started','params':{'threadId':'thread-1','turnId':'turn-1','item':{'id':'early-item','type':'dynamicToolCall'}}}); "
+            + "callback={'id':80,'method':'item/tool/call','params':{'callId':'early-read','threadId':'thread-1','turnId':'"
+            + ("foreign" if outcome == "early_foreign" else "turn-1")
+            + "','namespace':'forge','tool':'forge_read_file','arguments':{'path':'README.md'}}}; send(callback); "
+            + (
+                "reply=json.loads(sys.stdin.readline()); assert reply['id']==80; "
+                + (
+                    "send(callback); reply=json.loads(sys.stdin.readline()); assert reply['id']==80; "
+                    if outcome == "early_replay" else ""
+                )
+                if outcome != "early_foreign" else ""
+            )
+            if outcome in {"early_callback", "early_replay", "early_foreign"} else ""
+        )
+        + (
+            "send({'method':'turn/started','params':{'threadId':'thread-1','turn':{'id':'turn-1'}}}); send({'method':'item/completed','params':{'threadId':'thread-1','turnId':'turn-1','item':{'id':'item-1','type':'agentMessage','text':json.dumps(proposal)}}}); send({'method':'turn/completed','params':{'threadId':'thread-1','turn':{'id':'turn-1','status':'completed'}}}); "
+            if outcome == "early_terminal" else ""
+        )
+        + (
+            "send({'method':'turn/started','params':{'threadId':'thread-1','turn':{'id':'turn-1'}}}); send({'method':'turn/completed','params':{'threadId':'thread-1','turn':{'id':'turn-1','status':'" + ("failed" if outcome == "early_failed_terminal_then_callback" else "completed") + "'}}}); send({'id':80,'method':'item/tool/call','params':{'callId':'late-read','threadId':'thread-1','turnId':'turn-1','namespace':'forge','tool':'forge_read_file','arguments':{'path':'README.md'}}}); "
+            if outcome in {"early_terminal_then_callback", "early_failed_terminal_then_callback"} else ""
+        )
+        + "send({'id':f['id'],'result':{'turn':{'id':'turn-1'}}})\n"
+        + (
+            "send({'id':80,'method':'item/tool/call','params':{'callId':'read-1','threadId':'thread-1','turnId':'turn-1','namespace':'forge','tool':'forge_read_file','arguments':{'path':'README.md'}}}); reply=json.loads(sys.stdin.readline()); assert reply['id']==80\n"
+            if outcome == "tool_reply" else ""
+        )
         + (
             "send({'method':'thread/tokenUsage/updated','params':{'threadId':'thread-1','turnId':'turn-1','tokenUsage':{'total':{'inputTokens':7,'outputTokens':9,'cachedInputTokens':0}}}})\n"
-            if outcome in {"success", "nonzero"}
+            if outcome in {"success", "nonzero", "retry"}
             else ""
         )
         + (
+            "send({'method':'error','params':{'threadId':'thread-1','turnId':'turn-1','error':{'message':'private transient'},'willRetry':True}})\n"
+            if outcome == "retry" else ""
+        )
+        + (
             "send({'method':'item/completed','params':{'threadId':'thread-1','turnId':'turn-1','item':{'id':'item-1','type':'agentMessage','text':json.dumps(proposal)}}})\n"
-            if outcome != "quota"
+            if not outcome.startswith("quota") and outcome not in {"early_terminal", "early_terminal_then_callback", "early_failed_terminal_then_callback"}
             else ""
         )
         + (
             "send({'method':'turn/completed','params':{'threadId':'thread-1','turn':{'id':'turn-1','status':'completed'}}})\n"
-            if outcome != "quota"
+            if not outcome.startswith("quota") and outcome not in {"early_terminal", "early_terminal_then_callback", "early_failed_terminal_then_callback"}
             else "send({'method':'turn/completed','params':{'threadId':'thread-1','turn':{'id':'turn-1','status':'failed','error':{'codexErrorInfo':'usageLimitExceeded','resetAfterSeconds':120}}}})\n"
+            if outcome.startswith("quota") else ""
         )
-        + ("sys.exit(7)\n" if outcome == "nonzero" else ""),
+        + ("sys.exit(7)\n" if outcome in {"nonzero", "natural_exit_race"} else "")
+        + ("import time; time.sleep(30)\n" if outcome in {"long_lived", "closure_timeout", "blocked_settlement_diag"} else ""),
         encoding="utf-8",
     )
     monkeypatch.setattr(CodexGateway, "_command", lambda self: ("-u", str(script)))
+    if outcome == "closure_timeout":
+        async def stuck_completion(_self):
+            await asyncio.Event().wait()
+
+        monkeypatch.setattr(ClientProcessSession, "finish_completed", stuck_completion)
+    if outcome == "natural_exit_race":
+        async def watcher_wins_after_probe(self: ClientProcessSession):
+            result = await self.wait_closed()
+            # Reproduce the old mutable intent flag being set after the watcher
+            # had already committed a natural failed exit.
+            self.intentional_completed_stop = True
+            return result
+
+        monkeypatch.setattr(ClientProcessSession, "finish_completed", watcher_wins_after_probe)
     exe = Path(sys.executable)
     inst = CodexInstallationSpec(
         client="codex_app_server",
@@ -606,28 +695,84 @@ async def test_configured_codex_uses_app_server_authoring_protocol(
         return False
 
     lifecycle = MockLifecycle()
+    if outcome == "blocked_settlement_diag":
+        original_diagnostic = lifecycle.diagnostic
+
+        async def delayed_diagnostic(kind: str, **fields: object) -> None:
+            if kind == "settlement_started":
+                await asyncio.sleep(1)
+            await original_diagnostic(kind, **fields)
+
+        lifecycle.diagnostic = delayed_diagnostic  # type: ignore[method-assign]
+    if outcome.startswith("quota_diagnostic_"):
+        owner = asyncio.current_task()
+
+        async def broken_diagnostic(kind: str, **fields: object) -> None:
+            if kind == "provider_error" and fields.get("failure") == "quota_exhausted":
+                if outcome == "quota_diagnostic_raises":
+                    raise RuntimeError("diagnostic unavailable")
+                if outcome == "quota_diagnostic_cancelled":
+                    assert owner is not None
+                    asyncio.get_running_loop().call_later(0.02, owner.cancel)
+                await asyncio.Event().wait()
+
+        lifecycle.diagnostic = broken_diagnostic  # type: ignore[method-assign]
+    began = asyncio.get_running_loop().time()
     result = await gateway.execute(
-        job,
+        job.model_copy(update={"budget": TaskBudget(max_provider_attempts=2, max_duration_seconds=2)})
+        if outcome in {"long_lived", "stuck_setup", "closure_timeout", "blocked_settlement_diag", "quota_diagnostic_stalls"}
+        else job,
         (),
         BrainstormReadOnlyTools(RepositoryReader(root=str(tmp_path), secret_paths=())),
         cancelled=is_cancelled,
         lifecycle=lifecycle,
     )
-    if outcome == "nonzero":
+    if outcome in {"nonzero", "natural_exit_race"}:
         assert result.failure == "process_failed" and result.proposal is None
-    elif outcome == "quota":
-        assert result.failure == "quota_exhausted" and result.proposal is None
+    elif outcome in {"early_terminal_then_callback", "early_failed_terminal_then_callback"}:
+        assert result.failure == "invalid_output" and result.proposal is None
+        assert not any(kind == "tool_started" for kind, _ in lifecycle.diagnostics)
+    elif outcome == "stuck_setup":
+        assert result.failure == "timeout" and result.proposal is None
+        assert ("provider_wait", {"operation": "config_read"}) in lifecycle.diagnostics
+        assert ("provider_wait", {"operation": "provider_receive"}) not in lifecycle.diagnostics
+    elif outcome == "closure_timeout":
+        assert result.failure == "timeout" and result.proposal is None
+        assert ("proposal_received", {}) in lifecycle.diagnostics
+        assert lifecycle.results[0][1].stop_confirmed
+    elif outcome == "early_foreign":
+        assert result.failure == "invalid_output" and result.proposal is None
+        assert not any(kind == "tool_started" for kind, _ in lifecycle.diagnostics)
+    elif outcome.startswith("quota"):
+        assert result.failure == (
+            "cancelled" if outcome == "quota_diagnostic_cancelled" else "quota_exhausted"
+        ) and result.proposal is None
         assert result.quota_reset_at is not None
+        assert result.quota_exhausted
+        if outcome == "quota_diagnostic_stalls":
+            assert asyncio.get_running_loop().time() - began < 0.8
     else:
         assert result.failure is None, [
             (item.outcome, item.return_code) for _, item in lifecycle.results
         ]
         assert result.proposal is not None and result.proposal.problem == "Protocol proposal"
         assert result.proposal.requirement_criteria == {"One": ("Within five minutes",)}
+    if outcome == "blocked_settlement_diag":
+        assert asyncio.get_running_loop().time() - began < 0.8
     assert result.telemetry is not None
-    assert result.telemetry.input_tokens == (7 if outcome in {"success", "nonzero"} else None)
-    assert result.telemetry.output_tokens == (9 if outcome in {"success", "nonzero"} else None)
+    assert result.telemetry.input_tokens == (7 if outcome in {"success", "nonzero", "retry"} else None)
+    assert result.telemetry.output_tokens == (9 if outcome in {"success", "nonzero", "retry"} else None)
     assert len(lifecycle.receipts) == len(lifecycle.results) == 1
+    if outcome == "retry":
+        assert ("provider_retry", {"operation": "provider_receive"}) in lifecycle.diagnostics
+        assert "private transient" not in repr(lifecycle.diagnostics)
+    if outcome == "tool_reply":
+        assert ("provider_wait", {"operation": "tool_reply"}) in lifecycle.diagnostics
+        assert ("tool_started", {"operation": "repository_read", "tool_name": "read_file"}) in lifecycle.diagnostics
+    if outcome in {"early_callback", "early_replay"}:
+        assert ("tool_started", {"operation": "repository_read", "tool_name": "read_file"}) in lifecycle.diagnostics
+        if outcome == "early_replay":
+            assert result.telemetry.tool_call_count == 1
 
 
 @pytest.mark.asyncio
@@ -751,16 +896,21 @@ async def test_bridge_cleanup_failure_still_settles_real_client(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("after_proposal", [False, True])
+@pytest.mark.parametrize("blocked_diagnostic", [False, True])
 async def test_repeated_cancellation_during_official_cleanup_settles_client(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, after_proposal: bool,
+    blocked_diagnostic: bool,
 ) -> None:
     import forge.agents.epic_brainstorm_gateway as gateway_module
 
     exchanging, cleaning, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
 
-    async def exchange(_session, *_args):
+    async def exchange(_session, _gateway, job, *_args):
         exchanging.set()
-        await asyncio.Event().wait()
+        if not after_proposal:
+            await asyncio.Event().wait()
+        return BrainstormProposal(turn_id=job.prompt_turn_id, problem="Pending settlement")
 
     async def delayed_revoke(self):
         cleaning.set()
@@ -772,6 +922,15 @@ async def test_repeated_cancellation_during_official_cleanup_settles_client(
     installation = _sleeping_codex_installation(tmp_path, monkeypatch)
     supervisor = _CapturingSupervisor()
     lifecycle = MockLifecycle()
+    if blocked_diagnostic:
+        normal_diagnostic = lifecycle.diagnostic
+
+        async def delayed_diagnostic(kind: str, **fields: object) -> None:
+            if kind == "settlement_started":
+                await asyncio.sleep(1)
+            await normal_diagnostic(kind, **fields)
+
+        lifecycle.diagnostic = delayed_diagnostic  # type: ignore[method-assign]
 
     async def active() -> bool:
         return False
@@ -786,12 +945,16 @@ async def test_repeated_cancellation_during_official_cleanup_settles_client(
         )
     )
     try:
+        began = asyncio.get_running_loop().time()
         await asyncio.wait_for(exchanging.wait(), 5)
-        task.cancel()
+        if not after_proposal:
+            task.cancel()
         await asyncio.wait_for(cleaning.wait(), 5)
         task.cancel()
         release.set()
         result = await asyncio.wait_for(task, 5)
+        if blocked_diagnostic:
+            assert asyncio.get_running_loop().time() - began < 0.8
         assert result.failure == "cancelled" and result.proposal is None
         assert len(lifecycle.receipts) == len(lifecycle.results) == 1
         assert (
@@ -805,8 +968,9 @@ async def test_repeated_cancellation_during_official_cleanup_settles_client(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("blocked_diagnostic", [False, True])
 async def test_official_exchange_timeout_still_settles_real_client(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, blocked_diagnostic: bool
 ) -> None:
     import forge.agents.epic_brainstorm_gateway as gateway_module
 
@@ -817,11 +981,21 @@ async def test_official_exchange_timeout_still_settles_real_client(
     installation = _sleeping_codex_installation(tmp_path, monkeypatch)
     supervisor = _CapturingSupervisor()
     lifecycle = MockLifecycle()
+    if blocked_diagnostic:
+        normal_diagnostic = lifecycle.diagnostic
+
+        async def delayed_diagnostic(kind: str, **fields: object) -> None:
+            if kind == "settlement_started":
+                await asyncio.sleep(1)
+            await normal_diagnostic(kind, **fields)
+
+        lifecycle.diagnostic = delayed_diagnostic  # type: ignore[method-assign]
 
     async def active() -> bool:
         return False
 
     try:
+        began = asyncio.get_running_loop().time()
         result = await EpicBrainstormGateway(
             installation=installation, supervisor=supervisor
         ).execute(
@@ -832,6 +1006,8 @@ async def test_official_exchange_timeout_still_settles_real_client(
             lifecycle=lifecycle,
         )
         assert result.failure == "timeout" and result.proposal is None
+        if blocked_diagnostic:
+            assert asyncio.get_running_loop().time() - began < 1.8
         assert len(lifecycle.receipts) == len(lifecycle.results) == 1
         assert (
             ClientProcessSupervisor.identity_status(lifecycle.receipts[0])
@@ -1653,6 +1829,158 @@ async def test_claude_authoring_uses_stream_json_mcp_handshake(
     assert session.sent[-1]["type"] == "user"
     assert session.stdin_closed and session.settled
     assert usage.telemetry(1).output_tokens == 6
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fault", ["raises", "stalls"])
+async def test_claude_authoring_quota_survives_diagnostic_fault(
+    tmp_path: Path, fault: str
+) -> None:
+    job = _make_snapshot()
+    identity = str(job.job_id)
+
+    def mcp(request_id: str, message: dict[str, object]) -> dict[str, object]:
+        return {"type": "control_request", "request_id": request_id,
+                "request": {"subtype": "mcp_message", "server_name": "forge", "message": message}}
+
+    session = _ScriptedSession([
+        mcp("mcp-init", {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                         "params": {"protocolVersion": "2025-06-18"}}),
+        {"type": "control_response", "response": {"subtype": "success",
+                                               "request_id": "forge_initialize", "response": {}}},
+        mcp("mcp-ready", {"jsonrpc": "2.0", "method": "notifications/initialized"}),
+        mcp("mcp-list", {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}),
+        {"type": "control_response", "response": {"subtype": "success",
+                                               "request_id": "forge_settings",
+                                               "response": {"applied": {"model": "claude-test",
+                                                                        "effort": "medium"}}}},
+        {"type": "system", "subtype": "init", "session_id": identity, "model": "claude-test"},
+        {"type": "result", "subtype": "success", "session_id": identity, "is_error": True,
+         "errors": ["You've hit your weekly limit"], "api_error_status": 429},
+    ])
+    exe = Path(sys.executable)
+    gateway = ClaudeGateway(
+        ClaudeInstallation(executable=str(exe), cwd=str(tmp_path), model="claude-test",
+                           effort="medium", client_home=str(tmp_path), account="dev-account",
+                           executable_digest=hashlib.sha256(exe.read_bytes()).hexdigest()),
+        trust=LocalCliTrust.OPERATOR,
+    )
+
+    async def diagnostic(kind: str, **fields: object) -> None:
+        if kind == "provider_error" and fields.get("failure") == "quota_exhausted":
+            if fault == "raises":
+                raise RuntimeError("diagnostic unavailable")
+            await asyncio.Event().wait()
+
+    usage = AuthoringUsage()
+    tools = AuthoringTools(
+        BrainstormReadOnlyTools(RepositoryReader(root=str(tmp_path), secret_paths=())),
+        10, usage, diagnostic=diagnostic,
+    )
+    with pytest.raises(AuthoringProviderFailure) as caught:
+        await asyncio.wait_for(claude_exchange(session, gateway, job, (), tools, usage), 0.8)
+    assert caught.value.failure == "quota_exhausted"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ["claude", "codex"])
+@pytest.mark.parametrize("stop_case", [
+    "uncertain_receipt", "uncertain_raise", "diagnostic_cancel", "diagnostic_deadline",
+])
+@pytest.mark.parametrize("known_reset", [False, True])
+async def test_authoring_quota_evidence_survives_stop_and_diagnostic_cancel(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: str,
+    stop_case: str, known_reset: bool,
+) -> None:
+    import forge.agents.epic_brainstorm_gateway as gateway_module
+
+    reset = "2099-01-01T00:00:00+00:00" if known_reset else None
+
+    async def exchange(*_args: object) -> None:
+        raise AuthoringProviderFailure("quota_exhausted", reset)
+
+    monkeypatch.setattr(
+        gateway_module, "claude_exchange" if provider == "claude" else "codex_exchange",
+        exchange,
+    )
+
+    class Session:
+        async def close(self, **_kwargs: object) -> ClientProcessResult:
+            receipt = ClientProcessResult(
+                receipt=ClientProcessReceipt("scripted", 1, "scripted", 0),
+                return_code=None, frames=(), stdout_byte_count=0, stderr="",
+                stderr_byte_count=0, stdout_truncated=False, stderr_truncated=False,
+                outcome="exited" if stop_case.startswith("diagnostic_") else "unsettled",
+                stop_confirmed=stop_case.startswith("diagnostic_"),
+            )
+            if stop_case == "uncertain_raise":
+                raise ClientSettlementUncertain(receipt)
+            return receipt
+
+    class Supervisor:
+        async def start(self, *_args: object, **_kwargs: object) -> Session:
+            return Session()
+
+    exe = Path(sys.executable)
+    common = {
+        "account": "dev-account", "model": "claude-test", "effort": "medium",
+        "executable": str(exe), "executable_digest": hashlib.sha256(exe.read_bytes()).hexdigest(),
+        "client_version": "1.0.0", "cwd": str(tmp_path), "home": str(tmp_path),
+        "quota": {"account": "dev-account", "pool": "default-pool"},
+    }
+    if provider == "claude":
+        installation = ClaudeInstallationSpec(client="claude_code", **common)
+    else:
+        common["account"] = codex_account_identity("codex@example.invalid")
+        common["model"] = "gpt-5.6-luna"
+        installation = CodexInstallationSpec(client="codex_app_server", **common)
+    lifecycle = MockLifecycle()
+    if stop_case.startswith("diagnostic_"):
+        owner = asyncio.current_task()
+
+        async def cancel_diagnostic(kind: str, **fields: object) -> None:
+            if kind == "provider_error" and fields.get("failure") == "quota_exhausted":
+                assert owner is not None
+                if stop_case == "diagnostic_cancel":
+                    asyncio.get_running_loop().call_later(0.02, owner.cancel)
+                await asyncio.Event().wait()
+
+        lifecycle.diagnostic = cancel_diagnostic  # type: ignore[method-assign]
+    gateway = EpicBrainstormGateway(installation=installation, supervisor=Supervisor())
+
+    async def invoke():
+        return await gateway.execute(
+            _make_snapshot(), (),
+            BrainstormReadOnlyTools(RepositoryReader(root=str(tmp_path), secret_paths=())),
+            cancelled=lambda: asyncio.sleep(0, result=False), lifecycle=lifecycle,
+        )
+
+    if stop_case == "diagnostic_deadline":
+        async with asyncio.timeout(0.02) as deadline:
+            result = await invoke()
+        assert deadline.expired()
+    else:
+        result = await invoke()
+    assert result.failure == (
+        "cancelled" if stop_case.startswith("diagnostic_") else "process_unsettled"
+    )
+    assert result.quota_reset_at == reset
+    assert result.quota_exhausted
+
+
+@pytest.mark.parametrize("failure", ["quota_exhausted", "process_unsettled", "cancelled"])
+def test_decomposition_adapter_forwards_confirmed_quota_evidence(failure: str) -> None:
+    reset = "2099-01-01T00:00:00+00:00"
+    result = ValidatedDecompositionGateway._validate(
+        _make_snapshot(),
+        DecompositionGatewayResult(
+            proposal=None, telemetry=None, failure=failure,
+            quota_reset_at=reset, quota_exhausted=True,
+        ),
+    )
+    assert result.failure == failure
+    assert result.quota_reset_at == reset
+    assert result.quota_exhausted
 
 
 @pytest.mark.asyncio
