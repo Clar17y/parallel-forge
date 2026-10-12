@@ -56,3 +56,15 @@ test('reports unknown and missing measured history without inventing a policy fa
   expect(screen.getByText(/Usage report unavailable; readiness unknown/i)).toBeInTheDocument();
   expect(screen.queryByText(/Insufficient history:/i)).not.toBeInTheDocument();
 });
+
+test('formats exact signed64 caps and manual estimates with comma grouping', () => {
+  render(<MonitoringPolicySummary policy={{
+    ...policy,
+    hard_token_cap: '9007199254740992',
+    hard_context_cap: '9007199254740993',
+    manual_estimate_tokens: '9223372036854775807',
+  }} report={null} />);
+  expect(screen.getByText(/Hard token cap: 9,007,199,254,740,992 tokens/i)).toBeInTheDocument();
+  expect(screen.getByText(/Hard context cap: 9,007,199,254,740,993 tokens/i)).toBeInTheDocument();
+  expect(screen.getByText(/Manual estimate: 9,223,372,036,854,775,807 tokens/i)).toBeInTheDocument();
+});

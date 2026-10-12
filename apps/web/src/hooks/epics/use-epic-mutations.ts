@@ -2,6 +2,7 @@
 
 import { createContext, createElement, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore, type ReactNode } from 'react';
 import { api, ApiError, type EpicLaunchConflictDetail } from '@/lib/api/client';
+import { stringifyExactJson } from '@/lib/api/exact-integer';
 
 export type HttpMethod = 'POST' | 'PATCH' | 'PUT';
 export interface FrozenMutation {
@@ -178,6 +179,7 @@ class EpicMutationStore {
   }
 
   private async runMutation<T>(storageKey: string, mutation: FrozenMutation): Promise<T> {
+    const requestBody = stringifyExactJson(mutation.body);
     const scope = this.scope(storageKey);
     scope.inFlight = true;
     scope.pending = mutation;
@@ -194,7 +196,7 @@ class EpicMutationStore {
       const response = await api<T>(mutation.path, {
         method: mutation.method,
         headers: { 'Content-Type': 'application/json', 'Idempotency-Key': mutation.idempotencyKey },
-        body: JSON.stringify(mutation.body),
+        body: requestBody,
       });
       // Layout cleanup retires ownership during the navigation commit. Passive
       // subscriptions/handlers may still exist until React's next effect flush.

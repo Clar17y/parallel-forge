@@ -10,7 +10,11 @@ import {
   MAX_SAFE_SIGNED_64,
 } from './monitoring-policy';
 import { api, mutate } from './client';
-import type { MonitoringPolicyResponse, TaskUsageHistoryResponse } from './monitoring-policy';
+import type {
+  MonitoringPolicyResponse,
+  MonitoringPolicyRevisionRequest,
+  TaskUsageHistoryResponse,
+} from './monitoring-policy';
 
 vi.mock('./client', () => ({
   api: vi.fn(),
@@ -69,12 +73,47 @@ describe('monitoring-policy API and integer validation', () => {
       expect(validateSafeInteger('0', { allowZero: true })).toEqual({ valid: true, value: 0 });
     });
 
-    test('rejects integer precision loss exceeding Number.MAX_SAFE_INTEGER', () => {
+    test('rejects integer precision loss exceeding Number.MAX_SAFE_INTEGER when allowSigned64 is false', () => {
       const unsafeStr = '9007199254740992'; // Number.MAX_SAFE_INTEGER + 1
       const res = validateSafeInteger(unsafeStr, { fieldName: 'Token cap' });
       expect(res.valid).toBe(false);
       expect(res.error).toContain('safe integer limit');
       expect(res.error).toContain('precision loss rejected');
+    });
+
+    test('validates signed64 integers across safe boundaries up to INT64_MAX without Number precision loss', () => {
+      // MAX_SAFE - 1
+      expect(validateSafeInteger(9007199254740990, { allowSigned64: true }))
+        .toEqual({ valid: true, value: 9007199254740990 });
+      // MAX_SAFE
+      expect(validateSafeInteger(Number.MAX_SAFE_INTEGER, { allowSigned64: true }))
+        .toEqual({ valid: true, value: 9007199254740991 });
+      // MAX_SAFE + 1
+      expect(validateSafeInteger('9007199254740992', { allowSigned64: true }))
+        .toEqual({ valid: true, value: '9007199254740992' });
+      // MAX_SAFE + 2
+      expect(validateSafeInteger('9007199254740993', { allowSigned64: true }))
+        .toEqual({ valid: true, value: '9007199254740993' });
+      // INT64_MAX
+      expect(validateSafeInteger('9223372036854775807', { allowSigned64: true }))
+        .toEqual({ valid: true, value: '9223372036854775807' });
+
+      // Canonicalizes leading zeros
+      expect(validateSafeInteger('009007199254740992', { allowSigned64: true }))
+        .toEqual({ valid: true, value: '9007199254740992' });
+
+      // Unsafe JavaScript number is rejected even with allowSigned64
+      expect(validateSafeInteger(Number.MAX_SAFE_INTEGER + 1, { allowSigned64: true }).valid).toBe(false);
+
+      // Overflow beyond INT64_MAX
+      const overflow = validateSafeInteger('9223372036854775808', { allowSigned64: true, fieldName: 'Cap' });
+      expect(overflow.valid).toBe(false);
+      expect(overflow.error).toContain('signed 64-bit');
+
+      // Fraction, negative, and zero
+      expect(validateSafeInteger('1.5', { allowSigned64: true }).valid).toBe(false);
+      expect(validateSafeInteger('-1', { allowSigned64: true, min: 1 }).valid).toBe(false);
+      expect(validateSafeInteger('0', { allowSigned64: true, allowZero: false }).valid).toBe(false);
     });
 
     test('exports recorded signed-64 and JS safe integer constants', () => {
@@ -223,9 +262,84 @@ describe('monitoring-policy API and integer validation', () => {
       }
       expect(mutate).not.toHaveBeenCalled();
     });
+
+    test('accepts exact signed64 decimal string caps and estimates across safe integer boundaries up to INT64_MAX', async () => {
+      vi.mocked(mutate).mockResolvedValue({ revision: 2 } as MonitoringPolicyResponse);
+      const exactRequest: MonitoringPolicyRevisionRequest = {
+        expected_revision: 1,
+        hard_token_cap: '9007199254740992',
+        hard_context_cap: '9007199254740993',
+        manual_estimate_tokens: '9223372036854775807',
+      };
+      await reviseMonitoringPolicy(projectId, exactRequest);
+      expect(mutate).toHaveBeenCalledWith(
+        `/projects/${projectId}/monitoring-policy`,
+        expect.objectContaining({
+          expected_revision: 1,
+          hard_token_cap: '9007199254740992',
+          hard_context_cap: '9007199254740993',
+          manual_estimate_tokens: '9223372036854775807',
+        }),
+        expect.anything()
+      );
+    });
+
+    test('rejects overflow beyond INT64_MAX for all contract-supported fields and unsafe numbers', async () => {
+      for (const field of ['hard_token_cap', 'hard_context_cap', 'manual_estimate_tokens', 'history_limit', 'minimum_comparables', 'window_days'] as const) {
+        await expect(reviseMonitoringPolicy(projectId, { expected_revision: 1, [field]: '9223372036854775808' }))
+          .rejects.toThrow(`${field} must be a positive safe integer or null`);
+        await expect(reviseMonitoringPolicy(projectId, { expected_revision: 1, [field]: Number.MAX_SAFE_INTEGER + 1 }))
+          .rejects.toThrow(`${field} must be a positive safe integer or null`);
+        await expect(reviseMonitoringPolicy(projectId, { expected_revision: 1, [field]: 0 }))
+          .rejects.toThrow(`${field} must be a positive safe integer or null`);
+        await expect(reviseMonitoringPolicy(projectId, { expected_revision: 1, [field]: -1 }))
+          .rejects.toThrow(`${field} must be a positive safe integer or null`);
+      }
+    });
+
+    test('accepts exact signed64 history_limit, minimum_comparables, and window_days across safe boundaries and canonicalizes leading zeros', async () => {
+      vi.mocked(mutate).mockResolvedValue({ revision: 2 } as MonitoringPolicyResponse);
+      const request: MonitoringPolicyRevisionRequest = {
+        expected_revision: 1,
+        history_limit: '009007199254740993', // +2 with leading zeros
+        minimum_comparables: '9007199254740992', // +1
+        window_days: '9223372036854775807', // INT64_MAX
+      };
+      await reviseMonitoringPolicy(projectId, request);
+      expect(mutate).toHaveBeenCalledWith(
+        `/projects/${projectId}/monitoring-policy`,
+        expect.objectContaining({
+          expected_revision: 1,
+          history_limit: '9007199254740993',
+          minimum_comparables: '9007199254740992',
+          window_days: '9223372036854775807',
+        }),
+        expect.anything()
+      );
+    });
+
+    test('enforces minimum_comparables <= history_limit using BigInt across signed64 boundaries', async () => {
+      await expect(reviseMonitoringPolicy(projectId, {
+        expected_revision: 1,
+        history_limit: '9007199254740992',
+        minimum_comparables: '9007199254740993',
+      })).rejects.toThrow('minimum_comparables cannot exceed history_limit');
+    });
   });
 
   describe('getTaskUsageReport', () => {
+    test('accepts exact signed64 windowDays up to INT64_MAX and rejects overflow', async () => {
+      vi.mocked(api).mockResolvedValue({} as TaskUsageHistoryResponse);
+      await getTaskUsageReport({ projectId, windowDays: '9007199254740992' as unknown as number });
+      expect(api).toHaveBeenCalledWith(expect.stringContaining('window_days=9007199254740992'));
+
+      await getTaskUsageReport({ projectId, windowDays: '9223372036854775807' as unknown as number });
+      expect(api).toHaveBeenCalledWith(expect.stringContaining('window_days=9223372036854775807'));
+
+      await expect(getTaskUsageReport({ projectId, windowDays: '9223372036854775808' as unknown as number }))
+        .rejects.toThrow('Window days');
+    });
+
     test('rejects unsafe or invalid report windows rather than widening the query', async () => {
       await expect(getTaskUsageReport({ projectId, windowDays: Number.MAX_SAFE_INTEGER + 1 })).rejects.toThrow('Window days');
       await expect(getTaskUsageReport({ projectId, windowDays: 0 })).rejects.toThrow('Window days');

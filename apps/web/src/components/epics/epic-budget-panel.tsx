@@ -15,9 +15,9 @@ interface DimensionConfig {
   label: string;
   mandatory?: boolean;
   formatUsage: (val: number, currency?: string | null) => string;
-  formatCeiling: (val: number, currency?: string | null) => string;
-  getCeilingVal: (ceiling: TaskBudget) => number | null | undefined;
-  setCeilingVal: (ceiling: TaskBudget, val: number | null) => TaskBudget;
+  formatCeiling: (val: number | string, currency?: string | null) => string;
+  getCeilingVal: (ceiling: TaskBudget) => number | string | null | undefined;
+  setCeilingVal: (ceiling: TaskBudget, val: number | string | null) => TaskBudget;
   inputLabel: string;
   unlimitedLabel: string;
 }
@@ -30,7 +30,7 @@ const DIMENSIONS: DimensionConfig[] = [
     formatUsage: val => `${Math.round(val / 1000)}s (${val}ms)`,
     formatCeiling: val => `${val}s`,
     getCeilingVal: c => c?.max_duration_seconds,
-    setCeilingVal: (c, val) => ({ ...(c ?? {}), max_duration_seconds: val ?? c?.max_duration_seconds ?? 0 } as TaskBudget),
+    setCeilingVal: (c, val) => ({ ...(c ?? {}), max_duration_seconds: (val as number) ?? c?.max_duration_seconds ?? 0 } as TaskBudget),
     inputLabel: 'Duration ceiling (seconds)',
     unlimitedLabel: 'Unlimited duration',
   },
@@ -41,7 +41,7 @@ const DIMENSIONS: DimensionConfig[] = [
     formatUsage: val => `${val}`,
     formatCeiling: val => `${val}`,
     getCeilingVal: c => c?.max_tool_calls,
-    setCeilingVal: (c, val) => ({ ...(c ?? {}), max_tool_calls: val ?? c?.max_tool_calls ?? 0 } as TaskBudget),
+    setCeilingVal: (c, val) => ({ ...(c ?? {}), max_tool_calls: (val as number) ?? c?.max_tool_calls ?? 0 } as TaskBudget),
     inputLabel: 'Tool calls ceiling',
     unlimitedLabel: 'Unlimited tool calls',
   },
@@ -49,7 +49,7 @@ const DIMENSIONS: DimensionConfig[] = [
     key: 'input_tokens',
     label: 'Input Tokens',
     formatUsage: val => `${val.toLocaleString()} tokens`,
-    formatCeiling: val => `${val.toLocaleString()} tokens`,
+    formatCeiling: val => `${(typeof val === 'number' ? val.toLocaleString() : BigInt(val).toLocaleString())} tokens`,
     getCeilingVal: c => c?.max_input_tokens,
     setCeilingVal: (c, val) => ({ ...(c ?? {}), max_input_tokens: val } as TaskBudget),
     inputLabel: 'Input tokens ceiling',
@@ -59,7 +59,7 @@ const DIMENSIONS: DimensionConfig[] = [
     key: 'output_tokens',
     label: 'Output Tokens',
     formatUsage: val => `${val.toLocaleString()} tokens`,
-    formatCeiling: val => `${val.toLocaleString()} tokens`,
+    formatCeiling: val => `${(typeof val === 'number' ? val.toLocaleString() : BigInt(val).toLocaleString())} tokens`,
     getCeilingVal: c => c?.max_output_tokens,
     setCeilingVal: (c, val) => ({ ...(c ?? {}), max_output_tokens: val } as TaskBudget),
     inputLabel: 'Output tokens ceiling',
@@ -120,7 +120,7 @@ export function EpicBudgetPanel({
   const [isEditing, setIsEditing] = useState(false);
   const [sourceVersion, setSourceVersion] = useState<number | null>(null);
   const [sourceCeiling, setSourceCeiling] = useState<TaskBudget | null>(null);
-  const [editCeilings, setEditCeilings] = useState<Record<string, number | null>>({});
+  const [editCeilings, setEditCeilings] = useState<Record<string, number | string | null>>({});
   const [ceilingDrafts, setCeilingDrafts] = useState<Record<string, string>>({});
   const [ceilingError, setCeilingError] = useState<string | null>(null);
   const [disabledDims, setDisabledDims] = useState<string[]>([]);
@@ -137,7 +137,7 @@ export function EpicBudgetPanel({
 
   const initEditForm = () => {
     if (!budget) return;
-    const initialCeilings: Record<string, number | null> = {};
+    const initialCeilings: Record<string, number | string | null> = {};
     for (const dim of DIMENSIONS) {
       const val = dim.getCeilingVal(budget.ceiling);
       initialCeilings[dim.key] = val ?? null;
@@ -209,7 +209,13 @@ export function EpicBudgetPanel({
       if (disabledDims.includes(dim.key)) continue;
       const raw = ceilingDrafts[dim.key] ?? '';
       const tokenCap = dim.key === 'input_tokens' || dim.key === 'output_tokens';
-      const result = validateSafeInteger(raw, { fieldName: dim.inputLabel, allowNull: !dim.mandatory, allowZero: !tokenCap, min: tokenCap ? 1 : 0 });
+      const result = validateSafeInteger(raw, {
+        fieldName: dim.inputLabel,
+        allowNull: !dim.mandatory,
+        allowZero: !tokenCap,
+        allowSigned64: tokenCap,
+        min: tokenCap ? 1 : 0,
+      });
       if (!result.valid) {
         setCeilingError(result.error!);
         return;
@@ -453,7 +459,13 @@ export function EpicBudgetPanel({
                         setCeilingDrafts(prev => ({ ...prev, [dim.key]: raw }));
                         setTouchedCeilings(prev => new Set(prev).add(dim.key));
                         const tokenCap = dim.key === 'input_tokens' || dim.key === 'output_tokens';
-                        const result = validateSafeInteger(raw, { fieldName: dim.inputLabel, allowNull: true, allowZero: !tokenCap, min: tokenCap ? 1 : 0 });
+                        const result = validateSafeInteger(raw, {
+                          fieldName: dim.inputLabel,
+                          allowNull: true,
+                          allowZero: !tokenCap,
+                          allowSigned64: tokenCap,
+                          min: tokenCap ? 1 : 0,
+                        });
                         if (result.valid) {
                           setEditCeilings(prev => ({ ...prev, [dim.key]: result.value ?? null }));
                           setCeilingError(null);

@@ -109,9 +109,9 @@ export function ProjectForm({ onSave, initial, policyOnly = false }: {
     for (const role of ['planner_model', 'developer_model', 'reviewer_model'] as const) {
       for (const cap of ['max_input_tokens', 'max_output_tokens'] as const) {
         const numeric = value[role]?.[cap];
-        if (numeric != null && !validateSafeInteger(numeric, { fieldName: `${role} ${cap}`, min: 1 }).valid) {
+        if (numeric != null && !validateSafeInteger(numeric, { fieldName: `${role} ${cap}`, min: 1, allowSigned64: true }).valid) {
           setModelsOpen(true);
-          setError(`${role} ${cap} must be a positive safe integer or blank to remain unbounded.`);
+          setError(`${role} ${cap} must be a positive signed 64-bit integer or blank to remain unbounded.`);
           return;
         }
       }

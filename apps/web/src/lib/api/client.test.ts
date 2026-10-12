@@ -113,3 +113,15 @@ test('mutation supports PUT method for budget and idempotency header', async () 
   const headers = new Headers(options.headers);
   expect(headers.get('Idempotency-Key')).toBe('put-key');
 });
+
+test('numeric API retains exact signed64 responses and writes without changing safe payloads', async () => {
+  const fetcher = vi.spyOn(globalThis, 'fetch')
+    .mockResolvedValueOnce(new Response('{"hard_token_cap":9223372036854775807,"revision":2}', { status: 200 }))
+    .mockResolvedValueOnce(new Response('{"hard_token_cap":9223372036854775807}', { status: 200 }));
+  expect(await api<{ hard_token_cap: string | number; revision: number }>('/projects/one/monitoring-policy'))
+    .toEqual({ hard_token_cap: '9223372036854775807', revision: 2 });
+  await mutate('/projects/one/monitoring-policy', { hard_token_cap: '9223372036854775807',
+    expected_revision: 2, note: '9223372036854775807' }, { idempotencyKey: 'exact-cap' });
+  expect(fetcher.mock.calls[1][1]?.body).toBe(
+    '{"hard_token_cap":9223372036854775807,"expected_revision":2,"note":"9223372036854775807"}');
+});

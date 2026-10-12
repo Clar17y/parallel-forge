@@ -65,7 +65,7 @@ test('preserves external budget error precedence over local draft validation err
   expect(cap).toHaveAttribute('aria-invalid', 'true');
   expect(screen.getByRole('alert')).toHaveTextContent('External project error takes precedence');
 
-  fireEvent.change(cap, { target: { value: '9007199254740993' } });
+  fireEvent.change(cap, { target: { value: '9223372036854775808' } });
   expect(change).not.toHaveBeenCalled();
   expect(cap).toHaveAttribute('aria-invalid', 'true');
   expect(screen.getByRole('alert')).toHaveTextContent('External project error takes precedence');
@@ -97,13 +97,20 @@ test('default model policy has null unbounded token caps without mandatory slide
   expect(changeClear).toHaveBeenCalledWith(expect.objectContaining({ max_input_tokens: null }));
 });
 
-test('rejects unsafe hard cap without emitting a rounded project policy value', async () => {
+test('emits exact signed64 input and output caps and refuses overflow without rounding', async () => {
   const change = vi.fn();
   render(<ModelPolicy role="Planner" value={defaultModel} onChange={change} />);
   await userEvent.click(screen.getByText('Advanced model and budget'));
-  fireEvent.change(screen.getByRole('textbox', { name: 'Planner input tokens hard cap' }), { target: { value: '9007199254740993' } });
+  const input = screen.getByRole('textbox', { name: 'Planner input tokens hard cap' });
+  const output = screen.getByRole('textbox', { name: 'Planner output tokens hard cap' });
+  fireEvent.change(input, { target: { value: '9007199254740993' } });
+  expect(change).toHaveBeenLastCalledWith(expect.objectContaining({ max_input_tokens: '9007199254740993' }));
+  fireEvent.change(output, { target: { value: '9223372036854775807' } });
+  expect(change).toHaveBeenLastCalledWith(expect.objectContaining({ max_output_tokens: '9223372036854775807' }));
+  change.mockClear();
+  fireEvent.change(input, { target: { value: '9223372036854775808' } });
   expect(change).not.toHaveBeenCalled();
-  expect(screen.getByRole('alert')).toHaveTextContent(/safe integer limit/i);
+  expect(screen.getByRole('alert')).toHaveTextContent(/signed 64-bit integer limit/i);
 });
 
 test('renders visible reasoning strength selector outside advanced disclosure with choices', async () => {

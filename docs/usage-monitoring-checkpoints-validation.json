@@ -8,7 +8,7 @@
     104,
     106
   ],
-  "status": "The PR110-C1 authoring retry defect and the five integrated-review findings are repaired with candidate-specific local evidence. One integrated independent review/full simplify is retained; final head-specific automatic checks and Codex findings are recorded on PR110. Complete assembly remains open.",
+  "status": "Merged PR #110 as 4ea96bb9; tested tree and green hosted acceptance reconciled in final_delivery. Earlier entries retain their actual historical snapshots. Remaining editor/assembly acceptance is owned by the final batch.",
   "feature_complete": false,
   "source": {
     "base": "558645377ce919a7c6e79cbd144a8c3dff9ffba6",
@@ -1285,5 +1285,47 @@
     "merged": false,
     "manually_dispatched_full_hosted_ci": false
   },
-  "hosted_repair_evidence": ".llm-output/usage-checkpoints/pr110-first-codex-review.json and pr110-retry/ retain the actual first-head finding, red failures, all failed receipts and fixture corrections. The interim75-case current-only candidate is retained separately; four late-continuation regressions prompted the final source adjustment and a fresh79-case suite, backend static checks and actual separate-process authoring acceptance. Unchanged web/ADK evidence is reused with matching inputs."
+  "hosted_repair_evidence": ".llm-output/usage-checkpoints/pr110-first-codex-review.json and pr110-retry/ retain the actual first-head finding, red failures, all failed receipts and fixture corrections. The interim75-case current-only candidate is retained separately; four late-continuation regressions prompted the final source adjustment and a fresh79-case suite, backend static checks and actual separate-process authoring acceptance. Unchanged web/ADK evidence is reused with matching inputs.",
+  "historical_status_before_merge_reconciliation": "The PR110-C1 authoring retry defect and the five integrated-review findings are repaired with candidate-specific local evidence. One integrated independent review/full simplify is retained; final head-specific automatic checks and Codex findings are recorded on PR110. Complete assembly remains open.",
+  "final_delivery": {
+    "recorded_at_utc": "2026-10-12T15:02:29.496385+00:00",
+    "pr": "https://github.com/Clar17y/parallel-forge/pull/110",
+    "tested_pr_head": "0e0229b688a286a027cdf8df100767a1407607f0",
+    "merged_commit": "4ea96bb9a0351c2fa6a291c3ae3ba080baf6318b",
+    "merged_at_utc": "2026-10-12T06:13:32Z",
+    "tested_tree": "79501f71512fcd5f1fa929c589cd4822113b124f",
+    "merged_tree_matches_tested_head": true,
+    "automatic_smoke": {
+      "conclusion": "SUCCESS",
+      "url": "https://github.com/Clar17y/parallel-forge/actions/runs/38201037056"
+    },
+    "codex": {
+      "completed": true,
+      "verdict": "No major issues on tested head",
+      "unresolved": 0,
+      "evidence_backed_replies": true,
+      "clear_comment": "https://github.com/Clar17y/parallel-forge/pull/110#issuecomment-6117420623"
+    },
+    "closed_children": [
+      95,
+      96,
+      97,
+      100,
+      101,
+      102,
+      104,
+      105
+    ],
+    "preserved_evidence_root": "C:/Users/sdyer/.codex/worktree-evidence/parallel-forge/pr110-0e0229b-248138f2",
+    "files_reverified_unchanged": 926,
+    "receipts": [
+      "preservation.json",
+      "teardown-complete.json",
+      ".llm-output/usage-checkpoints/pr110-final-hosted.json",
+      ".llm-output/usage-checkpoints/pr110-repair-local-acceptance.json"
+    ],
+    "historical_scope": "Earlier open/unmerged comments, coverage limitations and publication entries describe their recorded snapshot. PR #110 merged without proving those missing editor/assembly cases. Historical broad runs are not a final whole-backend pass.",
+    "manual_full_hosted_ci": false,
+    "runtime_live_provider_certification": false
+  }
 }

@@ -50,6 +50,11 @@ class ForgeProcessHarness:
         subscription_only: bool = False,
         task_usage_process: bool = False,
         task_usage_delegated: bool = False,
+        task_usage_final_only: bool = False,
+        task_usage_streaming_success: bool = False,
+        task_usage_learned_crossing: bool = False,
+        task_usage_slow_settlement: bool = False,
+        task_usage_effect_repository: Path | None = None,
     ) -> None:
         self.port = api_port or free_loopback_port()
         self.base_url = f"http://127.0.0.1:{self.port}"
@@ -62,6 +67,10 @@ class ForgeProcessHarness:
             raise ValueError("task usage process fixture requires the scripted managed remote")
         if task_usage_delegated and not task_usage_process:
             raise ValueError("delegated task usage requires the process fixture")
+        if task_usage_final_only and not task_usage_process:
+            raise ValueError("final-only task usage requires the process fixture")
+        if task_usage_streaming_success and not task_usage_process:
+            raise ValueError("streaming task usage requires the process fixture")
         # Settings reads .env from cwd. Keyless process tests must not accidentally
         # load the developer worktree's credential references or pricing catalog.
         self._cwd = data_root if subscription_only else Path.cwd()
@@ -114,6 +123,16 @@ class ForgeProcessHarness:
             self._env["FORGE_TASK_USAGE_PROCESS"] = "1"
         if task_usage_delegated:
             self._env["FORGE_TASK_USAGE_DELEGATED"] = "1"
+        if task_usage_final_only:
+            self._env["FORGE_TASK_USAGE_FINAL_ONLY"] = "1"
+        if task_usage_streaming_success:
+            self._env["FORGE_TASK_USAGE_STREAMING_SUCCESS"] = "1"
+        if task_usage_learned_crossing:
+            self._env["FORGE_TASK_USAGE_LEARNED_CROSSING"] = "1"
+        if task_usage_slow_settlement:
+            self._env["FORGE_TASK_USAGE_SLOW_SETTLEMENT"] = "1"
+        if task_usage_effect_repository is not None:
+            self._env["FORGE_TASK_USAGE_EFFECT_REPOSITORY"] = str(task_usage_effect_repository)
 
         if subscription_only:
             return
@@ -183,7 +202,14 @@ class ForgeProcessHarness:
 
     def start_worker(self) -> None:
         """Use the public worker in keyless mode; otherwise script its provider boundary."""
-        worker_log = open(self._data_root / "worker.log", "a", encoding="utf-8")  # noqa: SIM115 - child owns handle
+        self._worker_process = self._launch_worker("worker.log")
+
+    def start_peer_worker(self) -> int:
+        """Start a second worker against the same durable database and return its PID."""
+        return self._launch_worker("peer-worker.log").pid
+
+    def _launch_worker(self, log_name: str) -> subprocess.Popen[str]:
+        worker_log = open(self._data_root / log_name, "a", encoding="utf-8")  # noqa: SIM115 - child owns handle
         self._log_handles.append(worker_log)
         process = subprocess.Popen(
             (
@@ -199,13 +225,13 @@ class ForgeProcessHarness:
             text=True,
         )
         self._processes.append(process)
-        self._worker_process = process
         time.sleep(0.3)
         if process.poll() is not None:
-            output = (self._data_root / "worker.log").read_text(encoding="utf-8")
+            output = (self._data_root / log_name).read_text(encoding="utf-8")
             raise AssertionError(
                 f"worker process exited early ({process.returncode}): {output[-2000:]}"
             )
+        return process
 
     def stop_worker(self) -> None:
         self._stop_process(self._worker_process)

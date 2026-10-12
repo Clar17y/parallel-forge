@@ -1,4 +1,5 @@
 import { csrf } from './csrf';
+import { parseExactJson, stringifyExactJson } from './exact-integer';
 
 export interface EpicLaunchConflictDetail {
   code: 'epic_launch_blocked';
@@ -111,7 +112,7 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T | 
     throw new ApiError(response.status, 'request-failed');
   }
   if (response.status === 204 || method === 'HEAD') return undefined;
-  return response.json() as Promise<T>;
+  return parseExactJson(await response.text()) as T;
 }
 
 export function mutate<T>(path: string, body: Record<string, unknown>, options: {
@@ -124,6 +125,6 @@ export function mutate<T>(path: string, body: Record<string, unknown>, options: 
   return api<T>(path, {
     method: options.method ?? 'POST', signal: options.signal,
     headers: { 'Content-Type': 'application/json', 'Idempotency-Key': options.idempotencyKey },
-    body: JSON.stringify(payload),
+    body: stringifyExactJson(payload),
   });
 }

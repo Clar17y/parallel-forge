@@ -33,6 +33,7 @@ from forge.agents.client_process import (
     ClientProcessSupervisor,
     terminal_launch_proof,
 )
+from forge.agents.subscription_protocol import ProviderToolCall
 from forge.application.ports.epic_brainstorm import BrainstormGatewayResult
 from forge.application.ports.subscription_gateway import (
     SubscriptionFailure,
@@ -60,6 +61,7 @@ from forge.domain.subscription import (
     WaitDecision,
 )
 from forge.domain.task_usage_contract import CounterKind, Observation, TokenCounts
+from forge.domain.tool import ToolName
 from forge.observability.redaction import Redactor
 from forge.observability.usage import UsageRecord
 from forge.persistence.database import create_engine, create_session_factory
@@ -190,6 +192,10 @@ class ScriptedObservedAuthoringGateway:
 
     def __init__(self) -> None:
         self.invocations = 0
+        self.final_only = os.environ.get("FORGE_TASK_USAGE_FINAL_ONLY") == "1"
+        self.streaming_success = os.environ.get("FORGE_TASK_USAGE_STREAMING_SUCCESS") == "1"
+        self.learned_crossing = os.environ.get("FORGE_TASK_USAGE_LEARNED_CROSSING") == "1"
+        self.slow_settlement = os.environ.get("FORGE_TASK_USAGE_SLOW_SETTLEMENT") == "1"
 
     async def execute(self, job, turns, reader, *, cancelled, lifecycle):
         raise AssertionError("observed authoring execution was bypassed")
@@ -198,7 +204,11 @@ class ScriptedObservedAuthoringGateway:
         self, job, turns, reader, *, cancelled, lifecycle, usage_binding, usage_sink
     ):
         self.invocations += 1
-        first_attempt = self.invocations == 1
+        first_attempt = self.invocations == 1 and not (self.final_only or self.streaming_success)
+        crossing_attempt = self.learned_crossing and self.invocations == 2
+        normal_tokens = ((60, 40) if first_attempt or self.final_only or self.streaming_success
+                         else (10, 5))
+        input_tokens, output_tokens = (120, 100) if crossing_attempt else normal_tokens
         spec = ClientLaunchSpec(
             argv=(sys.executable, "-u", "-c", f"import time; time.sleep({15 if first_attempt else 0.1})"),
             cwd=str(Path.cwd()), environment={}, duration_seconds=20,
@@ -206,16 +216,37 @@ class ScriptedObservedAuthoringGateway:
         process = await ClientProcessSupervisor().start(spec, lifecycle=lifecycle)
         logger.info("[AUTHORING OBSERVED] process started")
         try:
+            if self.final_only:
+                await process.wait_closed()
+                logger.info("[AUTHORING FINAL ONLY] process settled before telemetry")
             await usage_sink.observe_usage(Observation(
                 binding=usage_binding,
                 event_id=f"scripted-authoring-{usage_binding.source.source_id}", sequence=1,
                 counter_kind=CounterKind.CUMULATIVE,
+                final=self.final_only,
+                final_status="succeeded" if self.final_only else None,
                 tokens=TokenCounts(
-                    input_tokens=60 if first_attempt else 10,
-                    output_tokens=40 if first_attempt else 5,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
                 ),
             ))
             logger.info("[AUTHORING OBSERVED] usage persisted")
+            if self.streaming_success:
+                logger.info("[AUTHORING STREAMING SUCCESS] usage persisted before process settled")
+            if crossing_attempt:
+                try:
+                    await asyncio.sleep(3)
+                except asyncio.CancelledError:
+                    logger.info("[AUTHORING LEARNED CROSSING] checkpoint cancelled live provider")
+                    await process.close()
+                    return BrainstormGatewayResult(
+                        proposal=None,
+                        telemetry=AttemptTelemetry(
+                            input_tokens=input_tokens, output_tokens=output_tokens,
+                            duration_ms=100,
+                        ),
+                        failure="interrupted",
+                    )
             if first_attempt:
                 for _ in range(200):
                     if await cancelled():
@@ -223,17 +254,31 @@ class ScriptedObservedAuthoringGateway:
                         break
                     await asyncio.sleep(0.05)
             if first_attempt:
+                if self.slow_settlement:
+                    logger.info("[AUTHORING SLOW SETTLEMENT] child remains live after cancel")
+                    await asyncio.sleep(5)
                 await process.close()
             else:
                 await process.wait_closed()
             logger.info("[AUTHORING OBSERVED] process settled")
+            if self.streaming_success:
+                await usage_sink.observe_usage(Observation(
+                    binding=usage_binding,
+                    event_id=f"scripted-authoring-final-{usage_binding.source.source_id}",
+                    sequence=2,
+                    counter_kind=CounterKind.CUMULATIVE,
+                    tokens=TokenCounts(input_tokens=input_tokens, output_tokens=output_tokens),
+                    final=True,
+                    final_status="succeeded",
+                ))
+                logger.info("[AUTHORING STREAMING SUCCESS] final observation persisted")
             return BrainstormGatewayResult(
                 proposal=None if first_attempt else BrainstormProposal(
                     turn_id=uuid4(), problem="A resumed observed proposal"
                 ),
                 telemetry=AttemptTelemetry(
-                    input_tokens=60 if first_attempt else 10,
-                    output_tokens=40 if first_attempt else 5,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
                     duration_ms=100,
                 ),
                 failure="interrupted" if first_attempt else None,
@@ -249,6 +294,7 @@ class ScriptedObservedSubscriptionAdapter:
         self.route = route
         self.child_id = child_id
         self.delegated = False
+        self.effect_attempted = False
 
     def gateway_for(self, request, *, broker, lifecycle):
         adapter = self
@@ -310,6 +356,32 @@ class ScriptedObservedSubscriptionAdapter:
                 )
                 process = await ClientProcessSupervisor().start(spec, lifecycle=lifecycle)
                 logger.info("[DELEGATED OBSERVED] process started")
+                check_task = None
+                effect_root = os.environ.get("FORGE_TASK_USAGE_EFFECT_REPOSITORY")
+                if effect_root and not adapter.effect_attempted:
+                    adapter.effect_attempted = True
+                    check_task = asyncio.create_task(broker(ProviderToolCall(
+                        call_key=f"held-check-{request.attempt.attempt_id}",
+                        thread_id="acceptance-thread", turn_id="acceptance-turn",
+                        name=ToolName.BUILD_RUN_NAMED_CHECK.value,
+                        arguments={"command_name": "held-check"},
+                    )))
+                    root = Path(effect_root) / ".worktrees"
+
+                    def check_entered() -> bool:
+                        import time
+
+                        deadline = time.monotonic() + 15
+                        while time.monotonic() < deadline:
+                            if list(root.rglob("check.entered")):
+                                return True
+                            if check_task.done():
+                                return False
+                            time.sleep(0.05)
+                        return False
+
+                    if not await asyncio.to_thread(check_entered):
+                        raise AssertionError(f"held check did not enter: {check_task.result() if check_task.done() else 'pending'}")
                 try:
                     await usage_sink.observe_usage(Observation(
                         binding=usage_binding, event_id=f"scripted-child-{request.attempt.attempt_id}",
@@ -321,12 +393,20 @@ class ScriptedObservedSubscriptionAdapter:
                 except asyncio.CancelledError:
                     logger.info("[DELEGATED OBSERVED] invocation cancelled")
                     result = await process.close()
+                    logger.info("[DELEGATED OBSERVED] cancelled process settled")
+                    if check_task is not None:
+                        receipt = await asyncio.wait_for(asyncio.shield(check_task), timeout=10)
+                        assert receipt.get("status") == "succeeded", receipt
+                        logger.info("[DELEGATED OBSERVED] held check settled")
                     raise SubscriptionInterrupted(SubscriptionInvocationResult(
                         attempt=request.attempt, failure=SubscriptionFailure.INTERRUPTED,
                         telemetry=AttemptTelemetry(input_tokens=60, output_tokens=40),
                         launch_proof=terminal_launch_proof(result),
                     )) from None
                 result = await process.close()
+                if check_task is not None:
+                    receipt = await asyncio.shield(check_task)
+                    assert receipt.get("status") == "succeeded", receipt
                 logger.info("[DELEGATED OBSERVED] process settled")
                 return SubscriptionInvocationResult(
                     attempt=request.attempt, failure=SubscriptionFailure.INTERRUPTED,

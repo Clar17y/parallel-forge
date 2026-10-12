@@ -6,7 +6,7 @@ import { ApiError, mutate } from '@/lib/api/client';
 import { useApi } from '@/hooks/use-api';
 import type { components } from '@/lib/api/schema';
 import type { MonitoringPolicyResponse } from '@/lib/api/monitoring-policy';
-import { retainedPolicyIntegersAreSafe } from '@/components/task-usage/retained-policy-integers';
+import { retainedPolicyIntegersAreSafe, knownReportTotal } from '@/components/task-usage/retained-policy-integers';
 
 type CheckpointResponse = components['schemas']['TaskUsageCheckpointResponse'];
 type CommandRequest = components['schemas']['TaskUsageOwnerCommandRequest'];
@@ -20,17 +20,21 @@ const stateNames: Record<Checkpoint['state'], string> = {
   checkpoint_requested: 'Checkpoint requested', pausing: 'Pausing', paused: 'Paused',
   resumed: 'Resumed', resolved: 'Resolved',
 };
-const tokenValue = (value: number | null | undefined) => {
+const tokenValue = (value: number | string | bigint | null | undefined) => {
   if (value == null) return 'Unknown';
+  if (typeof value === 'bigint') return value.toLocaleString();
+  if (typeof value === 'string') {
+    try {
+      return BigInt(value).toLocaleString();
+    } catch {
+      return value;
+    }
+  }
   if (!Number.isFinite(value) || (Number.isInteger(value) && !Number.isSafeInteger(value))) return 'Too large to display precisely';
   return value.toLocaleString(undefined, { maximumFractionDigits: 2 });
 };
-function knownTotal(report: Report | null | undefined): number | null {
-  if (!report || !['complete', 'lower_bound'].includes(report.completeness)) return null;
-  const dimensions = [report.input_tokens, report.output_tokens].filter((value): value is number => value != null);
-  if (!dimensions.length || dimensions.some(value => !Number.isSafeInteger(value) || value < 0)) return null;
-  const total = dimensions.reduce((sum, value) => sum + BigInt(value), 0n);
-  return total <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(total) : null;
+function knownTotal(report: Report | null | undefined): bigint | null {
+  return knownReportTotal(report);
 }
 function isMode(value: string): value is Mode { return value === 'report_only' || value === 'warn' || value === 'checkpoint'; }
 
@@ -85,7 +89,7 @@ export function RunUsageCheckpoint({ runId, runAllowsExecution, runIsTerminal, q
       if (!result || result.receipt.checkpoint_id !== selected.body.checkpoint_id
         || result.receipt.action !== selected.body.action || result.checkpoint.checkpoint_id !== selected.body.checkpoint_id
         || !Number.isSafeInteger(result.receipt.result_version) || result.receipt.result_version < selected.body.expected_version + 1
-        || result.receipt.result_version > result.checkpoint.version) {
+        || result.receipt.result_version > Number(result.checkpoint.version)) {
         throw new Error('Owner command receipt unavailable');
       }
       if (!signal.aborted) {
@@ -117,7 +121,7 @@ export function RunUsageCheckpoint({ runId, runAllowsExecution, runIsTerminal, q
   function command(action: CommandRequest['action'], continueMode?: CommandRequest['continue_mode'], requestedPolicy?: Policy) {
     if (!checkpoint) return;
     const key = crypto.randomUUID();
-    void submit({ checkpoint_id: checkpoint.checkpoint_id, expected_version: checkpoint.version,
+    void submit({ checkpoint_id: checkpoint.checkpoint_id, expected_version: Number(checkpoint.version),
       idempotency_key: key, action, continue_mode: continueMode ?? null, requested_policy: requestedPolicy ?? null,
       override_note: note.trim() || null });
   }

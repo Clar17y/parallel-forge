@@ -154,6 +154,7 @@ export function MonitoringPolicyEditor({
     const histVal = validateSafeInteger(historyLimit, {
       fieldName: 'History limit',
       allowNull: false,
+      allowSigned64: true,
       min: 1,
     });
     if (!histVal.valid) {
@@ -163,11 +164,12 @@ export function MonitoringPolicyEditor({
     const minCompVal = validateSafeInteger(minimumComparables, {
       fieldName: 'Minimum comparables',
       allowNull: false,
+      allowSigned64: true,
       min: 1,
     });
     if (!minCompVal.valid) {
       errors.minimum_comparables = minCompVal.error!;
-    } else if (histVal.valid && minCompVal.value! > histVal.value!) {
+    } else if (histVal.valid && BigInt(minCompVal.value!) > BigInt(histVal.value!)) {
       errors.minimum_comparables = 'Minimum comparables cannot exceed history limit.';
     }
 
@@ -175,6 +177,7 @@ export function MonitoringPolicyEditor({
     const windowVal = validateSafeInteger(windowDays, {
       fieldName: 'Window days',
       allowNull: true,
+      allowSigned64: true,
       min: 1,
     });
     if (!windowVal.valid) {
@@ -186,6 +189,7 @@ export function MonitoringPolicyEditor({
       fieldName: 'Hard token cap',
       allowNull: true,
       allowZero: false,
+      allowSigned64: true,
       min: 1,
     });
     if (!tokenCapVal.valid) {
@@ -196,6 +200,7 @@ export function MonitoringPolicyEditor({
       fieldName: 'Hard context cap',
       allowNull: true,
       allowZero: false,
+      allowSigned64: true,
       min: 1,
     });
     if (!contextCapVal.valid) {
@@ -206,6 +211,7 @@ export function MonitoringPolicyEditor({
       fieldName: 'Manual estimate tokens',
       allowNull: true,
       allowZero: false,
+      allowSigned64: true,
       min: 1,
     });
     if (!manualEstVal.valid) {
@@ -372,8 +378,8 @@ export function MonitoringPolicyEditor({
             </label>
             <input
               id="history-limit"
-              type="number"
-              step="1"
+              type="text"
+              inputMode="numeric"
               aria-label="History limit"
               aria-invalid={Boolean(fieldErrors.history_limit)}
               className="w-full px-3 py-1.5 border border-[var(--control-border)] rounded text-sm bg-[var(--surface)]"
@@ -393,8 +399,8 @@ export function MonitoringPolicyEditor({
             </label>
             <input
               id="minimum-comparables"
-              type="number"
-              step="1"
+              type="text"
+              inputMode="numeric"
               aria-label="Minimum comparables"
               aria-invalid={Boolean(fieldErrors.minimum_comparables)}
               className="w-full px-3 py-1.5 border border-[var(--control-border)] rounded text-sm bg-[var(--surface)]"
@@ -414,8 +420,8 @@ export function MonitoringPolicyEditor({
             </label>
             <input
               id="window-days"
-              type="number"
-              step="1"
+              type="text"
+              inputMode="numeric"
               aria-label="Rolling window days"
               placeholder="All time (unbounded)"
               className="w-full px-3 py-1.5 border border-[var(--control-border)] rounded text-sm bg-[var(--surface)]"

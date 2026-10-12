@@ -5,7 +5,7 @@ import { ApiError, mutate } from '@/lib/api/client';
 import { useApi } from '@/hooks/use-api';
 import type { components } from '@/lib/api/schema';
 import type { MonitoringPolicyResponse } from '@/lib/api/monitoring-policy';
-import { retainedPolicyIntegersAreSafe } from '@/components/task-usage/retained-policy-integers';
+import { retainedPolicyIntegersAreSafe, knownReportTotal } from '@/components/task-usage/retained-policy-integers';
 
 type CheckpointResponse = components['schemas']['TaskUsageCheckpointResponse'];
 type CommandRequest = components['schemas']['TaskUsageOwnerCommandRequest'];
@@ -13,7 +13,18 @@ type CommandResponse = components['schemas']['TaskUsageOwnerCommandResponse'];
 type Report = components['schemas']['UsageReport'];
 type Policy = components['schemas']['MonitoringPolicy'];
 type Pending = { body: CommandRequest; key: string };
-const value = (tokens: number | null | undefined) => tokens == null ? 'Unknown' : Number.isInteger(tokens) && !Number.isSafeInteger(tokens) ? 'Too large to display precisely' : tokens.toLocaleString();
+const value = (tokens: number | string | bigint | null | undefined) => {
+  if (tokens == null) return 'Unknown';
+  if (typeof tokens === 'bigint') return tokens.toLocaleString();
+  if (typeof tokens === 'string') {
+    try {
+      return BigInt(tokens).toLocaleString();
+    } catch {
+      return tokens;
+    }
+  }
+  return Number.isInteger(tokens) && !Number.isSafeInteger(tokens) ? 'Too large to display precisely' : tokens.toLocaleString();
+};
 
 export function AuthoringUsageCheckpoint({ epicId, projectId, jobId, kind, locked }: {
   epicId: string; projectId: string; jobId: string; kind: 'brainstorm' | 'decomposition'; locked: boolean;
@@ -47,11 +58,8 @@ export function AuthoringUsageCheckpoint({ epicId, projectId, jobId, kind, locke
     && Number.isFinite(thresholdValue) && thresholdValue >= warningValue && Number.isSafeInteger(policy.revision + 1)
     && retainedPolicyIntegersAreSafe(policy);
   const settled = checkpoint?.state === 'paused' && checkpoint.process_settled;
-  const knownDimensions = [report?.input_tokens, report?.output_tokens].filter((value): value is number => value != null);
-  const knownTotal = knownDimensions.reduce((sum, value) => sum + BigInt(Number.isSafeInteger(value) && value >= 0 ? value : 0), 0n);
-  const totalIsSafe = !!report && ['complete', 'lower_bound'].includes(report.completeness) && knownDimensions.length > 0
-    && knownDimensions.every(value => Number.isSafeInteger(value) && value >= 0)
-    && knownTotal <= BigInt(Number.MAX_SAFE_INTEGER);
+  const total = knownReportTotal(report);
+  const totalIsSafe = total !== null;
 
   async function submit(body: CommandRequest) {
     if (running.current || !checkpoint || !lifecycle.current) return;
@@ -62,7 +70,7 @@ export function AuthoringUsageCheckpoint({ epicId, projectId, jobId, kind, locke
       const result = await mutate<CommandResponse>(`${base}/commands${projectQuery}`, selected.body as unknown as Record<string, unknown>, { idempotencyKey: selected.key, signal });
       if (!result || result.receipt.checkpoint_id !== selected.body.checkpoint_id || result.receipt.action !== selected.body.action
         || result.checkpoint.checkpoint_id !== selected.body.checkpoint_id || !Number.isSafeInteger(result.receipt.result_version)
-        || result.receipt.result_version < selected.body.expected_version + 1 || result.receipt.result_version > result.checkpoint.version) throw new Error('No matching durable receipt');
+        || result.receipt.result_version < selected.body.expected_version + 1 || result.receipt.result_version > Number(result.checkpoint.version)) throw new Error('No matching durable receipt');
       if (signal.aborted) return;
       setRetry(null); setReceipt(result.receipt); setMessage('Owner command recorded. The authoring scheduler will recheck independent controls before continuing.');
       data.refresh();
@@ -84,7 +92,7 @@ export function AuthoringUsageCheckpoint({ epicId, projectId, jobId, kind, locke
   function command(action: CommandRequest['action'], continueMode?: CommandRequest['continue_mode']) {
     if (!checkpoint) return;
     const key = crypto.randomUUID();
-    void submit({ checkpoint_id: checkpoint.checkpoint_id, expected_version: checkpoint.version, idempotency_key: key,
+    void submit({ checkpoint_id: checkpoint.checkpoint_id, expected_version: Number(checkpoint.version), idempotency_key: key,
       action, continue_mode: continueMode ?? null, requested_policy: null, override_note: null });
   }
 
@@ -96,7 +104,7 @@ export function AuthoringUsageCheckpoint({ epicId, projectId, jobId, kind, locke
       allow_cross_project_fallback: policy.allow_cross_project_fallback, manual_estimate_tokens: policy.manual_estimate_tokens,
       hard_token_cap: policy.hard_token_cap, hard_context_cap: policy.hard_context_cap };
     const key = crypto.randomUUID();
-    void submit({ checkpoint_id: checkpoint.checkpoint_id, expected_version: checkpoint.version, idempotency_key: key,
+    void submit({ checkpoint_id: checkpoint.checkpoint_id, expected_version: Number(checkpoint.version), idempotency_key: key,
       action: 'set_policy', continue_mode: null, requested_policy: requested, override_note: null });
     setShowPolicy(false);
   }

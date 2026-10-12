@@ -313,7 +313,7 @@ export function ProfileEditor({
     for (const preference of preferences) {
       for (const key of ['max_input_tokens', 'max_output_tokens'] as const) {
         const value = preference.token_budget?.[key];
-        if (value != null && !validateSafeInteger(value, { fieldName: key, min: 1 }).valid) {
+        if (value != null && !validateSafeInteger(value, { fieldName: key, min: 1, allowSigned64: true }).valid) {
           setError(`${profileLabel(preference.purpose)} ${key} must be a positive safe integer or blank to inherit.`);
           return;
         }
@@ -409,7 +409,7 @@ export function ProfileEditor({
               {(['input', 'output'] as const).map(dimension => {
                 const key = dimension === 'input' ? 'max_input_tokens' : 'max_output_tokens';
                 const budget = preference.token_budget ?? {};
-                const updateBudget = (value: number | null) => updatePreference(index, {
+                const updateBudget = (value: number | string | null) => updatePreference(index, {
                   token_budget: { ...budget, [key]: value },
                 });
                 const label = `${profileLabel(preference.purpose)} ${dimension} token budget`;
@@ -420,9 +420,10 @@ export function ProfileEditor({
                     ariaLabel={label}
                     fieldName={label}
                     value={budget[key]}
+                    allowSigned64
                     onChange={updateBudget}
                   />
-                  <span>{budget[key] == null ? `${dimension === 'input' ? 'Input' : 'Output'} tokens: Use run/task default` : `Saved ${dimension} hard cap: ${budget[key]!.toLocaleString()} tokens`}</span>
+                  <span>{budget[key] == null ? `${dimension === 'input' ? 'Input' : 'Output'} tokens: Use run/task default` : `Saved ${dimension} hard cap: ${(typeof budget[key] === 'number' ? budget[key]!.toLocaleString() : BigInt(budget[key]!).toLocaleString())} tokens`}</span>
                 </div>;
               })}
             </fieldset>

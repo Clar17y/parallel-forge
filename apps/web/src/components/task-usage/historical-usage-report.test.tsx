@@ -86,3 +86,33 @@ test('applies project, category and route filters through the report query', asy
   expect(requested).toContain('model=flash-3.8');
   expect(requested).toContain('effort=medium');
 });
+
+test('formats exact signed64 report counts, breakdowns, and window days without Number precision loss', async () => {
+  const exactReport: components['schemas']['TaskUsageHistoryResponse'] = {
+    ...report,
+    overview: {
+      ...summary,
+      sample_count: '9007199254740992', // MAX_SAFE + 1
+      eligible_count: '9007199254740993',
+      coverage_count: '9007199254740992',
+      excluded_count: '1',
+      mean_tokens: 150000,
+      phase_role_breakdown: [
+        { phase: 'implementation', role: 'primary', tokens: '9223372036854775807' }, // INT64_MAX
+      ],
+      window_started_at: null,
+      window_ended_at: null,
+    },
+    filters: {
+      ...report.filters,
+      window_days: '9007199254740992',
+    },
+  };
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify(exactReport), { status: 200 }));
+  render(<HistoricalUsageReport />);
+  expect(await screen.findByRole('heading', { name: 'Pooled overview · mixed routes' })).toBeVisible();
+  expect(screen.getByText(/9,007,199,254,740,992 measured samples/)).toBeVisible();
+  expect(screen.getByText(/9,007,199,254,740,992-day window/)).toBeVisible();
+  expect(screen.getByText(/Coverage: 9,007,199,254,740,992 measured of 9,007,199,254,740,993 eligible/)).toBeVisible();
+  expect(screen.getByText(/primary · 9,223,372,036,854,775,807 tokens/i)).toBeVisible();
+});

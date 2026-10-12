@@ -71,10 +71,10 @@ describe('useEpicMutations', () => {
 
     await act(async () => {
       try {
-        await result.current.execute('POST', `/epics/${epicId}/brief-revisions`, {
-          schema_version: 1,
-          expected_epic_version: 2,
-          content: { problem: 'Important problem' },
+        await result.current.execute('PUT', `/epics/${epicId}/budget`, {
+          expected_version: 2,
+          ceiling: { max_input_tokens: '9007199254740993', max_output_tokens: '9223372036854775807' },
+          owner_note: 'Important problem',
         });
       } catch {
         // Expected error
@@ -87,20 +87,35 @@ describe('useEpicMutations', () => {
     const firstCall = vi.mocked(api).mock.calls[0];
     const initialKey = (firstCall[1]?.headers as Record<string, string>)['Idempotency-Key'];
     const initialBody = firstCall[1]?.body;
+    expect(initialBody).toMatch(/"max_input_tokens":9007199254740993\b/);
+    expect(initialBody).toMatch(/"max_output_tokens":9223372036854775807\b/);
+    expect(initialBody).toMatch(/"owner_note":"Important problem"/);
 
     // Retry the pending request
-    vi.mocked(api).mockResolvedValueOnce({ brief_revision_id: 'rev-1', content_digest: 'd1' });
+    vi.mocked(api).mockResolvedValueOnce({ version: 3 });
     await act(async () => {
       await result.current.retryPending();
     });
 
     expect(api).toHaveBeenCalledTimes(2);
     const secondCall = vi.mocked(api).mock.calls[1];
-    expect(secondCall[0]).toBe(`/epics/${epicId}/brief-revisions`);
+    expect(secondCall[0]).toBe(`/epics/${epicId}/budget`);
     expect((secondCall[1]?.headers as Record<string, string>)['Idempotency-Key']).toBe(initialKey);
     expect(secondCall[1]?.body).toBe(initialBody);
     expect(result.current.hasPendingRetry).toBe(false);
     expect(result.current.error).toBeNull();
+  });
+
+  test('refuses an unsafe local epic cap before reserving a pending replay', async () => {
+    const { result } = renderHook(() => useEpicMutations(epicId));
+    await act(async () => {
+      await expect(result.current.execute('PUT', `/epics/${epicId}/budget`, {
+        expected_version: 1, ceiling: { max_input_tokens: Number.MAX_SAFE_INTEGER + 2 },
+      })).rejects.toThrow(/unsafe JavaScript integer/);
+    });
+    expect(api).not.toHaveBeenCalled();
+    expect(result.current.hasPendingRetry).toBe(false);
+    expect(sessionStorage.length).toBe(0);
   });
 
   test('retains a failed create across remount and completes the original action once', async () => {
