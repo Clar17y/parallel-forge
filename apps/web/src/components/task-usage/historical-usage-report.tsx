@@ -8,7 +8,8 @@ type Report = components['schemas']['TaskUsageHistoryResponse'];
 type Summary = components['schemas']['UsageHistorySummaryResponse'];
 type Filters = { project: string; category: string; provider: string; model: string; effort: string };
 const empty: Filters = { project: '', category: '', provider: '', model: '', effort: '' };
-const count = (value: number | null | undefined) => value == null ? 'Unknown' : value.toLocaleString();
+const count = (value: number | string | null | undefined) =>
+  value == null ? 'Unknown' : (typeof value === 'number' ? value.toLocaleString() : BigInt(value).toLocaleString());
 const pct = (value: number | null | undefined) => value == null ? 'coverage unknown' : `${(value * 100).toFixed(0)}% measured coverage`;
 const label = (value: string) => value.replaceAll('_', ' ');
 
@@ -58,7 +59,7 @@ export function HistoricalUsageReport() {
         <h3 className="font-semibold">Pooled overview · mixed routes</h3>
         <p>{summary.status === 'ready' ? `Mean ${count(summary.mean_tokens)} tokens · Median ${count(summary.median_tokens)} · P90 ${count(summary.p90_tokens)}` : 'Mean Unknown · Median Unknown · P90 Unknown'}</p>
         <p>{count(summary.sample_count)} measured samples · {pct(summary.measured_coverage)} · {windowLabel(summary, report.value?.filters.window_days)}</p>
-        <p>Coverage: {summary.coverage_count} measured of {summary.eligible_count} eligible · {summary.excluded_count} excluded. Source: {label(summary.cohort_source)}.</p>
+        <p>Coverage: {count(summary.coverage_count)} measured of {count(summary.eligible_count)} eligible · {count(summary.excluded_count)} excluded. Source: {label(summary.cohort_source)}.</p>
         {summary.project_ids.length ? <p>Projects represented: {summary.project_ids.map(project => <span key={project} className="mr-2">{project}</span>)}</p> : null}
         <p>Provider, model and effort breakdowns below show the pooled route mix; they are separate marginal views.</p>
         {summary.labels.length ? <p>Report labels: {summary.labels.map(value => label(value)).join(', ')}</p> : null}
@@ -82,11 +83,11 @@ function Comparable({ label: name, summary }: { label: string; summary: Summary 
     {summary.status === 'ready' ? ` · ${summary.sample_count} samples · ${summary.cohort_source}` : ''}</p>;
 }
 
-function windowLabel(summary: Summary, windowDays?: number | null) {
+function windowLabel(summary: Summary, windowDays?: string | number | null) {
   const start = summary.window_started_at?.slice(0, 10);
   const end = summary.window_ended_at?.slice(0, 10);
   if (start && end) return `observed ${start} to ${end}`;
-  if (windowDays != null) return `${windowDays}-day window; observed dates unknown`;
+  if (windowDays != null) return `${count(windowDays)}-day window; observed dates unknown`;
   return 'all-time window; observed dates unknown';
 }
 

@@ -148,6 +148,25 @@ describe('MonitoringPolicySummary and MonitoringPolicyEditor', () => {
   });
 
   describe('MonitoringPolicyEditor', () => {
+    test('retains high exact expected revision through save and stale rebase', async () => {
+      const save = vi.fn().mockRejectedValueOnce(new ApiError(409, 'stale-projection'))
+        .mockResolvedValue({ ...samplePolicy, revision: '9007199254740994' });
+      const refresh = vi.fn().mockResolvedValue({ ...samplePolicy, revision: '9007199254740993' });
+      render(<MonitoringPolicyEditor projectId={projectId} initial={{ ...samplePolicy, revision: '9007199254740992' }} onSave={save} onRefresh={refresh} />);
+      await userEvent.click(screen.getByRole('button', { name: /Save monitoring policy/i }));
+      expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ expected_revision: '9007199254740992' }));
+      await screen.findByText(/Monitoring policy revision conflict/i);
+      await userEvent.click(screen.getByRole('button', { name: /Load current revision and keep edits/i }));
+      await userEvent.click(screen.getByRole('button', { name: /Save monitoring policy/i }));
+      expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ expected_revision: '9007199254740993' }));
+    });
+    test('refuses a revision beyond the signed64 successor boundary before saving', async () => {
+      const save = vi.fn();
+      render(<MonitoringPolicyEditor projectId={projectId} initial={{ ...samplePolicy, revision: '9223372036854775807' }} onSave={save} />);
+      await userEvent.click(screen.getByRole('button', { name: /Save monitoring policy/i }));
+      expect(save).not.toHaveBeenCalled();
+      expect(await screen.findByText(/cannot be incremented/i)).toBeInTheDocument();
+    });
     test('creates absent policy at revision zero and advances from returned receipt', async () => {
       const save = vi.fn().mockResolvedValueOnce({ ...samplePolicy, revision: 1 }).mockResolvedValueOnce({ ...samplePolicy, revision: 2 });
       render(<MonitoringPolicyEditor projectId={projectId} initial={null} onSave={save} />);
@@ -163,8 +182,8 @@ describe('MonitoringPolicySummary and MonitoringPolicyEditor', () => {
       expect(screen.getByLabelText(/Monitoring mode/i)).toHaveValue('checkpoint');
       expect(screen.getByLabelText(/Warning multiplier/i)).toHaveValue(1.5);
       expect(screen.getByLabelText(/Checkpoint multiplier/i)).toHaveValue(2.0);
-      expect(screen.getByLabelText(/History limit/i)).toHaveValue(50);
-      expect(screen.getByLabelText(/Minimum comparables/i)).toHaveValue(20);
+      expect(screen.getByLabelText(/History limit/i)).toHaveValue('50');
+      expect(screen.getByLabelText(/Minimum comparables/i)).toHaveValue('20');
       expect(screen.getByLabelText(/Cross-project cohort fallback/i)).toBeChecked();
 
       await userEvent.click(screen.getByRole('button', { name: /Save monitoring policy/i }));
@@ -239,7 +258,7 @@ describe('MonitoringPolicySummary and MonitoringPolicyEditor', () => {
       expect(await screen.findByText(/Minimum comparables cannot exceed history limit/i)).toBeInTheDocument();
     });
 
-    test('rejects zero and precision loss in advanced hard caps, while valid caps save and clear to null', async () => {
+    test('rejects zero, fraction, and signed64 overflow in advanced caps, while exact signed64 values save and clear to null', async () => {
       const save = vi.fn().mockResolvedValue({ ...samplePolicy, revision: 3 });
       render(<MonitoringPolicyEditor projectId={projectId} initial={samplePolicy} onSave={save} />);
 
@@ -255,33 +274,40 @@ describe('MonitoringPolicySummary and MonitoringPolicyEditor', () => {
       expect(save).not.toHaveBeenCalled();
       expect(screen.getByText(/cannot be zero/i)).toBeInTheDocument();
 
-      // Try precision loss (> Number.MAX_SAFE_INTEGER)
+      // Try fraction
       await userEvent.clear(tokenCapInput);
-      await userEvent.type(tokenCapInput, '9007199254740993');
+      await userEvent.type(tokenCapInput, '1.5');
       await userEvent.click(screen.getByRole('button', { name: /Save monitoring policy/i }));
       expect(save).not.toHaveBeenCalled();
-      expect(screen.getByText(/safe integer limit/i)).toBeInTheDocument();
+      expect(screen.getByText(/whole integer/i)).toBeInTheDocument();
 
-      // Valid safe cap
+      // Try overflow beyond INT64_MAX (> 9223372036854775807)
       await userEvent.clear(tokenCapInput);
-      await userEvent.type(tokenCapInput, '5000000');
+      await userEvent.type(tokenCapInput, '9223372036854775808');
+      await userEvent.click(screen.getByRole('button', { name: /Save monitoring policy/i }));
+      expect(save).not.toHaveBeenCalled();
+      expect(screen.getByText(/signed 64-bit/i)).toBeInTheDocument();
+
+      // Valid exact signed64 cap (> MAX_SAFE) and manual estimate at INT64_MAX
+      await userEvent.clear(tokenCapInput);
+      await userEvent.type(tokenCapInput, '9007199254740993');
 
       const manualEstimateInput = screen.getByLabelText(/Manual estimate tokens/i);
-      await userEvent.type(manualEstimateInput, '250000');
+      await userEvent.type(manualEstimateInput, '9223372036854775807');
 
       await userEvent.click(screen.getByRole('button', { name: /Save monitoring policy/i }));
       expect(save).toHaveBeenCalledWith(expect.objectContaining({
-        hard_token_cap: 5_000_000,
-        manual_estimate_tokens: 250_000,
+        hard_token_cap: '9007199254740993',
+        manual_estimate_tokens: '9223372036854775807',
       }));
 
       // Now clear token cap to null (unbounded)
       cleanup();
       const saveCleared = vi.fn().mockResolvedValue({ ...samplePolicy, revision: 4 });
-      render(<MonitoringPolicyEditor projectId={projectId} initial={{ ...samplePolicy, hard_token_cap: 5000000 }} onSave={saveCleared} />);
+      render(<MonitoringPolicyEditor projectId={projectId} initial={{ ...samplePolicy, hard_token_cap: '9007199254740993' }} onSave={saveCleared} />);
       await userEvent.click(screen.getByText(/Advanced hard caps and manual estimates/i));
       const capInput2 = screen.getByLabelText(/Optional hard token cap/i);
-      expect(capInput2).toHaveValue('5000000');
+      expect(capInput2).toHaveValue('9007199254740993');
       await userEvent.clear(capInput2);
       await userEvent.click(screen.getByRole('button', { name: /Save monitoring policy/i }));
       expect(saveCleared).toHaveBeenCalledWith(expect.objectContaining({
@@ -345,7 +371,7 @@ describe('MonitoringPolicySummary and MonitoringPolicyEditor', () => {
       expect(screen.getByLabelText(/Optional hard token cap/i)).toHaveValue('900000');
       expect(screen.getByLabelText(/Optional hard context cap/i)).toHaveValue('200000');
       expect(screen.getByLabelText(/Monitoring mode/i)).toHaveValue('warn');
-      expect(screen.getByLabelText(/History limit/i)).toHaveValue(60);
+      expect(screen.getByLabelText(/History limit/i)).toHaveValue('60');
       expect(screen.getByLabelText(/Optional owner note/i)).toHaveValue('Only my note');
       await userEvent.click(screen.getByRole('button', { name: /Save monitoring policy/i }));
       expect(save).toHaveBeenLastCalledWith(expect.objectContaining({
@@ -370,7 +396,7 @@ describe('MonitoringPolicySummary and MonitoringPolicyEditor', () => {
       expect(screen.getByLabelText(/Optional hard token cap/i)).toHaveValue('');
       expect(screen.getByLabelText(/Optional hard context cap/i)).toHaveValue('250000');
       expect(screen.getByLabelText(/Manual estimate tokens/i)).toHaveValue('1.5');
-      expect(screen.getByLabelText(/History limit/i)).toHaveValue(70);
+      expect(screen.getByLabelText(/History limit/i)).toHaveValue('70');
       await userEvent.click(screen.getByRole('button', { name: /Save monitoring policy/i }));
       expect(save).toHaveBeenCalledTimes(1);
       await userEvent.clear(screen.getByLabelText(/Manual estimate tokens/i));
@@ -460,6 +486,113 @@ describe('MonitoringPolicySummary and MonitoringPolicyEditor', () => {
 
       completeSave(samplePolicy);
       await waitFor(() => expect(saveBtn).not.toBeDisabled());
+    });
+
+    test('rebases stale conflict while preserving large untouched cap, large changed cap, invalid raw input, and optional note', async () => {
+      const initialWithLarge: MonitoringPolicyResponse = {
+        ...samplePolicy,
+        revision: 2,
+        hard_token_cap: '9007199254740992',
+        hard_context_cap: null,
+        manual_estimate_tokens: null,
+      };
+      const save = vi.fn().mockRejectedValueOnce(new ApiError(409, 'stale-project-policy'))
+        .mockResolvedValueOnce({ ...initialWithLarge, revision: 4 });
+      const refresh = vi.fn().mockResolvedValue({
+        ...initialWithLarge,
+        revision: 3,
+        window_days: 60,
+        hard_token_cap: '9007199254740992',
+      });
+
+      render(<MonitoringPolicyEditor projectId={projectId} initial={initialWithLarge} onSave={save} onRefresh={refresh} />);
+
+      await userEvent.click(screen.getByText(/Advanced hard caps and manual estimates/i));
+
+      await userEvent.type(screen.getByLabelText(/Manual estimate tokens/i), '9223372036854775807');
+      await userEvent.type(screen.getByLabelText(/Optional owner note/i), 'Preserve large caps');
+
+      await userEvent.click(screen.getByRole('button', { name: /Save monitoring policy/i }));
+      await screen.findByText(/Monitoring policy revision conflict/i);
+
+      const checkInput = screen.getByLabelText(/Checkpoint multiplier/i);
+      await userEvent.clear(checkInput);
+      await userEvent.type(checkInput, '0.5');
+
+      await userEvent.click(screen.getByRole('button', { name: /Load current revision and keep edits/i }));
+
+      await screen.findByRole('heading', { name: /Revision 3/i });
+
+      expect(screen.getByLabelText(/Optional hard token cap/i)).toHaveValue('9007199254740992');
+      expect(screen.getByLabelText(/Manual estimate tokens/i)).toHaveValue('9223372036854775807');
+      expect(screen.getByLabelText(/Checkpoint multiplier/i)).toHaveValue(0.5);
+      expect(screen.getByLabelText(/Rolling window/i)).toHaveValue('60');
+      expect(screen.getByLabelText(/Optional owner note/i)).toHaveValue('Preserve large caps');
+
+      await userEvent.click(screen.getByRole('button', { name: /Save monitoring policy/i }));
+      expect(save).toHaveBeenCalledTimes(1);
+      expect(screen.getByText(/Checkpoint multiplier must be at least 1.0/i)).toBeInTheDocument();
+
+      await userEvent.clear(checkInput);
+      await userEvent.type(checkInput, '2.5');
+      await userEvent.click(screen.getByRole('button', { name: /Save monitoring policy/i }));
+
+      expect(save).toHaveBeenCalledTimes(2);
+      expect(save).toHaveBeenLastCalledWith(expect.objectContaining({
+        expected_revision: 3,
+        hard_token_cap: '9007199254740992',
+        manual_estimate_tokens: '9223372036854775807',
+        window_days: 60,
+        checkpoint_multiplier: 2.5,
+        note: 'Preserve large caps',
+      }));
+    });
+
+    test('supports exact signed64 history limit, minimum comparables, and rolling window up to INT64_MAX', async () => {
+      const save = vi.fn().mockResolvedValue({ ...samplePolicy, revision: 3 });
+      render(<MonitoringPolicyEditor projectId={projectId} initial={samplePolicy} onSave={save} />);
+
+      const histInput = screen.getByLabelText(/History limit/i);
+      const minInput = screen.getByLabelText(/Minimum comparables/i);
+      const windowInput = screen.getByLabelText(/Rolling window/i);
+
+      // Overflow beyond INT64_MAX is rejected
+      await userEvent.clear(histInput);
+      await userEvent.type(histInput, '9223372036854775808');
+      await userEvent.click(screen.getByRole('button', { name: /Save monitoring policy/i }));
+      expect(save).not.toHaveBeenCalled();
+      expect(screen.getByText(/signed 64-bit/i)).toBeInTheDocument();
+
+      // Zero is rejected
+      await userEvent.clear(histInput);
+      await userEvent.type(histInput, '0');
+      await userEvent.click(screen.getByRole('button', { name: /Save monitoring policy/i }));
+      expect(save).not.toHaveBeenCalled();
+      expect(screen.getByText(/cannot be zero/i)).toBeInTheDocument();
+
+      // Set valid exact signed64 history limit (MAX_SAFE + 1)
+      await userEvent.clear(histInput);
+      await userEvent.type(histInput, '9007199254740992');
+
+      // Test BigInt comparison: min (MAX_SAFE + 2) > hist (MAX_SAFE + 1) is rejected
+      await userEvent.clear(minInput);
+      await userEvent.type(minInput, '9007199254740993');
+      await userEvent.click(screen.getByRole('button', { name: /Save monitoring policy/i }));
+      expect(save).not.toHaveBeenCalled();
+      expect(screen.getByText(/Minimum comparables cannot exceed history limit/i)).toBeInTheDocument();
+
+      // Valid equal min = hist = 9007199254740992, window at INT64_MAX with leading zeros
+      await userEvent.clear(minInput);
+      await userEvent.type(minInput, '9007199254740992');
+      await userEvent.clear(windowInput);
+      await userEvent.type(windowInput, '009223372036854775807');
+
+      await userEvent.click(screen.getByRole('button', { name: /Save monitoring policy/i }));
+      expect(save).toHaveBeenCalledWith(expect.objectContaining({
+        history_limit: '9007199254740992',
+        minimum_comparables: '9007199254740992',
+        window_days: '9223372036854775807',
+      }));
     });
   });
 });

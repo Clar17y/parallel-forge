@@ -59,7 +59,7 @@ export function TokenBudgetSlider({
     <p className="text-sm" aria-live="polite">{value.toLocaleString()} tokens</p>
     <input id={`${id}-range`} aria-label={label} type="range" min={min} max={sliderMax} step={rangeStep ?? 1} value={Math.min(value, sliderMax)} disabled={disabled} onChange={event => {
       const parsed = validateSafeInteger(event.target.value, { allowNull: false, allowZero: min === 0, min });
-      if (parsed.valid) onChange(parsed.value!);
+      if (parsed.valid) onChange(parsed.value as number);
     }} aria-invalid={Boolean(error)} aria-describedby={error ? `${id}-error` : undefined} className="w-full" />
     <div className="flex flex-wrap gap-2" aria-label={`${label} presets`}>
       {[25, 50, 75, 100].map(percent => <button key={percent} type="button" className="rounded border px-2 py-1 text-xs" disabled={disabled} onClick={() => setPercent(percent)}>{percent}%</button>)}
@@ -74,13 +74,13 @@ export function TokenBudgetSlider({
       <input aria-label={`${label} exact value`} type="number" min={min} step={1} value={value} disabled={disabled} aria-invalid={Boolean(exactError)} onChange={event => {
         const parsed = validateSafeInteger(event.target.value, { allowNull: false, allowZero: min === 0, min });
         setExactError(parsed.valid ? '' : parsed.error!);
-        if (parsed.valid) onChange(parsed.value!);
+        if (parsed.valid) onChange(parsed.value as number);
       }} className="w-full rounded border px-2 py-1" />
       {exactError && <p role="alert" className="text-xs text-[var(--danger)]">{exactError}</p>}
       {!tokenReference(provider, model, dimension) || rangeMax != null ? <label className="block text-xs">Slider range maximum
         <input aria-label={`${label} range maximum`} type="number" min={min + 1} step={1} value={sliderMax} disabled={disabled} onChange={event => {
           const parsed = validateSafeInteger(event.target.value, { allowNull: false, min: min + 1 });
-          if (parsed.valid) setRange({ key: rangeKey, max: Math.max(value, min + 1, parsed.value!) });
+          if (parsed.valid) setRange({ key: rangeKey, max: Math.max(value, min + 1, parsed.value as number) });
         }} className="mt-1 w-full rounded border px-2 py-1" />
       </label> : null}
     </>}

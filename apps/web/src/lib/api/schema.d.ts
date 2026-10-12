@@ -1822,12 +1822,12 @@ export interface components {
              * Max Input Tokens
              * @description Optional input hard cap; omitted or null means no token ceiling, not expected usage.
              */
-            max_input_tokens?: number | null;
+            max_input_tokens?: (number | string) | null;
             /**
              * Max Output Tokens
              * @description Optional output hard cap; omitted or null means no token ceiling, not expected usage.
              */
-            max_output_tokens?: number | null;
+            max_output_tokens?: (number | string) | null;
             /**
              * Max Tool Calls
              * @default 100
@@ -2236,7 +2236,7 @@ export interface components {
         BaselineReference: {
             binding: components["schemas"]["WorkUnitBinding"];
             /** Checkpoint Threshold Tokens */
-            checkpoint_threshold_tokens?: number | null;
+            checkpoint_threshold_tokens?: (number | string) | number | null;
             /** Cohort Digest */
             cohort_digest: string;
             /**
@@ -2253,7 +2253,7 @@ export interface components {
              * Coverage Count
              * @default 0
              */
-            coverage_count: number;
+            coverage_count: number | string;
             /** Estimator Version */
             estimator_version: string;
             /** Frozen At */
@@ -2265,20 +2265,20 @@ export interface components {
             /** Median Tokens */
             median_tokens?: number | null;
             /** Minimum Comparables */
-            minimum_comparables: number;
+            minimum_comparables: number | string;
             /**
              * Outcome Count
              * @default 0
              */
-            outcome_count: number;
+            outcome_count: number | string;
             /** P90 Tokens */
             p90_tokens?: number | null;
             /** Policy Revision */
-            policy_revision: number;
+            policy_revision: number | string;
             /** Reference Tokens */
-            reference_tokens?: number | null;
+            reference_tokens?: (number | string) | number | null;
             /** Sample Count */
-            sample_count: number;
+            sample_count: number | string;
             /**
              * Schema Version
              * @default 1
@@ -2290,15 +2290,15 @@ export interface components {
              * Source Count
              * @default 0
              */
-            source_count: number;
+            source_count: number | string;
             /** Status */
             status: string;
             /** Warning Threshold Tokens */
-            warning_threshold_tokens?: number | null;
+            warning_threshold_tokens?: (number | string) | number | null;
             /** Window Ended At */
             window_ended_at?: string | null;
             /** Window Limit */
-            window_limit: number;
+            window_limit: number | string;
             /** Window Started At */
             window_started_at?: string | null;
         };
@@ -2837,13 +2837,13 @@ export interface components {
              * Generation
              * @default 1
              */
-            generation: number;
+            generation: number | string;
             /** Monitoring Policy Revision */
-            monitoring_policy_revision?: number | null;
+            monitoring_policy_revision?: (number | string) | null;
             /** Next Checkpoint Threshold Tokens */
-            next_checkpoint_threshold_tokens?: number | null;
+            next_checkpoint_threshold_tokens?: (number | string) | null;
             /** Policy Revision */
-            policy_revision: number;
+            policy_revision: number | string;
             /**
              * Process Settled
              * @default false
@@ -2863,7 +2863,7 @@ export interface components {
              * Version
              * @default 0
              */
-            version: number;
+            version: number | string;
         };
         /**
          * CheckpointState
@@ -4558,21 +4558,21 @@ export interface components {
              */
             checkpoint_multiplier: number;
             /** Hard Context Cap */
-            hard_context_cap?: number | null;
+            hard_context_cap?: (number | string) | null;
             /** Hard Token Cap */
-            hard_token_cap?: number | null;
+            hard_token_cap?: (number | string) | null;
             /**
              * History Limit
              * @default 50
              */
-            history_limit: number;
+            history_limit: number | string;
             /** Manual Estimate Tokens */
-            manual_estimate_tokens?: number | null;
+            manual_estimate_tokens?: (number | string) | null;
             /**
              * Minimum Comparables
              * @default 20
              */
-            minimum_comparables: number;
+            minimum_comparables: number | string;
             /** @default report_only */
             mode: components["schemas"]["MonitoringMode"];
             /**
@@ -4584,14 +4584,14 @@ export interface components {
              * Revision
              * @default 1
              */
-            revision: number;
+            revision: number | string;
             /**
              * Warning Multiplier
              * @default 1.5
              */
             warning_multiplier: number;
             /** Window Days */
-            window_days?: number | null;
+            window_days?: (number | string) | null;
         };
         /** MonitoringPolicyResponse */
         MonitoringPolicyResponse: {
@@ -4600,15 +4600,15 @@ export interface components {
             /** Checkpoint Multiplier */
             checkpoint_multiplier: number;
             /** Hard Context Cap */
-            hard_context_cap: number | null;
+            hard_context_cap: (number | string) | null;
             /** Hard Token Cap */
-            hard_token_cap: number | null;
+            hard_token_cap: (number | string) | null;
             /** History Limit */
-            history_limit: number;
+            history_limit: number | string;
             /** Manual Estimate Tokens */
-            manual_estimate_tokens: number | null;
+            manual_estimate_tokens: (number | string) | null;
             /** Minimum Comparables */
-            minimum_comparables: number;
+            minimum_comparables: number | string;
             /** Mode */
             mode: string;
             owner_action?: components["schemas"]["MonitoringOwnerActionResponse"] | null;
@@ -4618,11 +4618,11 @@ export interface components {
              */
             project_id: string;
             /** Revision */
-            revision: number;
+            revision: number | string;
             /** Warning Multiplier */
             warning_multiplier: number;
             /** Window Days */
-            window_days: number | null;
+            window_days: (number | string) | null;
         };
         /**
          * MonitoringPolicyRevisionRequest
@@ -4634,24 +4634,24 @@ export interface components {
             /** Checkpoint Multiplier */
             checkpoint_multiplier?: number | null;
             /** Expected Revision */
-            expected_revision: number;
+            expected_revision: number | string;
             /** Hard Context Cap */
-            hard_context_cap?: number | null;
+            hard_context_cap?: (number | string) | null;
             /** Hard Token Cap */
-            hard_token_cap?: number | null;
+            hard_token_cap?: (number | string) | null;
             /** History Limit */
-            history_limit?: number | null;
+            history_limit?: (number | string) | null;
             /** Manual Estimate Tokens */
-            manual_estimate_tokens?: number | null;
+            manual_estimate_tokens?: (number | string) | null;
             /** Minimum Comparables */
-            minimum_comparables?: number | null;
+            minimum_comparables?: (number | string) | null;
             mode?: components["schemas"]["MonitoringMode"] | null;
             /** Note */
             note?: string | null;
             /** Warning Multiplier */
             warning_multiplier?: number | null;
             /** Window Days */
-            window_days?: number | null;
+            window_days?: (number | string) | null;
         };
         /** OwnerCommandReceipt */
         OwnerCommandReceipt: {
@@ -4680,7 +4680,7 @@ export interface components {
              */
             replayed: boolean;
             /** Result Version */
-            result_version: number;
+            result_version: number | string;
             /** State */
             state: string;
             /**
@@ -6337,14 +6337,14 @@ export interface components {
              */
             max_duration_seconds: number;
             /** Max Input Tokens */
-            max_input_tokens?: number | null;
+            max_input_tokens?: (number | string) | null;
             /**
              * Max Named Checks
              * @default 10
              */
             max_named_checks: number;
             /** Max Output Tokens */
-            max_output_tokens?: number | null;
+            max_output_tokens?: (number | string) | null;
             /**
              * Max Provider Attempts
              * @default 3
@@ -6582,13 +6582,13 @@ export interface components {
             };
             /** Excluded Outcomes */
             excluded_outcomes: {
-                [key: string]: number;
+                [key: string]: number | string;
             };
             /**
              * Failed Attempt Count
              * @default 0
              */
-            failed_attempt_count: number;
+            failed_attempt_count: number | string;
             filters: components["schemas"]["UsageHistoryFiltersResponse"];
             overview: components["schemas"]["UsageHistorySummaryResponse"];
         };
@@ -6610,7 +6610,7 @@ export interface components {
             /** Continue Mode */
             continue_mode?: ("next_checkpoint" | "without_usage_pauses") | null;
             /** Expected Version */
-            expected_version: number;
+            expected_version: number | string;
             /** Idempotency Key */
             idempotency_key: string;
             /** Override Note */
@@ -6626,9 +6626,9 @@ export interface components {
         /** TokenBudgetDefaultsInput */
         TokenBudgetDefaultsInput: {
             /** Max Input Tokens */
-            max_input_tokens?: number | null;
+            max_input_tokens?: (number | string) | null;
             /** Max Output Tokens */
-            max_output_tokens?: number | null;
+            max_output_tokens?: (number | string) | null;
         };
         /** TurnAppend */
         TurnAppend: {
@@ -6684,9 +6684,9 @@ export interface components {
             /** Effort */
             effort?: string | null;
             /** History Limit */
-            history_limit: number;
+            history_limit: number | string;
             /** Minimum Comparables */
-            minimum_comparables: number;
+            minimum_comparables: number | string;
             /** Model */
             model?: string | null;
             /** Project Ids */
@@ -6698,7 +6698,7 @@ export interface components {
             /** Task Kind */
             task_kind?: string | null;
             /** Window Days */
-            window_days?: number | null;
+            window_days?: (number | string) | null;
         };
         /** UsageHistorySummaryResponse */
         UsageHistorySummaryResponse: {
@@ -6707,11 +6707,11 @@ export interface components {
             /** Cohort Source */
             cohort_source: string;
             /** Coverage Count */
-            coverage_count: number;
+            coverage_count: number | string;
             /** Eligible Count */
-            eligible_count: number;
+            eligible_count: number | string;
             /** Excluded Count */
-            excluded_count: number;
+            excluded_count: number | string;
             /** Labels */
             labels: string[];
             /** Mean Tokens */
@@ -6729,7 +6729,7 @@ export interface components {
             /** Reference Tokens */
             reference_tokens?: number | null;
             /** Sample Count */
-            sample_count: number;
+            sample_count: number | string;
             /**
              * Status
              * @enum {string}
@@ -6780,40 +6780,40 @@ export interface components {
             /** Role */
             role: string;
             /** Tokens */
-            tokens: number | null;
+            tokens: (number | string) | null;
         };
         /** UsageReport */
         UsageReport: {
             baseline: components["schemas"]["BaselineReference"] | null;
             binding: components["schemas"]["WorkUnitBinding"];
             /** Cached Input Tokens */
-            cached_input_tokens?: number | null;
+            cached_input_tokens?: (number | string) | null;
             checkpoint?: components["schemas"]["CheckpointRecord"] | null;
             /** Checkpoint Version */
-            checkpoint_version?: number | null;
+            checkpoint_version?: (number | string) | null;
             /** Compaction Count */
-            compaction_count?: number | null;
+            compaction_count?: (number | string) | null;
             /**
              * Completeness
              * @default unknown
              */
             completeness: string;
             /** Context Capacity Tokens */
-            context_capacity_tokens?: number | null;
+            context_capacity_tokens?: (number | string) | null;
             /** Context Occupied Tokens */
-            context_occupied_tokens: number | null;
+            context_occupied_tokens: (number | string) | null;
             /** Context Peak Tokens */
-            context_peak_tokens?: number | null;
+            context_peak_tokens?: (number | string) | null;
             /** Freshness */
             freshness: string;
             /** Input Tokens */
-            input_tokens: number | null;
+            input_tokens: (number | string) | null;
             /** Output Tokens */
-            output_tokens: number | null;
+            output_tokens: (number | string) | null;
             /** Policy Revision */
-            policy_revision: number | null;
+            policy_revision: (number | string) | null;
             /** Reasoning Output Tokens */
-            reasoning_output_tokens?: number | null;
+            reasoning_output_tokens?: (number | string) | null;
             /**
              * Sources
              * @default []
@@ -6826,21 +6826,21 @@ export interface components {
         UsageSourceReport: {
             binding: components["schemas"]["WorkUnitBinding"];
             /** Compaction Count */
-            compaction_count?: number | null;
+            compaction_count?: (number | string) | null;
             /** Completeness */
             completeness: string;
             /** Context Capacity Tokens */
-            context_capacity_tokens?: number | null;
+            context_capacity_tokens?: (number | string) | null;
             /** Context Occupied Tokens */
-            context_occupied_tokens?: number | null;
+            context_occupied_tokens?: (number | string) | null;
             /** Context Peak Tokens */
-            context_peak_tokens?: number | null;
+            context_peak_tokens?: (number | string) | null;
             /** Delegated */
             delegated: boolean | null;
             /** Input Tokens */
-            input_tokens: number | null;
+            input_tokens: (number | string) | null;
             /** Output Tokens */
-            output_tokens: number | null;
+            output_tokens: (number | string) | null;
             /** Phase */
             phase: string;
             /** Role */
@@ -6849,19 +6849,19 @@ export interface components {
         /** UsageSummary */
         UsageSummary: {
             /** Cached Input Tokens */
-            cached_input_tokens: number;
+            cached_input_tokens: number | string;
             /** Currencies */
             currencies: components["schemas"]["CurrencyUsage"][];
             /** Duration Ms */
-            duration_ms: number;
+            duration_ms: number | string;
             /** Input Tokens */
-            input_tokens: number;
+            input_tokens: number | string;
             /** Model Calls */
-            model_calls: number;
+            model_calls: number | string;
             /** Output Tokens */
-            output_tokens: number;
+            output_tokens: number | string;
             /** Tool Calls */
-            tool_calls: number;
+            tool_calls: number | string;
         };
         /** ValidationError */
         ValidationError: {

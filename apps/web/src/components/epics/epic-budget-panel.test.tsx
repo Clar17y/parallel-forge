@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { EpicBudgetPanel } from './epic-budget-panel';
 import { api, ApiError } from '@/lib/api/client';
+import { parseExactJson } from '@/lib/api/exact-integer';
 import type { EpicBudgetProjection } from '@/hooks/epics/types';
 
 vi.mock('@/lib/api/client', () => ({
@@ -85,7 +86,7 @@ describe('EpicBudgetPanel', () => {
     sessionStorage.clear();
   });
 
-  test('rejects unsafe and zero token ceilings without a budget mutation', async () => {
+  test('rejects overflow, fraction, negative and zero token ceilings without a budget mutation', async () => {
     vi.mocked(api).mockImplementation(async <T,>(path: string, init?: RequestInit) => {
       if (path === `/epics/${epicId}/budget` && (!init?.method || init.method === 'GET')) return mockBudget as T;
       return undefined as T;
@@ -94,11 +95,62 @@ describe('EpicBudgetPanel', () => {
     await screen.findByText('Shared Epic Budget & Ceilings');
     await userEvent.click(screen.getByRole('button', { name: /Edit Budget Ceilings/i }));
     const cap = screen.getByLabelText('Input tokens ceiling');
-    for (const raw of ['0', '9007199254740993', '1.5']) {
+    for (const raw of ['0', '9223372036854775808', '1.5', '-1']) {
       fireEvent.change(cap, { target: { value: raw } });
       await userEvent.click(screen.getByRole('button', { name: /Save Ceilings/i }));
       expect(vi.mocked(api).mock.calls.filter(([path, init]) => path === `/epics/${epicId}/budget` && init?.method === 'PUT')).toHaveLength(0);
     }
+  });
+
+  test('accepts and saves exact signed64 decimal string token ceilings across safe boundaries up to INT64_MAX', async () => {
+    vi.mocked(api).mockImplementation(async <T,>(path: string, init?: RequestInit) => {
+      if (path === `/epics/${epicId}/budget` && (!init?.method || init.method === 'GET')) return mockBudget as T;
+      if (path === `/epics/${epicId}/budget` && init?.method === 'PUT') {
+        return {
+          epic_id: epicId,
+          version: 4,
+          ceiling: { ...mockBudget.ceiling, max_input_tokens: '9007199254740993', max_output_tokens: '9223372036854775807' },
+          disabled_dimensions: ['duration_ms'],
+        } as T;
+      }
+      return undefined as T;
+    });
+    render(<EpicBudgetPanel epicId={epicId} />);
+    await screen.findByText('Shared Epic Budget & Ceilings');
+    await userEvent.click(screen.getByRole('button', { name: /Edit Budget Ceilings/i }));
+
+    const inputCap = screen.getByLabelText('Input tokens ceiling');
+    fireEvent.change(inputCap, { target: { value: '9007199254740993' } });
+
+    const outputCap = screen.getByLabelText('Output tokens ceiling');
+    fireEvent.change(outputCap, { target: { value: '9223372036854775807' } });
+
+    await userEvent.click(screen.getByRole('button', { name: /Save Ceilings/i }));
+
+    const putCalls = vi.mocked(api).mock.calls.filter(([path, init]) => path === `/epics/${epicId}/budget` && init?.method === 'PUT');
+    expect(putCalls).toHaveLength(1);
+    const body = putCalls[0][1]?.body as string;
+    expect(body).toMatch(/"max_input_tokens"\s*:\s*9007199254740993\s*[,}]/);
+    expect(body).toMatch(/"max_output_tokens"\s*:\s*9223372036854775807\s*[,}]/);
+  });
+
+  test('formats large exact signed64 ceilings with comma grouping on display', async () => {
+    const largeBudget: EpicBudgetProjection = {
+      ...mockBudget,
+      ceiling: {
+        ...mockBudget.ceiling,
+        max_input_tokens: '9007199254740992',
+        max_output_tokens: '9223372036854775807',
+      },
+    };
+    vi.mocked(api).mockImplementation(async <T,>(path: string, init?: RequestInit) => {
+      if (path === `/epics/${epicId}/budget` && (!init?.method || init.method === 'GET')) return largeBudget as T;
+      return undefined as T;
+    });
+    render(<EpicBudgetPanel epicId={epicId} />);
+    expect(await screen.findByText('Shared Epic Budget & Ceilings')).toBeInTheDocument();
+    expect(screen.getByTestId('ceiling-input_tokens')).toHaveTextContent('9,007,199,254,740,992 tokens');
+    expect(screen.getByTestId('ceiling-output_tokens')).toHaveTextContent('9,223,372,036,854,775,807 tokens');
   });
 
   test('truthfully displays 6 shared dimensions, distinguishing zero, unknown, and unlimited', async () => {
@@ -606,5 +658,89 @@ describe('EpicBudgetPanel', () => {
     // When disabled via Unlimited checkbox
     await userEvent.click(screen.getByLabelText(/Unlimited duration/i));
     expect(durationInput).toHaveAttribute('placeholder', 'Unlimited');
+  });
+
+  test('preserves touched signed-64 ceiling drafts across conflict rebasing while updating untouched fields', async () => {
+    let currentBudget: EpicBudgetProjection = {
+      ...mockBudget,
+      version: 1,
+      ceiling: {
+        ...mockBudget.ceiling,
+        max_cost_minor: 500,
+        max_input_tokens: '100000',
+      },
+    };
+
+    vi.mocked(api).mockImplementation(async <T,>(path: string, init?: RequestInit) => {
+      if (path === `/epics/${epicId}/budget` && (!init?.method || init.method === 'GET')) {
+        return currentBudget as T;
+      }
+      if (path === `/epics/${epicId}/budget` && init?.method === 'PUT') {
+        const body = parseExactJson(init.body as string) as {
+          expected_version: number;
+          ceiling: EpicBudgetProjection['ceiling'];
+        };
+        if (body.expected_version !== currentBudget.version) {
+          throw new ApiError(409, 'stale-projection');
+        }
+        currentBudget = {
+          ...currentBudget,
+          version: body.expected_version + 1,
+          ceiling: body.ceiling,
+        };
+        return currentBudget as T;
+      }
+      return undefined as T;
+    });
+
+    render(<EpicBudgetPanel epicId={epicId} />);
+    await screen.findByText('Shared Epic Budget & Ceilings');
+
+    // Open editor at version 1
+    await userEvent.click(screen.getByRole('button', { name: /Edit Budget Ceilings/i }));
+
+    // Touch input tokens ceiling with INT64_MAX
+    const inputTokens = screen.getByLabelText('Input tokens ceiling');
+    await userEvent.clear(inputTokens);
+    await userEvent.type(inputTokens, '9223372036854775807');
+
+    // In the background, authoritative budget updates to version 2 with updated max_cost_minor
+    currentBudget = {
+      ...currentBudget,
+      version: 2,
+      ceiling: {
+        ...currentBudget.ceiling,
+        max_cost_minor: 999,
+      },
+    };
+
+    // Attempt to save ceilings with stale expected_version 1
+    await userEvent.click(screen.getByRole('button', { name: /Save Ceilings/i }));
+    expect(await screen.findByText(/Budget version conflict/i)).toBeInTheDocument();
+
+    // The touched input tokens should still have the exact signed-64 value in the input
+    expect(inputTokens).toHaveValue('9223372036854775807');
+
+    // Rebase against latest
+    const rebaseBtn = screen.getByRole('button', { name: /Rebase changes onto latest version/i });
+    await userEvent.click(rebaseBtn);
+
+    // After rebase, the touched input tokens draft must be preserved
+    expect(inputTokens).toHaveValue('9223372036854775807');
+    // The untouched cost ceiling should reflect the latest value (999)
+    const costInput = screen.getByLabelText(/Cost ceiling \(minor units\)/i);
+    expect(costInput).toHaveValue('999');
+
+    // Now save ceilings successfully with updated version 2
+    await userEvent.click(screen.getByRole('button', { name: /Save Ceilings/i }));
+
+    const putCalls = vi.mocked(api).mock.calls.filter(([p, init]) => p === `/epics/${epicId}/budget` && init?.method === 'PUT');
+    expect(putCalls).toHaveLength(2);
+    const rawBody = putCalls[1][1]?.body as string;
+    const lastBody = JSON.parse(rawBody);
+    expect(lastBody.expected_version).toBe(2);
+    expect(rawBody).toMatch(/"max_input_tokens"\s*:\s*9223372036854775807\s*[,}]/);
+    expect(lastBody.ceiling.max_cost_minor).toBe(999);
+    expect(await screen.findByTestId('ceiling-input_tokens')).toHaveTextContent('9,223,372,036,854,775,807 tokens');
   });
 });

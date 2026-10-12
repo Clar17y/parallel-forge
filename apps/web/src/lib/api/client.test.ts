@@ -113,3 +113,31 @@ test('mutation supports PUT method for budget and idempotency header', async () 
   const headers = new Headers(options.headers);
   expect(headers.get('Idempotency-Key')).toBe('put-key');
 });
+
+test('numeric API retains exact signed64 responses and writes without changing safe payloads', async () => {
+  const fetcher = vi.spyOn(globalThis, 'fetch')
+    .mockResolvedValueOnce(new Response('{"hard_token_cap":9223372036854775807,"revision":2}', { status: 200 }))
+    .mockResolvedValueOnce(new Response('{"hard_token_cap":9223372036854775807}', { status: 200 }));
+  expect(await api<{ hard_token_cap: string | number; revision: number }>('/projects/one/monitoring-policy'))
+    .toEqual({ hard_token_cap: '9223372036854775807', revision: 2 });
+  await mutate('/projects/one/monitoring-policy', { hard_token_cap: '9223372036854775807',
+    expected_revision: 2, note: '9223372036854775807' }, { idempotencyKey: 'exact-cap' });
+  expect(fetcher.mock.calls[1][1]?.body).toBe(
+    '{"hard_token_cap":9223372036854775807,"expected_revision":2,"note":"9223372036854775807"}');
+});
+
+test('writes exact checkpoint and monitoring versions only on supported owner routes', async () => {
+  const fetcher = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response('{}', { status: 200 }));
+  await mutate('/runs/run-1/usage-checkpoint/commands', {
+    expected_version: '9007199254740993', requested_policy: { revision: '9007199254740994' },
+    note: '9007199254740993',
+  }, { idempotencyKey: 'checkpoint' });
+  expect(String(fetcher.mock.calls[0][1]?.body)).toBe('{"expected_version":9007199254740993,"requested_policy":{"revision":9007199254740994},"note":"9007199254740993"}');
+  await mutate('/projects/project-1/monitoring-policy', { expected_revision: '9007199254740993' }, { idempotencyKey: 'policy' });
+  expect(String(fetcher.mock.calls[1][1]?.body)).toBe('{"expected_revision":9007199254740993}');
+  await mutate('/runs/run-1/commands', { expected_version: '9007199254740993' }, { idempotencyKey: 'ordinary' });
+  expect(String(fetcher.mock.calls[2][1]?.body)).toBe('{"expected_version":"9007199254740993"}');
+  expect(() => mutate('/runs/run-1/usage-checkpoint/commands', { expected_version: Number.MAX_SAFE_INTEGER + 2 }, { idempotencyKey: 'unsafe' }))
+    .toThrow(/unsafe JavaScript integer/);
+  expect(fetcher).toHaveBeenCalledTimes(3);
+});

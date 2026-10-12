@@ -14,6 +14,16 @@ export interface MonitoringPolicySummaryProps {
   onEdit?: () => void;
 }
 
+function formatTokens(val: number | string | null | undefined): string {
+  if (val == null) return '';
+  if (typeof val === 'number') return val.toLocaleString();
+  try {
+    return BigInt(val).toLocaleString();
+  } catch {
+    return String(val);
+  }
+}
+
 export function MonitoringPolicySummary({
   policy,
   report,
@@ -52,9 +62,9 @@ export function MonitoringPolicySummary({
             <span>Minimum comparables: {policy.minimum_comparables} samples</span>
             <span>Time window: {policy.window_days != null ? `${policy.window_days} days` : 'All time (unbounded)'}</span>
             <span>Cross-project fallback: {policy.allow_cross_project_fallback ? 'Enabled' : 'Disabled'}</span>
-            <span>Hard token cap: {policy.hard_token_cap != null ? `${policy.hard_token_cap.toLocaleString()} tokens` : 'Unbounded (no cap)'}</span>
-            <span>Hard context cap: {policy.hard_context_cap != null ? `${policy.hard_context_cap.toLocaleString()} tokens` : 'Unbounded (no cap)'}</span>
-            <span>Manual estimate: {policy.manual_estimate_tokens != null ? `${policy.manual_estimate_tokens.toLocaleString()} tokens` : 'None (use a learned reference when available)'}</span>
+            <span>Hard token cap: {policy.hard_token_cap != null ? `${formatTokens(policy.hard_token_cap)} tokens` : 'Unbounded (no cap)'}</span>
+            <span>Hard context cap: {policy.hard_context_cap != null ? `${formatTokens(policy.hard_context_cap)} tokens` : 'Unbounded (no cap)'}</span>
+            <span>Manual estimate: {policy.manual_estimate_tokens != null ? `${formatTokens(policy.manual_estimate_tokens)} tokens` : 'None (use a learned reference when available)'}</span>
           </div>
 
           {policy.owner_action && (

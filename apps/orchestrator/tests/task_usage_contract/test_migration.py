@@ -712,7 +712,7 @@ def test_additive_migration_and_lineage(test_database_url, alembic_config_factor
             async with engine.connect() as db:
                 assert (
                     await db.scalar(text("SELECT version_num FROM alembic_version"))
-                    == "20261011_0040"
+                    == "20261012_0041"
                 )
                 for table in (
                     "task_usage_work_units",
@@ -781,7 +781,7 @@ def test_empty_usage_downgrade_reupgrade_preserves_legacy_history(
 
     asyncio.run(check("20261007_0037"))
     command.upgrade(config, "head")
-    asyncio.run(check("20261011_0040"))
+    asyncio.run(check("20261012_0041"))
 
 
 @pytest.mark.integration
@@ -1067,7 +1067,7 @@ def test_downgrade_refuses_each_retained_usage_shape(
             async with engine.connect() as db:
                 assert (
                     await db.scalar(text("SELECT version_num FROM alembic_version"))
-                    == "20261011_0040"
+                    == "20261012_0041"
                 )
                 assert await db.scalar(text(f"SELECT count(*) FROM {table}")) == 1
                 assert (
@@ -1143,7 +1143,7 @@ async def test_downgrade_waits_for_writer_then_refuses_committed_evidence(
                     await asyncio.gather(downgrade, return_exceptions=True)
         async with engine.connect() as db:
             assert (
-                await db.scalar(text("SELECT version_num FROM alembic_version")) == "20261011_0040"
+                await db.scalar(text("SELECT version_num FROM alembic_version")) == "20261012_0041"
             )
             assert (
                 await db.scalar(

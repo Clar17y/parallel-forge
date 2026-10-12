@@ -20,6 +20,7 @@ from uuid import uuid4
 
 import httpx
 from alembic import command
+from forge.domain.subscription import TaskBudget, decode_subscription_record
 from forge.persistence.database import create_engine
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
@@ -35,6 +36,7 @@ from tests.acceptance.test_task_usage_monitoring_process import (
     _pending_run_evidence,
     _repository_with_managed_worktrees,
 )
+from tests.acceptance.test_task_usage_reporting_process import _seed_no_policy_samples
 
 
 def _wait_web(origin: str, process: subprocess.Popen[bytes]) -> None:
@@ -96,6 +98,47 @@ def _prepare_scenarios(
             "expected_revision": 1, "mode": "checkpoint", "manual_estimate_tokens": 20,
             "hard_token_cap": 5000,
         })
+        requirement_id, item_id = str(uuid4()), str(uuid4())
+        brief_content = {
+            "problem": "Review exact shared epic caps",
+            "outcomes": ["The owner can edit the shared ceiling"],
+            "requirements": [{
+                "requirement_id": requirement_id,
+                "text": "Retain exact token ceilings",
+                "acceptance_criteria": ["Read back the saved numeric ceiling"],
+            }],
+        }
+        budget_epic = _mutate(client, "/api/epics", {
+            "project_id": project_id, "title": "Exact browser budget",
+            "draft": brief_content,
+        })
+        budget_epic_id = budget_epic["epic_id"]
+        budget_path = f"/api/epics/{budget_epic_id}"
+        saved_brief = _mutate(client, budget_path + "/brief-revisions", {
+            "expected_epic_version": 1, "content": brief_content,
+        })
+        _mutate(client, budget_path + "/brief-adoptions", {
+            "expected_epic_version": 2,
+            "brief_revision_id": saved_brief["brief_revision_id"],
+            "brief_digest": saved_brief["content_digest"],
+        })
+        saved_graph = _mutate(client, budget_path + "/graph-revisions", {
+            "expected_epic_version": 3,
+            "brief_revision_id": saved_brief["brief_revision_id"],
+            "brief_digest": saved_brief["content_digest"],
+            "items": [{
+                "item_id": item_id, "ordinal": 0, "disposition": "required",
+                "title": "Verify ceiling", "outcome": "Exact numeric storage",
+                "acceptance_criteria": ["Match the submitted integer"],
+                "source_requirement_ids": [requirement_id], "dependency_item_ids": [],
+            }],
+        })
+        _mutate(client, budget_path + "/graph-adoptions", {
+            "expected_epic_version": 4,
+            "graph_revision_id": saved_graph["graph_revision_id"],
+            "graph_digest": saved_graph["graph_digest"],
+        })
+        _mutate(client, budget_path + "/executions", {"expected_epic_version": 5})
         epic = _mutate(client, "/api/epics", {
             "project_id": project_id, "title": "Observed browser authoring",
         })
@@ -150,6 +193,7 @@ def _prepare_scenarios(
             "run_id": run_id,
             "authoring_path": f"/epics/{epic_id}?project_id={project_id}&job_id={job['job_id']}",
             "run_path": f"/runs/{run_id}",
+            "budget_epic_id": budget_epic_id,
         }
 
 
@@ -163,7 +207,8 @@ async def _storage_snapshot(database_url: str, scenario: dict[str, str]) -> dict
                 "WHERE p.id = :project"
             ), {"project": scenario["project_id"]})).one()
             policy = (await db.execute(text(
-                "SELECT revision, mode, manual_estimate_tokens, hard_token_cap "
+                "SELECT revision, mode, manual_estimate_tokens, hard_token_cap, "
+                "history_limit, minimum_comparables, window_days, hard_context_cap "
                 "FROM task_usage_policy_revisions WHERE project_id = :project "
                 "ORDER BY revision DESC LIMIT 1"
             ), {"project": scenario["project_id"]})).one()
@@ -219,9 +264,64 @@ async def _storage_snapshot(database_url: str, scenario: dict[str, str]) -> dict
                 "GROUP BY u.subject_kind, u.subject_id, u.source_kind, u.source_id "
                 "ORDER BY u.subject_kind, u.subject_id, u.source_kind, u.source_id"
             ), {"project": scenario["project_id"]})).all()
+            report_sources = (await db.execute(text(
+                "SELECT u.project_id, count(DISTINCT u.id), count(o.id), "
+                "coalesce(sum(o.input_tokens), 0)::bigint, "
+                "coalesce(sum(o.output_tokens), 0)::bigint "
+                "FROM task_usage_work_units u LEFT JOIN task_usage_observations o "
+                "ON o.work_unit_id = u.id "
+                "WHERE u.project_id IN (:measured, :unknown) GROUP BY u.project_id "
+                "ORDER BY u.project_id"
+            ), {"measured": scenario["measured_project_id"],
+                "unknown": scenario["unknown_project_id"]})).all()
+            budget_row = (await db.execute(text(
+                "SELECT version, ceiling FROM epic_brainstorm_budget_ledgers "
+                "WHERE epic_id = :epic"
+            ), {"epic": scenario["budget_epic_id"]})).one_or_none()
+            project_policy = (await db.execute(text(
+                "SELECT version, document #>> '{planner_model,max_input_tokens}', "
+                "document #>> '{planner_model,max_output_tokens}' "
+                "FROM project_policy_versions WHERE project_id = :project "
+                "ORDER BY version DESC LIMIT 1"
+            ), {"project": scenario["project_id"]})).one()
+            profile_versions = (await db.execute(text(
+                "SELECT profile_id, version, payload "
+                "FROM subscription_profile_versions ORDER BY profile_id, version"
+            ))).all()
+            owner_commands = (await db.execute(text(
+                "SELECT c.checkpoint_id, c.action, c.expected_version, c.result_version "
+                "FROM task_usage_owner_commands c JOIN task_usage_checkpoints p "
+                "ON p.id = c.checkpoint_id WHERE p.subject_id IN (:job, :run) "
+                "ORDER BY c.created_at, c.id"
+            ), {"job": scenario["job_id"], "run": scenario["run_id"]})).all()
+            budget = decode_subscription_record(budget_row[1]) if budget_row else None
+            if budget_row is not None and not isinstance(budget, TaskBudget):
+                raise TypeError("stored epic ceiling was not a task budget")
+            stored_profile_versions = []
+            for profile_id, version, payload in profile_versions:
+                profile = decode_subscription_record(payload)
+                role_budget = profile.preferences[0].token_budget
+                stored_profile_versions.append([
+                    str(profile_id), version,
+                    None if role_budget is None or role_budget.max_input_tokens is None
+                    else str(role_budget.max_input_tokens),
+                    None if role_budget is None or role_budget.max_output_tokens is None
+                    else str(role_budget.max_output_tokens),
+                ])
             return {
                 "project": [str(project[0]), str(project[1]) if project[1] else None, project[2]],
-                "policy": list(policy), "epic": [epic[0], str(epic[1]) if epic[1] else None],
+                "policy": list(policy),
+                "policy_exact": {
+                    "revision": policy[0],
+                    "manual_estimate_tokens": None if policy[2] is None else str(policy[2]),
+                    "hard_token_cap": None if policy[3] is None else str(policy[3]),
+                    "history_limit": str(policy[4]),
+                    "minimum_comparables": str(policy[5]),
+                    "window_days": None if policy[6] is None else str(policy[6]),
+                    "hard_context_cap": None if policy[7] is None else str(policy[7]),
+                },
+                "policy_revision_exact": str(policy[0]),
+                "epic": [epic[0], str(epic[1]) if epic[1] else None],
                 "job": [job[0], job[1], job[2], str(job[3]) if job[3] else None],
                 "run": list(run), "checkpoints": [list(row) for row in checkpoint],
                 "attempts": list(attempts),
@@ -232,7 +332,112 @@ async def _storage_snapshot(database_url: str, scenario: dict[str, str]) -> dict
                 "baselines": [[row[0], str(row[1]), *row[2:]] for row in baselines],
                 "sources": [[row[0], str(row[1]), row[2], str(row[3]), *row[4:]]
                             for row in sources],
+                "report_sources": [[str(row[0]), *row[1:]] for row in report_sources],
+                "budget": None if budget_row is None else {
+                    "version": budget_row[0],
+                    "max_input_tokens": None if budget.max_input_tokens is None else str(budget.max_input_tokens),
+                    "max_output_tokens": None if budget.max_output_tokens is None else str(budget.max_output_tokens),
+                },
+                "project_model_caps": {
+                    "version": project_policy[0],
+                    "max_input_tokens": project_policy[1],
+                    "max_output_tokens": project_policy[2],
+                },
+                "profile_versions": stored_profile_versions,
+                "owner_commands": [[str(row[0]), row[1], str(row[2]), str(row[3])]
+                                   for row in owner_commands],
+                "authoring_next_threshold_exact": next(
+                    (str(row[5]) if row[5] is not None else None)
+                    for row in checkpoint if row[0] == "authoring_job"
+                ),
             }
+    finally:
+        await engine.dispose()
+
+
+async def _seed_high_owner_versions(database_url: str, scenario: dict[str, str]) -> dict[str, object]:
+    """Test-only counter seeding; subsequent actions still cross the real API and worker."""
+    engine = create_engine(database_url)
+    try:
+        async with engine.begin() as db:
+            seeded = {}
+            for kind, subject, version in (
+                ("run", scenario["run_id"], 9007199254740993),
+                ("authoring_job", scenario["job_id"], 9223372036854775805),
+            ):
+                row = (await db.execute(text(
+                    "UPDATE task_usage_checkpoints SET version = :version "
+                    "WHERE subject_kind = :kind AND subject_id = :subject "
+                    "AND state = 'paused' AND process_settled RETURNING id, version"
+                ), {"version": version, "kind": kind, "subject": subject})).one()
+                seeded[kind] = {"checkpoint_id": str(row[0]), "version": str(row[1])}
+            return seeded
+    finally:
+        await engine.dispose()
+
+
+async def _seed_high_monitoring_revision(database_url: str, scenario: dict[str, str]) -> str:
+    """Seed only the disposable fixture's next owner revision boundary."""
+    engine = create_engine(database_url)
+    try:
+        async with engine.begin() as db:
+            row = (await db.execute(text(
+                "INSERT INTO task_usage_policy_revisions "
+                "(project_id, revision, mode, warning_multiplier, checkpoint_multiplier, "
+                "history_limit, minimum_comparables, window_days, hard_token_cap, "
+                "hard_context_cap, manual_estimate_tokens, allow_cross_project_fallback, actor_id) "
+                "SELECT project_id, 9223372036854775806, mode, warning_multiplier, "
+                "checkpoint_multiplier, history_limit, minimum_comparables, window_days, "
+                "hard_token_cap, hard_context_cap, manual_estimate_tokens, "
+                "allow_cross_project_fallback, actor_id FROM task_usage_policy_revisions "
+                "WHERE project_id = :project ORDER BY revision DESC LIMIT 1 "
+                "RETURNING revision"
+            ), {"project": scenario["project_id"]})).one()
+            return str(row[0])
+    finally:
+        await engine.dispose()
+
+
+async def _seed_authoring_headroom(
+    database_url: str, scenario: dict[str, str], previous_total: int, target_total: int
+) -> dict[str, str]:
+    """Append a disposable final observation; keep the frozen reference untouched."""
+    if not 0 <= previous_total <= 9223372036854775807 or target_total not in (
+        9223372036854775807, 9223372036854775787
+    ):
+        raise ValueError("invalid headroom fixture target")
+    engine = create_engine(database_url)
+    try:
+        async with engine.begin() as db:
+            observation = (await db.execute(text(
+                "SELECT o.id, o.work_unit_id, o.input_tokens, o.sequence FROM task_usage_observations o "
+                "JOIN task_usage_work_units u ON u.id = o.work_unit_id "
+                "WHERE u.subject_kind = 'authoring_job' AND u.subject_id = :job "
+                "ORDER BY o.sequence DESC LIMIT 1 FOR UPDATE OF o"
+            ), {"job": scenario["job_id"]})).one()
+            replacement = observation[2] + target_total - previous_total
+            if not 0 <= replacement <= 9223372036854775807:
+                raise ValueError("headroom fixture observation outside signed64")
+            await db.execute(text(
+                "INSERT INTO task_usage_observations "
+                "(id, project_id, work_unit_id, event_id, sequence, counter_kind, counter_epoch, "
+                "scope, input_tokens, output_tokens, cached_input_tokens, reasoning_output_tokens, "
+                "context_occupied_tokens, context_capacity_tokens, compaction_count, unknown_dimensions, "
+                "final, final_status, reconciles_event_id, observed_at, schema_version) "
+                "SELECT :new_id, project_id, work_unit_id, :event_id, :sequence, counter_kind, "
+                "counter_epoch, scope, :tokens, output_tokens, cached_input_tokens, "
+                "reasoning_output_tokens, context_occupied_tokens, context_capacity_tokens, "
+                "compaction_count, unknown_dimensions, true, 'fixture_final', NULL, "
+                "now(), schema_version FROM task_usage_observations WHERE id = :prior_id"
+            ), {"new_id": uuid4(), "event_id": f"headroom-{uuid4()}",
+                "sequence": observation[3] + 1, "tokens": replacement,
+                "prior_id": observation[0]})
+            frozen = (await db.execute(text(
+                "SELECT snapshot_digest, reference_tokens FROM task_usage_baselines "
+                "WHERE subject_kind = 'authoring_job' AND subject_id = :job ORDER BY created_at DESC LIMIT 1"
+            ), {"job": scenario["job_id"]})).one()
+            return {"work_unit_id": str(observation[1]), "input_tokens": str(replacement),
+                    "frozen_digest": frozen[0], "frozen_reference": str(frozen[1])}
     finally:
         await engine.dispose()
 
@@ -296,8 +501,38 @@ def main() -> None:
                         scenario = _prepare_scenarios(
                             harness, repository, database_url, web_origin
                         )
+                        # Browser report filtering uses real registered PostgreSQL
+                        # projects with measured, zero, and unavailable samples.
+                        measured_project, unknown_project = asyncio.run(
+                            _seed_no_policy_samples(database_url)
+                        )
+                        scenario["measured_project_id"] = str(measured_project)
+                        scenario["unknown_project_id"] = str(unknown_project)
 
                     class Redirect(BaseHTTPRequestHandler):
+                        def do_POST(self) -> None:
+                            if self.path not in ("/seed-high-owner-versions", "/seed-high-monitoring-revision", "/seed-authoring-headroom"):
+                                self.send_error(404)
+                                return
+                            if self.path == "/seed-authoring-headroom":
+                                payload = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
+                                result = _seed_authoring_headroom(
+                                    database_url, scenario, int(payload["previous_total"]), int(payload["target_total"])
+                                )
+                            else:
+                                result = (
+                                    _seed_high_owner_versions(database_url, scenario)
+                                    if self.path == "/seed-high-owner-versions" else
+                                    _seed_high_monitoring_revision(database_url, scenario)
+                                )
+                            value = json.dumps(asyncio.run(result))
+                            body = value.encode("utf-8")
+                            self.send_response(200)
+                            self.send_header("Content-Type", "application/json")
+                            self.send_header("Content-Length", str(len(body)))
+                            self.end_headers()
+                            self.wfile.write(body)
+
                         def do_GET(self) -> None:
                             if self.path == "/snapshot":
                                 value = json.dumps(asyncio.run(_storage_snapshot(database_url, scenario)))
@@ -325,14 +560,17 @@ def main() -> None:
                     control = ThreadingHTTPServer(("127.0.0.1", 0), Redirect)
                     thread = Thread(target=control.serve_forever, daemon=True)
                     thread.start()
-                    print(json.dumps({
+                    session_info = {
                         "control_origin": f"http://127.0.0.1:{control.server_port}",
                         "web_origin": web_origin, "api_origin": harness.base_url,
                         **scenario,
                         "api_pid": harness.api_pid, "worker_pid": harness.worker_pid,
                         "web_pid": web.pid, "database_name": database_name,
                         "data_root": str(data_root),
-                    }), flush=True)
+                    }
+                    if output := os.environ.get("FORGE_BROWSER_SCENARIO_OUTPUT"):
+                        Path(output).write_text(json.dumps(session_info, indent=2), encoding="utf-8")
+                    print(json.dumps(session_info), flush=True)
                     try:
                         while web.poll() is None:
                             sleep(0.5)
