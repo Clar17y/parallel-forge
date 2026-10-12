@@ -10,6 +10,7 @@ import asyncio
 import json
 import secrets
 from collections.abc import Awaitable, Callable, Mapping
+from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
@@ -554,8 +555,75 @@ async def codex_exchange(
         )
 
     early_events: list[Mapping[str, Any]] = []
+    candidate: BrainstormProposal | DecompositionProposal | None = None
+    preview_error = deepcopy(error)
+
+    def consume_usage(frame: Mapping[str, Any], expected_turn_id: str) -> None:
+        params = frame.get("params")
+        if (
+            not isinstance(params, Mapping)
+            or params.get("threadId") != thread_id
+            or params.get("turnId") != expected_turn_id
+        ):
+            raise ProtocolError("foreign Codex authoring turn")
+        token = params.get("tokenUsage")
+        total = token.get("total") if isinstance(token, Mapping) else None
+        usage.observe(
+            total,
+            input_key="inputTokens",
+            output_key="outputTokens",
+            cache_key="cachedInputTokens",
+        )
+
+    async def consume_item(frame: Mapping[str, Any], expected_turn_id: str) -> None:
+        nonlocal candidate
+        params = frame.get("params")
+        if (
+            not isinstance(params, Mapping)
+            or params.get("threadId") != thread_id
+            or params.get("turnId") != expected_turn_id
+        ):
+            raise ProtocolError("foreign Codex authoring item")
+        item = params.get("item")
+        method = frame.get("method")
+        if not isinstance(item, Mapping):
+            raise ProtocolError(
+                "invalid Codex authoring item" if method == "item/completed"
+                else "unregistered Codex authoring item"
+            )
+        if item.get("type") not in {
+            "agentMessage", "reasoning", "userMessage", "dynamicToolCall"
+        }:
+            raise ProtocolError("unregistered Codex authoring item")
+        if method == "item/completed" and item.get("type") == "agentMessage" and item.get("phase") != "commentary":
+            if candidate is not None:
+                raise ProtocolError("duplicate Codex authoring result")
+            message = item.get("text")
+            if not isinstance(message, str):
+                raise ProtocolError("invalid Codex authoring message")
+            candidate = proposal_from_output(parse_json(message), job)
+            await tools.record("proposal_received")
 
     async def early_tool_call(frame: Mapping[str, Any], announced: str) -> None:
+        # _rpc must answer callbacks before the turn/start acknowledgement. Drain
+        # preceding rejecting events before granting a tool. Error evidence stays
+        # queued for authoritative binding to the acknowledged turn by _rpc.
+        pending = early_events[:]
+        early_events.clear()
+        for event in pending:
+            method = event.get("method")
+            if method in {"item/started", "item/completed"}:
+                await consume_item(event, announced)
+            elif method == "thread/tokenUsage/updated":
+                consume_usage(event, announced)
+            elif method == "error":
+                params = event.get("params")
+                if not isinstance(params, Mapping):
+                    raise ProtocolError("foreign Codex authoring event")
+                preview_error.notification(params, utc_now())
+                early_events.append(event)
+            else:
+                early_events.append(event)
         await respond_tool(frame, announced, awaiting_ack=True)
 
     await tools.record("provider_wait", operation="turn_start")
@@ -578,7 +646,6 @@ async def codex_exchange(
     )
     turn_id = gateway._id(turn.get("turn"))
     await tools.record("provider_wait", operation="provider_receive")
-    candidate: BrainstormProposal | DecompositionProposal | None = None
     for _ in range(4096):
         frame = early_events.pop(0) if early_events else await session.receive()
         if frame is None:
@@ -627,44 +694,11 @@ async def codex_exchange(
         if params.get("turnId") != turn_id:
             raise ProtocolError("foreign Codex authoring turn")
         if method == "thread/tokenUsage/updated":
-            token = params.get("tokenUsage")
-            total = token.get("total") if isinstance(token, Mapping) else None
-            usage.observe(
-                total,
-                input_key="inputTokens",
-                output_key="outputTokens",
-                cache_key="cachedInputTokens",
-            )
+            consume_usage(frame, turn_id)
         elif method == "item/tool/call":
             await respond_tool(frame, turn_id)
-        elif method == "item/completed":
-            item = params.get("item")
-            if not isinstance(item, Mapping):
-                raise ProtocolError("invalid Codex authoring item")
-            if item.get("type") == "agentMessage" and item.get("phase") != "commentary":
-                if candidate is not None:
-                    raise ProtocolError("duplicate Codex authoring result")
-                message = item.get("text")
-                if not isinstance(message, str):
-                    raise ProtocolError("invalid Codex authoring message")
-                candidate = proposal_from_output(parse_json(message), job)
-                await tools.record("proposal_received")
-            elif item.get("type") not in {
-                "agentMessage",
-                "reasoning",
-                "userMessage",
-                "dynamicToolCall",
-            }:
-                raise ProtocolError("unregistered Codex authoring item")
-        elif method == "item/started":
-            item = params.get("item")
-            if not isinstance(item, Mapping) or item.get("type") not in {
-                "agentMessage",
-                "reasoning",
-                "userMessage",
-                "dynamicToolCall",
-            }:
-                raise ProtocolError("unregistered Codex authoring item")
+        elif method in {"item/completed", "item/started"}:
+            await consume_item(frame, turn_id)
         elif method in {
             "item/agentMessage/delta",
             "item/reasoning/summaryTextDelta",

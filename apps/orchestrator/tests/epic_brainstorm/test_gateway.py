@@ -562,7 +562,7 @@ async def test_gateway_explicit_failure_frame(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "outcome", ["success", "nonzero", "natural_exit_race", "unknown_usage", "quota", "quota_diagnostic_raises", "quota_diagnostic_stalls", "quota_diagnostic_cancelled", "long_lived", "retry", "stuck_setup", "tool_reply", "early_callback", "early_replay", "early_foreign", "early_terminal", "early_terminal_then_callback", "early_failed_terminal_then_callback", "closure_timeout", "blocked_settlement_diag"]
+    "outcome", ["success", "nonzero", "natural_exit_race", "unknown_usage", "quota", "quota_diagnostic_raises", "quota_diagnostic_stalls", "quota_diagnostic_cancelled", "long_lived", "retry", "stuck_setup", "tool_reply", "early_callback", "early_final_callback", "early_replay", "early_foreign", "early_invalid_started", "early_invalid_completed", "early_duplicate_final", "early_usage_missing", "early_usage_invalid_count", "early_usage_regressed", "early_error_malformed", "early_error_conflict", "early_valid_prefix", "early_terminal", "early_terminal_then_callback", "early_failed_terminal_then_callback", "closure_timeout", "blocked_settlement_diag"]
 )
 async def test_configured_codex_uses_app_server_authoring_protocol(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome: str
@@ -610,7 +610,29 @@ async def test_configured_codex_uses_app_server_authoring_protocol(
         "f=recv('turn/start'); schema=f['params']['outputSchema']; props=schema['properties']['proposal']['properties']; assert f['params']['effort']=='medium' and 'proposal' in schema['properties'] and '$defs' in schema and props['requirement_criteria']['type']=='array'; "
         + (
             "send({'method':'turn/started','params':{'threadId':'thread-1','turn':{'id':'turn-1'}}}); "
-            + "send({'method':'item/started','params':{'threadId':'thread-1','turnId':'turn-1','item':{'id':'early-item','type':'dynamicToolCall'}}}); "
+            + (
+                "send({'method':'item/started','params':{'threadId':'thread-1','turnId':'turn-1','item':{'id':'bad','type':'nativeToolCall'}}}); "
+                if outcome == "early_invalid_started" else
+                "send({'method':'item/completed','params':{'threadId':'thread-1','turnId':'turn-1','item':{'id':'bad','type':'agentMessage','text':'{'}}}); "
+                if outcome == "early_invalid_completed" else
+                "send({'method':'item/completed','params':{'threadId':'thread-1','turnId':'turn-1','item':{'id':'first','type':'agentMessage','text':json.dumps(proposal)}}}); send({'method':'item/completed','params':{'threadId':'thread-1','turnId':'turn-1','item':{'id':'second','type':'agentMessage','text':json.dumps(proposal)}}}); "
+                if outcome == "early_duplicate_final" else
+                "send({'method':'item/completed','params':{'threadId':'thread-1','turnId':'turn-1','item':{'id':'first','type':'agentMessage','text':json.dumps(proposal)}}}); "
+                if outcome == "early_final_callback" else
+                "send({'method':'thread/tokenUsage/updated','params':{'threadId':'thread-1','turnId':'turn-1','tokenUsage':{}}}); "
+                if outcome == "early_usage_missing" else
+                "send({'method':'thread/tokenUsage/updated','params':{'threadId':'thread-1','turnId':'turn-1','tokenUsage':{'total':{'inputTokens':True,'outputTokens':9}}}}); "
+                if outcome == "early_usage_invalid_count" else
+                "send({'method':'thread/tokenUsage/updated','params':{'threadId':'thread-1','turnId':'turn-1','tokenUsage':{'total':{'inputTokens':7,'outputTokens':9,'cachedInputTokens':0}}}}); send({'method':'thread/tokenUsage/updated','params':{'threadId':'thread-1','turnId':'turn-1','tokenUsage':{'total':{'inputTokens':6,'outputTokens':9,'cachedInputTokens':0}}}}); "
+                if outcome == "early_usage_regressed" else
+                "send({'method':'error','params':{'threadId':'thread-1','turnId':'turn-1','error':{'message':'bad'},'willRetry':'no'}}); "
+                if outcome == "early_error_malformed" else
+                "send({'method':'error','params':{'threadId':'thread-1','turnId':'turn-1','error':{'message':'first','codexErrorInfo':'serverOverloaded'},'willRetry':False}}); send({'method':'error','params':{'threadId':'thread-1','turnId':'turn-1','error':{'message':'second','codexErrorInfo':'authenticationFailed'},'willRetry':False}}); "
+                if outcome == "early_error_conflict" else
+                "send({'method':'thread/tokenUsage/updated','params':{'threadId':'thread-1','turnId':'turn-1','tokenUsage':{'total':{'inputTokens':7,'outputTokens':9,'cachedInputTokens':0}}}}); send({'method':'error','params':{'threadId':'thread-1','turnId':'turn-1','error':{'message':'transient'},'willRetry':True}}); "
+                if outcome == "early_valid_prefix" else
+                "send({'method':'item/started','params':{'threadId':'thread-1','turnId':'turn-1','item':{'id':'early-item','type':'dynamicToolCall'}}}); "
+            )
             + "callback={'id':80,'method':'item/tool/call','params':{'callId':'early-read','threadId':'thread-1','turnId':'"
             + ("foreign" if outcome == "early_foreign" else "turn-1")
             + "','namespace':'forge','tool':'forge_read_file','arguments':{'path':'README.md'}}}; send(callback); "
@@ -620,9 +642,9 @@ async def test_configured_codex_uses_app_server_authoring_protocol(
                     "send(callback); reply=json.loads(sys.stdin.readline()); assert reply['id']==80; "
                     if outcome == "early_replay" else ""
                 )
-                if outcome != "early_foreign" else ""
+                if outcome not in {"early_foreign", "early_invalid_started", "early_invalid_completed", "early_duplicate_final", "early_usage_missing", "early_usage_invalid_count", "early_usage_regressed", "early_error_malformed", "early_error_conflict"} else ""
             )
-            if outcome in {"early_callback", "early_replay", "early_foreign"} else ""
+            if outcome in {"early_callback", "early_final_callback", "early_replay", "early_foreign", "early_invalid_started", "early_invalid_completed", "early_duplicate_final", "early_usage_missing", "early_usage_invalid_count", "early_usage_regressed", "early_error_malformed", "early_error_conflict", "early_valid_prefix"} else ""
         )
         + (
             "send({'method':'turn/started','params':{'threadId':'thread-1','turn':{'id':'turn-1'}}}); send({'method':'item/completed','params':{'threadId':'thread-1','turnId':'turn-1','item':{'id':'item-1','type':'agentMessage','text':json.dumps(proposal)}}}); send({'method':'turn/completed','params':{'threadId':'thread-1','turn':{'id':'turn-1','status':'completed'}}}); "
@@ -648,7 +670,7 @@ async def test_configured_codex_uses_app_server_authoring_protocol(
         )
         + (
             "send({'method':'item/completed','params':{'threadId':'thread-1','turnId':'turn-1','item':{'id':'item-1','type':'agentMessage','text':json.dumps(proposal)}}})\n"
-            if not outcome.startswith("quota") and outcome not in {"early_terminal", "early_terminal_then_callback", "early_failed_terminal_then_callback"}
+            if not outcome.startswith("quota") and outcome not in {"early_final_callback", "early_terminal", "early_terminal_then_callback", "early_failed_terminal_then_callback"}
             else ""
         )
         + (
@@ -729,9 +751,11 @@ async def test_configured_codex_uses_app_server_authoring_protocol(
     )
     if outcome in {"nonzero", "natural_exit_race"}:
         assert result.failure == "process_failed" and result.proposal is None
-    elif outcome in {"early_terminal_then_callback", "early_failed_terminal_then_callback"}:
+    elif outcome in {"early_terminal_then_callback", "early_failed_terminal_then_callback", "early_invalid_started", "early_invalid_completed", "early_duplicate_final", "early_usage_missing", "early_usage_invalid_count", "early_usage_regressed", "early_error_malformed", "early_error_conflict"}:
         assert result.failure == "invalid_output" and result.proposal is None
         assert not any(kind == "tool_started" for kind, _ in lifecycle.diagnostics)
+        assert ("provider_wait", {"operation": "tool_reply"}) not in lifecycle.diagnostics
+        assert result.telemetry is not None and result.telemetry.tool_call_count == 0
     elif outcome == "stuck_setup":
         assert result.failure == "timeout" and result.proposal is None
         assert ("provider_wait", {"operation": "config_read"}) in lifecycle.diagnostics
@@ -760,8 +784,8 @@ async def test_configured_codex_uses_app_server_authoring_protocol(
     if outcome == "blocked_settlement_diag":
         assert asyncio.get_running_loop().time() - began < 0.8
     assert result.telemetry is not None
-    assert result.telemetry.input_tokens == (7 if outcome in {"success", "nonzero", "retry"} else None)
-    assert result.telemetry.output_tokens == (9 if outcome in {"success", "nonzero", "retry"} else None)
+    assert result.telemetry.input_tokens == (7 if outcome in {"success", "nonzero", "retry", "early_valid_prefix", "early_usage_regressed"} else None)
+    assert result.telemetry.output_tokens == (9 if outcome in {"success", "nonzero", "retry", "early_valid_prefix", "early_usage_regressed"} else None)
     assert len(lifecycle.receipts) == len(lifecycle.results) == 1
     if outcome == "retry":
         assert ("provider_retry", {"operation": "provider_receive"}) in lifecycle.diagnostics
@@ -769,8 +793,13 @@ async def test_configured_codex_uses_app_server_authoring_protocol(
     if outcome == "tool_reply":
         assert ("provider_wait", {"operation": "tool_reply"}) in lifecycle.diagnostics
         assert ("tool_started", {"operation": "repository_read", "tool_name": "read_file"}) in lifecycle.diagnostics
-    if outcome in {"early_callback", "early_replay"}:
+    if outcome in {"early_callback", "early_final_callback", "early_replay", "early_valid_prefix"}:
         assert ("tool_started", {"operation": "repository_read", "tool_name": "read_file"}) in lifecycle.diagnostics
+        if outcome == "early_valid_prefix":
+            assert result.telemetry.tool_call_count == 1
+            assert sum(kind == "provider_retry" for kind, _ in lifecycle.diagnostics) == 1
+        if outcome == "early_final_callback":
+            assert sum(kind == "proposal_received" for kind, _ in lifecycle.diagnostics) == 1
         if outcome == "early_replay":
             assert result.telemetry.tool_call_count == 1
 
