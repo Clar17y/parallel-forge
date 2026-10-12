@@ -611,10 +611,12 @@ class ClientProcessSession:
         lifecycle: ClientProcessLifecycle | None,
         deadline: float,
         before_stop: Callable[[], Awaitable[None]] | None = None,
+        settlement_started: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self.process, self.receipt, self.spec = process, receipt, spec
         self.lifecycle, self.deadline = lifecycle, deadline
         self._before_stop = before_stop
+        self._settlement_started = settlement_started
         self._queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
         self._frames: list[Mapping[str, Any]] = []
         self._settlement_task: asyncio.Task[None] | None = None
@@ -870,6 +872,22 @@ class ClientProcessSession:
         confirmed = outcome != "stop_uncertain"
         code = None
         root_stop_code: int | None = None
+        if self._settlement_started is not None:
+            # A diagnostic that suppresses cancellation cannot hold up the stop.
+            callback = self._settlement_started
+
+            async def invoke_settlement_started() -> None:
+                await callback()
+
+            diagnostic = asyncio.create_task(invoke_settlement_started())
+            diagnostic.add_done_callback(_observe_task_error)
+            try:
+                done, _ = await asyncio.wait((diagnostic,), timeout=0.1)
+            except asyncio.CancelledError:
+                diagnostic.cancel()
+            else:
+                if not done:
+                    diagnostic.cancel()
         if self._before_stop is not None:
             callback = self._before_stop
 
@@ -984,6 +1002,7 @@ class ClientProcessSupervisor:
         *,
         lifecycle: ClientProcessLifecycle | None = None,
         before_stop: Callable[[], Awaitable[None]] | None = None,
+        settlement_started: Callable[[], Awaitable[None]] | None = None,
     ) -> ClientProcessSession:
         deadline = asyncio.get_running_loop().time() + spec.duration_seconds
         launch_id = str(uuid4())
@@ -992,7 +1011,9 @@ class ClientProcessSupervisor:
                 await lifecycle.launch_intent(launch_id)
         process = _spawn(spec)
         receipt = ClientProcessReceipt(launch_id, process.pid, process.token(), time.monotonic())
-        session = ClientProcessSession(process, receipt, spec, lifecycle, deadline, before_stop)
+        session = ClientProcessSession(
+            process, receipt, spec, lifecycle, deadline, before_stop, settlement_started
+        )
         try:
             async with asyncio.timeout_at(deadline):
                 if lifecycle:

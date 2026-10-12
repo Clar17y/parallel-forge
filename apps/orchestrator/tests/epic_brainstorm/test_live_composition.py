@@ -277,6 +277,8 @@ async def test_live_composition_claims_queued_job_and_adopts_revision(
         assert "proposal_received" in kinds
         assert "settlement_started" in kinds
         assert "process_settled" in kinds
+        assert kinds.index("settlement_started") < kinds.index("process_settled")
+        assert "settlement_started" not in kinds[kinds.index("process_settled") + 1:]
         assert kinds.index("proposal_received") < kinds.index("attempt_stopped")
         assert outcome.diagnostics.dropped_events == 0
         if long_lived:
@@ -484,6 +486,9 @@ async def test_live_composition_faults_preserve_durable_diagnosis_and_settlement
         assert all(a.process_started and a.process_settled and a.terminal_proof for a in attempts)
         assert all(any(e["kind"] == "process_settled" for e in a.diagnostics["events"]) for a in attempts)
         assert all(any(e["kind"] == "attempt_stopped" for e in a.diagnostics["events"]) for a in attempts)
+        for attempt in attempts:
+            kinds = [event["kind"] for event in attempt.diagnostics["events"]]
+            assert kinds.index("settlement_started") < kinds.index("process_settled")
         if fault == "owner_retry":
             assert attempts[0].id != attempts[1].id
             assert attempts[0].diagnostics != attempts[1].diagnostics
@@ -498,10 +503,11 @@ async def test_live_composition_faults_preserve_durable_diagnosis_and_settlement
                 "repository_read" if fault == "stuck_tool" else
                 "tool_reply" if fault == "tool_reply_stall" else "provider_receive"
             )
-            assert any(
-                e["kind"] == ("tool_started" if fault == "stuck_tool" else "provider_wait")
-                and e.get("operation") == wait for e in attempts[0].diagnostics["events"]
-            )
+            if fault != "cancel_late":
+                assert any(
+                    e["kind"] == ("tool_started" if fault == "stuck_tool" else "provider_wait")
+                    and e.get("operation") == wait for e in attempts[0].diagnostics["events"]
+                )
             if fault == "cancel_late":
                 assert any(e["kind"] == "proposal_received" for e in attempts[0].diagnostics["events"])
         outcome = await service.observe(

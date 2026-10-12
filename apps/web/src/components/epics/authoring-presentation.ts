@@ -238,6 +238,18 @@ export function describeAuthoringOutcome(
 
     case 'running': {
       const events = outcome.diagnostics?.events;
+      if (outcome.process_settled) {
+        return {
+          state: 'running',
+          title: 'Finalizing assistant job',
+          description: 'The assistant process stopped. Finalizing the saved job outcome.',
+          tone: 'info',
+          isExecuting: false,
+          isTerminal: false,
+          isWaiting: true,
+          actionRequired: null,
+        };
+      }
       if (events && events.length > 0) {
         const latest = events[events.length - 1];
         if (latest.kind === 'provider_wait' && clientWaitOperations.has(latest.operation ?? '')) {
@@ -330,7 +342,7 @@ export function describeAuthoringOutcome(
             title: 'Finalizing assistant job',
             description: `${latest.kind === 'process_settled' ? 'The assistant process stopped.' : 'The attempt stopped.'} Finalizing the saved job outcome. Recorded at ${latest.elapsed_ms.toLocaleString()} ms into the attempt.`,
             tone: 'info',
-            isExecuting: true,
+            isExecuting: false,
             isTerminal: false,
             isWaiting: true,
             actionRequired: null,

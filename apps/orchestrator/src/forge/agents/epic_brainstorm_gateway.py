@@ -426,7 +426,10 @@ class EpicBrainstormGateway:
 
             async with asyncio.timeout(duration):
                 session = await self.supervisor.start(
-                    spec, lifecycle=lifecycle, before_stop=tools.revoke
+                    spec, lifecycle=lifecycle, before_stop=tools.revoke,
+                    settlement_started=lambda: tools.record(
+                        "settlement_started", operation="process_settlement"
+                    ),
                 )
                 proposal = await exchange(session)
         except asyncio.CancelledError:
@@ -462,13 +465,6 @@ class EpicBrainstormGateway:
                         await tools.close()
                     except asyncio.CancelledError, Exception:  # noqa: BLE001 - still stop client
                         cleanup_failed = True
-                diagnostic = asyncio.create_task(
-                    tools.record("settlement_started", operation="process_settlement")
-                )
-                diagnostic.add_done_callback(lambda done: done.exception() if not done.cancelled() else None)
-                done, _ = await asyncio.wait((diagnostic,), timeout=0.1)
-                if not done:
-                    diagnostic.cancel()
                 if session is not None:
                     try:
                         receipt = await session.close(

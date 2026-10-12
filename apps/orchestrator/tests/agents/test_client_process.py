@@ -8,6 +8,7 @@ import signal
 import sys
 import threading
 import time
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -262,6 +263,71 @@ async def test_completed_stop_proof_requires_native_root_termination_and_exit_st
         "stop_uncertain" if root_terminated == "error"
         else "exited" if probe_exited else "completed"
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("diagnostic_fault", ["raises", "stalls", "resists_cancel"])
+async def test_settlement_diagnostic_fault_cannot_prevent_stop(diagnostic_fault: str) -> None:
+    from forge.agents.client_process import (
+        ClientLaunchSpec,
+        ClientProcessReceipt,
+        ClientProcessSession,
+    )
+
+    class Process:
+        pid = 323
+
+        def __init__(self) -> None:
+            self.stdin, self.stdout, self.stderr = BytesIO(), BytesIO(), BytesIO()
+            self.pinned_paths = {}
+            self.stopped = False
+
+        def observe_exit(self, _seconds: float) -> None:
+            raise TimeoutError
+
+        def terminate_tree(self) -> int:
+            self.stopped = True
+            return 0
+
+        def wait(self, _seconds: float) -> int:
+            return 0
+
+        def close(self) -> None:
+            pass
+
+    release = asyncio.Event()
+    diagnostic_task: asyncio.Task[None] | None = None
+
+    async def diagnostic() -> None:
+        nonlocal diagnostic_task
+        diagnostic_task = asyncio.current_task()
+        if diagnostic_fault == "raises":
+            raise RuntimeError("diagnostic unavailable")
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            if diagnostic_fault == "resists_cancel":
+                await release.wait()
+            else:
+                raise
+
+    process = Process()
+    session = ClientProcessSession(
+        process, ClientProcessReceipt("diagnostic", process.pid, "owned", 1.0),
+        ClientLaunchSpec(argv=(sys.executable, "-c", "pass"), cwd=".", environment={}),
+        lifecycle=None, deadline=asyncio.get_running_loop().time() + 2,
+        settlement_started=diagnostic,
+    )
+    try:
+        receipt = await asyncio.wait_for(session.close(), 0.5)
+        assert process.stopped and receipt.stop_confirmed
+    finally:
+        release.set()
+        await asyncio.wait_for(session.close(), 1)
+        if diagnostic_task is not None:
+            await asyncio.wait_for(
+                asyncio.gather(diagnostic_task, return_exceptions=True), 1
+            )
 
 
 @pytest.mark.asyncio

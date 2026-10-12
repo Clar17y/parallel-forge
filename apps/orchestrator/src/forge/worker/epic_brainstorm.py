@@ -165,6 +165,7 @@ class DurableBrainstormProcessLifecycle:
             if (
                 attempt is None or attempt.fence != self.fence or attempt.owner != self.owner
                 or attempt.state != "admitted"
+                or (kind == "settlement_started" and attempt.process_settled)
                 or job is None or job.current_attempt_id != self.attempt_id
                 or job.state != "running"
                 or attempt.lease_expires_at <= datetime.now(UTC)
@@ -264,6 +265,15 @@ class DurableBrainstormProcessLifecycle:
                     attempt.process_pid = receipt.pid
                     attempt.process_identity = receipt.process_start_token
                 attempt.terminal_proof = terminal_launch_proof(result).model_dump(mode="json")
+                stored_events = (attempt.diagnostics or {}).get("events")
+                has_start = isinstance(stored_events, list) and any(
+                    event.get("kind") == "settlement_started"
+                    for event in stored_events if isinstance(event, Mapping)
+                )
+                if not has_start:
+                    _append_diagnostic(
+                        attempt, "settlement_started", operation="process_settlement"
+                    )
                 attempt.process_settled = True
                 _append_diagnostic(
                     attempt, "process_settled", operation="process_settlement"

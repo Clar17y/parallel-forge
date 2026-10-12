@@ -59,6 +59,22 @@ describe('describeAuthoringOutcome diagnostics', () => {
       } });
       expect(description.title).toBe('Finalizing assistant job');
       expect(description.description).not.toContain('settlement in progress');
+      expect(description.isExecuting).toBe(false);
+    }
+  );
+
+  test.each(['settlement_started', 'provider_wait'] as const)(
+    'uses confirmed settlement over a late %s event', kind => {
+      const presentation = describeAuthoringOutcome({ ...baseOutcome, process_settled: true, diagnostics: {
+        attempt_id: 'attempt-settled', dropped_events: 0, events: [
+          { sequence: 1, kind: 'process_settled', occurred_at: '2026-10-09T20:22:08Z', elapsed_ms: 2000 },
+          { sequence: 2, kind, operation: 'process_settlement', occurred_at: '2026-10-09T20:22:09Z', elapsed_ms: 3000 },
+        ],
+      } });
+      expect(presentation.title).toBe('Finalizing assistant job');
+      expect(presentation.description).toContain('process stopped');
+      expect(presentation.description).not.toContain('settlement in progress');
+      expect(presentation.isExecuting).toBe(false);
     }
   );
 

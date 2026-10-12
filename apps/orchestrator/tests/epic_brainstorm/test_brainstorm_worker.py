@@ -200,6 +200,13 @@ async def test_diagnostics_are_bounded_content_free_and_fenced_on_retry(
         first = await session.get(BrainstormAttemptRow, first_id, with_for_update=True)
         assert job is not None and first is not None
         first.process_settled = first.usage_known = True
+        settled_diagnostics = first.diagnostics
+    await lifecycle.diagnostic("settlement_started", operation="process_settlement")
+    async with brainstorm_session_factory() as session, session.begin():
+        job = await session.get(BrainstormJobRow, receipt.job_id, with_for_update=True)
+        first = await session.get(BrainstormAttemptRow, first_id, with_for_update=True)
+        assert job is not None and first is not None
+        assert first.diagnostics == settled_diagnostics
         first.state = "settled"
         first.usage = {
             "duration_ms": 10, "tool_call_count": 0, "input_tokens": 0,
