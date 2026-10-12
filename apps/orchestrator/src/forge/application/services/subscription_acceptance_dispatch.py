@@ -26,6 +26,7 @@ from forge.domain.command import CommandStatus
 from forge.domain.operation import canonical_digest
 from forge.domain.run import RunState
 from forge.domain.subscription_execution import SUBSCRIPTION_WORK_STATES
+from forge.domain.task_usage_contract import SubjectKey
 
 
 class SubscriptionAcceptanceDispatch:
@@ -43,6 +44,16 @@ class SubscriptionAcceptanceDispatch:
             receipts,
         )
         self._approved = ApprovedPlanLoader(artifacts)
+
+    async def _checkpoint_active(self, work: UnitOfWork, attempt_id: UUID) -> bool:
+        run_id = await work.subscription_recovery.attempt_run_id(attempt_id)
+        run = await work.runs.get(run_id)
+        return (
+            await work.task_usage_checkpoints.active_for_subject(
+                SubjectKey(project_id=run.project_id, kind="run", subject_id=run.id)
+            )
+            is not None
+        )
 
     async def apply(self, attempt_id: UUID) -> SubscriptionSettlement:
         try:
@@ -63,6 +74,8 @@ class SubscriptionAcceptanceDispatch:
                 is not None
             ):
                 return SubscriptionSettlement(True, "acceptance_validation_queued", True)
+            if await self._checkpoint_active(work, attempt_id):
+                raise SubscriptionDecisionError("acceptance is fenced by usage checkpoint")
             prepared = await work.subscription_decisions.prepare_acceptance(attempt_id)
             if prepared.disposition != "acceptance_prepared":
                 await work.commit()
@@ -76,6 +89,8 @@ class SubscriptionAcceptanceDispatch:
                 is not None
             ):
                 return SubscriptionSettlement(True, "acceptance_validation_queued", True)
+            if await self._checkpoint_active(work, attempt_id):
+                raise SubscriptionDecisionError("acceptance is fenced by usage checkpoint")
             if CandidateInspection.from_snapshot(snapshot) != proposal.review.candidate:
                 rejected = await work.subscription_decisions.reject_acceptance_mismatch(
                     proposal, snapshot
@@ -96,6 +111,8 @@ class SubscriptionAcceptanceDispatch:
                 is not None
             ):
                 return SubscriptionSettlement(True, "acceptance_validation_queued", True)
+            if await self._checkpoint_active(work, attempt_id):
+                raise SubscriptionDecisionError("acceptance is fenced by usage checkpoint")
             proposal = await work.subscription_decisions.acceptance_proposal(attempt_id)
             await work.rollback()
         # Receipt IO may take time; a prior matching snapshot does not establish
@@ -117,6 +134,8 @@ class SubscriptionAcceptanceDispatch:
                 is not None
             ):
                 return SubscriptionSettlement(True, "acceptance_validation_queued", True)
+            if await self._checkpoint_active(work, attempt_id):
+                raise SubscriptionDecisionError("acceptance is fenced by usage checkpoint")
             if CandidateInspection.from_snapshot(snapshot) != proposal.review.candidate:
                 rejected = await work.subscription_decisions.reject_acceptance_mismatch(
                     proposal, snapshot
@@ -126,6 +145,8 @@ class SubscriptionAcceptanceDispatch:
             await work.subscription_decisions.record_acceptance_inspection(proposal, snapshot)
             await work.subscription_decisions.record_acceptance_receipts(proposal, proof)
             approved = await self._approved.load(work, proposal.decision.run_id)
+            if await self._checkpoint_active(work, attempt_id):
+                raise SubscriptionDecisionError("acceptance is fenced by usage checkpoint")
             if (
                 not isinstance(approved.evidence, SubscriptionPlanApprovalEvidence)
                 or approved.run.state not in SUBSCRIPTION_WORK_STATES

@@ -20,6 +20,8 @@ import pytest
 from forge.agents.adk_gateway import (
     BoundAdkTools,
     GoogleAdkGateway,
+    _AggregateUsage,
+    _unpriced_usage,
 )
 from forge.agents.adk_runtime import (
     AdkFinishReason,
@@ -250,6 +252,40 @@ class _FakeAdkToolProvider:
         return BoundAdkTools(names=names, tools=tools)
 
 
+def test_repair_aggregate_retains_unknown_dimension_when_one_attempt_is_missing() -> None:
+    aggregate = _AggregateUsage()
+    aggregate.add(AdkInvocationResult(
+        finish_reason=AdkFinishReason.COMPLETED,
+        usage=AdkUsageSummary(input_tokens=0, output_tokens=0, cached_input_tokens=0,
+                              input_tokens_complete=True, output_tokens_complete=True,
+                              cached_input_tokens_complete=True),
+    ))
+    aggregate.add(AdkInvocationResult(
+        finish_reason=AdkFinishReason.COMPLETED,
+        usage=AdkUsageSummary(input_tokens=3, output_tokens=0, cached_input_tokens=0,
+                              input_tokens_complete=False, output_tokens_complete=True,
+                              cached_input_tokens_complete=False),
+    ))
+    assert aggregate.input_tokens == 3
+    assert aggregate.input_tokens_complete is False
+    assert aggregate.output_tokens_complete is True
+    assert aggregate.cached_input_tokens_complete is False
+
+
+def test_cache_only_metadata_prices_known_subset_without_claiming_full_input() -> None:
+    aggregate = _AggregateUsage()
+    aggregate.add(AdkInvocationResult(
+        finish_reason=AdkFinishReason.COMPLETED,
+        usage=AdkUsageSummary(
+            input_tokens=5, output_tokens=0, cached_input_tokens=5,
+            input_tokens_complete=False, output_tokens_complete=False,
+            cached_input_tokens_complete=True,
+        ),
+    ))
+    usage = _unpriced_usage(_make_request(), aggregate, provider_request_id=None)
+    assert (usage.input_tokens, usage.cached_input_tokens) == (0, 5)
+    assert usage.input_tokens_complete is False
+    assert usage.cached_input_tokens_complete is True
 def _make_invocation_result(
     output_text: str | None,
     *,
@@ -271,6 +307,9 @@ def _make_invocation_result(
             cached_input_tokens=cached_tokens,
             tool_call_count=tool_calls,
             cost_minor=cost_minor,
+            input_tokens_complete=True,
+            output_tokens_complete=True,
+            cached_input_tokens_complete=True,
         ),
         provider_request_id=provider_request_id,
         duration_ms=duration_ms,

@@ -61,6 +61,7 @@ from forge.persistence.models.subscription_results import (
     SubscriptionRepairDebit,
 )
 from forge.persistence.models.subscription_usage import SubscriptionAttemptConsumption
+from forge.persistence.models.task_usage import TaskUsageCheckpoint
 from forge.persistence.repositories.runs import PostgresRunRepository
 from forge.persistence.repositories.scheduling import PostgresSchedulingRepository
 from forge.persistence.repositories.subscription import PostgresSubscriptionRepository
@@ -71,6 +72,20 @@ from forge.persistence.repositories.subscription_launch import launches_confirme
 class PostgresSubscriptionPlanGateRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+
+    async def _usage_checkpoint_active(self, run_id: UUID) -> bool:
+        return (
+            await self._session.scalar(
+                select(TaskUsageCheckpoint.id)
+                .where(
+                    TaskUsageCheckpoint.subject_kind == "run",
+                    TaskUsageCheckpoint.subject_id == run_id,
+                    TaskUsageCheckpoint.state.in_(("checkpoint_requested", "pausing", "paused")),
+                )
+                .limit(1)
+            )
+            is not None
+        )
 
     async def implementation_context(
         self, task_id: UUID, contract: LogicalTaskContract
@@ -90,7 +105,9 @@ class PostgresSubscriptionPlanGateRepository:
             or replace(revised_contract, route=contract.route) != contract
             or (contract.route.is_primary and revised_contract.route != contract.route)
         ):
-            raise SubscriptionPlanGateError("implementation contract differs from approved revision")
+            raise SubscriptionPlanGateError(
+                "implementation contract differs from approved revision"
+            )
         gate = await self._session.get(SubscriptionPlanGate, revision.source_attempt_id)
         approval = await self._session.get(Approval, revision.approval_id)
         if (
@@ -186,6 +203,8 @@ class PostgresSubscriptionPlanGateRepository:
             ):
                 raise SubscriptionPlanGateError("plan rejection replay differs")
             return SubscriptionSettlement(False, result.disposition, True)
+        if await self._usage_checkpoint_active(producer.run_id):
+            raise SubscriptionPlanGateError("plan rejection is fenced by usage checkpoint")
         # Recompute the semantic contradiction against the exact immutable policy.
         run = await PostgresRunRepository(self._session).get_for_update(producer.run_id)
         project = await self._session.get(Project, run.project_id, with_for_update=True)
@@ -328,6 +347,8 @@ class PostgresSubscriptionPlanGateRepository:
             raise SubscriptionPlanGateError("subscription plan application source is absent")
         if result.disposition == "plan_approval":
             return
+        if await self._usage_checkpoint_active(producer.run_id):
+            raise SubscriptionPlanGateError("plan application is fenced by usage checkpoint")
         result.disposition, result.accepted = "plan_approval", True
         attempt.status = "terminal"
         task.state = scheduled.state = "blocked"
@@ -341,6 +362,8 @@ class PostgresSubscriptionPlanGateRepository:
         """Queue the approved primary in the preparation transition transaction."""
         producer = evidence.producer
         run = await PostgresRunRepository(self._session).get_for_update(producer.run_id)
+        if await self._usage_checkpoint_active(producer.run_id):
+            raise SubscriptionPlanGateError("prepared primary is fenced by usage checkpoint")
         await self.verify(evidence, historical=True)
         approval = await self._session.get(Approval, approval_id, with_for_update=True)
         try:
@@ -503,6 +526,8 @@ class PostgresSubscriptionPlanGateRepository:
     ) -> SubscriptionPlanGateRecord:
         producer = evidence.producer
         run = await PostgresRunRepository(self._session).get_for_update(producer.run_id)
+        if create and await self._usage_checkpoint_active(producer.run_id):
+            raise SubscriptionPlanGateError("plan application is fenced by usage checkpoint")
         attempt = await self._session.get(
             SubscriptionAttempt, producer.attempt_id, with_for_update=True
         )

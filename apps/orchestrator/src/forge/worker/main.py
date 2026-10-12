@@ -35,6 +35,8 @@ from forge.application.services.subscription_decision_recovery import (
     is_transient_recovery_error,
 )
 from forge.application.services.subscription_effect_recovery import SubscriptionEffectRecovery
+from forge.application.services.task_usage_composition import compose_task_usage
+from forge.application.services.task_usage_monitor import RunTaskUsageMonitor
 from forge.application.services.terminal_recovery import TerminalMergeRecovery
 from forge.application.services.worker import CommandHandler, Worker
 from forge.artifacts.filesystem import FilesystemArtifactStore
@@ -311,6 +313,19 @@ async def run_worker(
             asyncio.create_task(_poll(worker, stop_event, poll_interval)),
             asyncio.create_task(_poll(control_worker, stop_event, poll_interval)),
         ]
+        if (
+            isinstance(effective_handlers, WorkerHandlers)
+            and effective_handlers.task_usage_monitor is not None
+        ):
+            polls.append(
+                asyncio.create_task(
+                    _poll_task_usage_monitor(
+                        effective_handlers.task_usage_monitor,
+                        stop_event,
+                        decision_retry_interval,
+                    )
+                )
+            )
         if getattr(settings, "process_role", None) == "worker":
             eligibility = EpicEligibilityService(
                 lambda: PostgresUnitOfWork(factory), data_root=str(settings.data_root)
@@ -407,6 +422,7 @@ async def run_worker(
                     )
                     if configured
                 ),
+                task_usage=compose_task_usage(factory),
             )
             polls.append(
                 asyncio.create_task(_poll_brainstorms(authoring_worker, stop_event, poll_interval))
@@ -547,6 +563,21 @@ async def _poll_invocations(
                 await asyncio.wait_for(stop_event.wait(), timeout=poll_interval)
             except TimeoutError:
                 pass
+
+
+async def _poll_task_usage_monitor(
+    monitor: RunTaskUsageMonitor, stop_event: asyncio.Event, interval: float
+) -> None:
+    while not stop_event.is_set():
+        try:
+            await monitor.reconcile()
+            await monitor.reconcile_final_sources()
+        except Exception:  # noqa: BLE001 - durable rows remain for the next sweep
+            logger.warning("Task usage checkpoint reconciliation failed; retrying")
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=interval)
+        except TimeoutError:
+            pass
 
 
 def _validate_decision_retry_interval(interval: float) -> None:

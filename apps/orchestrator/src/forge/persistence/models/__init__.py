@@ -117,6 +117,7 @@ from forge.persistence.models.task_usage import (
     TaskUsageObservation,
     TaskUsageOwnerCommand,
     TaskUsagePolicyRevision,
+    TaskUsageSubjectAdmissionRow,
     TaskUsageWorkUnit,
 )
 
@@ -217,6 +218,7 @@ __all__ = [
     "TaskUsageObservation",
     "TaskUsageOwnerCommand",
     "TaskUsagePolicyRevision",
+    "TaskUsageSubjectAdmissionRow",
     "TaskUsageWorkUnit",
     "ToolCall",
     "ValidationResult",

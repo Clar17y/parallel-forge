@@ -29,7 +29,7 @@ export function PlanPanel({ projection }: { projection: components['schemas']['R
         <dt>Runner</dt>
         <dd>{projection.security.runner_mode}</dd>
         <dt>Token limit</dt>
-        <dd>{projection.budgets.token_limit}</dd>
+        <dd>{projection.budgets.token_limit ?? 'Unbounded'}</dd>
         <dt>Cost limit</dt>
         <dd>{projection.budgets.cost_limit_minor} minor currency units</dd>
         <dt>Duration limit</dt>

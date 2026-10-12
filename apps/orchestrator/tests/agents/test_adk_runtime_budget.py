@@ -16,10 +16,12 @@ from forge.agents.adk_runtime import (
     AdkInvocationInvalid,
     AdkRuntime,
     AdkUsageSummary,
+    _ObservedStream,
     _over_budget,
 )
 from forge.agents.prompt_loader import PromptLoader
 from forge.domain.actor import AgentRole
+from google.adk.events.event import Event
 from google.adk.models.base_llm import BaseLlm
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
@@ -30,6 +32,179 @@ from pydantic import BaseModel
 
 class _Output(BaseModel):
     answer: str
+
+
+def test_stream_distinguishes_missing_partial_and_reported_zero_usage() -> None:
+    missing = _ObservedStream()
+    missing.observe(
+        Event(
+            author="offline_agent",
+            content=types.Content(role="model", parts=[types.Part(text="answer")]),
+        ),
+        expected_author="offline_agent",
+    )
+    assert missing.current_usage().input_tokens_complete is False
+    assert missing.current_usage().output_tokens_complete is False
+
+    zero = _ObservedStream()
+    zero.observe(
+        LlmResponse(
+            usage_metadata=types.GenerateContentResponseUsageMetadata(
+                prompt_token_count=0, candidates_token_count=0, cached_content_token_count=0
+            ),
+            partial=False,
+        ),
+        expected_author="offline_agent",
+    )
+    assert zero.current_usage().input_tokens_complete is True
+    assert zero.current_usage().output_tokens_complete is True
+    assert zero.current_usage().cached_input_tokens_complete is True
+
+    partial = _ObservedStream()
+    partial.observe(
+        LlmResponse(
+            usage_metadata=types.GenerateContentResponseUsageMetadata(
+                prompt_token_count=8,
+                candidates_token_count=2,
+            ),
+            partial=False,
+        ),
+        expected_author="offline_agent",
+    )
+    assert partial.current_usage().input_tokens == 8
+    assert partial.current_usage().input_tokens_complete is True
+    assert partial.current_usage().output_tokens_complete is True
+    assert partial.current_usage().cached_input_tokens_complete is False
+
+    cache_only = _ObservedStream()
+    cache_only.observe(
+        LlmResponse(
+            usage_metadata=types.GenerateContentResponseUsageMetadata(
+                cached_content_token_count=5,
+            ),
+            partial=False,
+        ),
+        expected_author="offline_agent",
+    )
+    assert cache_only.current_usage().input_tokens == 5
+    assert cache_only.current_usage().cached_input_tokens == 5
+    assert cache_only.current_usage().input_tokens_complete is False
+    assert cache_only.current_usage().cached_input_tokens_complete is True
+
+    zero.observe(
+        Event(
+            author="offline_agent",
+            content=types.Content(role="model", parts=[types.Part(text="next answer")]),
+        ),
+        expected_author="offline_agent",
+    )
+    assert zero.current_usage().input_tokens_complete is False
+    assert zero.current_usage().output_tokens_complete is False
+
+
+def test_sdk_tool_response_does_not_erase_complete_model_turns() -> None:
+    observed = _ObservedStream()
+    first = Event(
+        author="offline_agent",
+        content=types.Content(
+            role="model",
+            parts=[
+                types.Part(
+                    function_call=types.FunctionCall(id="call-1", name="controlled_effect", args={})
+                )
+            ],
+        ),
+        usage_metadata=types.GenerateContentResponseUsageMetadata(
+            prompt_token_count=7, candidates_token_count=2, cached_content_token_count=0
+        ),
+    )
+    # ADK's installed function response builder uses the agent author, a user
+    # content role, and can append display text without model usage metadata.
+    tool_response = Event(
+        author="offline_agent",
+        content=types.Content(
+            role="user",
+            parts=[
+                types.Part(
+                    function_response=types.FunctionResponse(
+                        id="call-1", name="controlled_effect", response={"ok": True}
+                    )
+                ),
+                types.Part(text="tool result"),
+            ],
+        ),
+    )
+    last = Event(
+        author="offline_agent",
+        content=types.Content(role="model", parts=[types.Part(text="answer")]),
+        usage_metadata=types.GenerateContentResponseUsageMetadata(
+            prompt_token_count=3, candidates_token_count=1, cached_content_token_count=0
+        ),
+    )
+    for event in (first, tool_response, last):
+        observed.observe(event, expected_author="offline_agent")
+    usage = observed.current_usage()
+    assert (usage.input_tokens, usage.output_tokens, usage.tool_call_count) == (10, 3, 1)
+    assert (
+        usage.input_tokens_complete,
+        usage.output_tokens_complete,
+        usage.cached_input_tokens_complete,
+    ) == (True, True, True)
+    assert observed.last_text == "answer"
+
+
+def test_empty_control_and_missing_model_metadata_have_distinct_evidence() -> None:
+    empty = _ObservedStream()
+    assert (
+        empty.current_usage().input_tokens_complete,
+        empty.current_usage().output_tokens_complete,
+        empty.current_usage().cached_input_tokens_complete,
+    ) == (False, False, False)
+    control = _ObservedStream()
+    control.observe(
+        Event(
+            author="offline_agent",
+            content=types.Content(role="user", parts=[types.Part(text="display only")]),
+        ),
+        expected_author="offline_agent",
+    )
+    assert control.last_text == "display only"
+    assert control.current_usage().input_tokens_complete is False
+    model = _ObservedStream()
+    model.observe(
+        Event(
+            author="offline_agent",
+            content=types.Content(role="model", parts=[types.Part(text="answer")]),
+        ),
+        expected_author="offline_agent",
+    )
+    assert model.current_usage().input_tokens_complete is False
+    assert model.current_usage().output_tokens_complete is False
+
+
+def test_model_partial_and_final_usage_is_counted_once_per_turn() -> None:
+    observed = _ObservedStream()
+    for partial, input_tokens, output_tokens in ((True, 2, 1), (False, 5, 3)):
+        observed.observe(
+            Event(
+                author="offline_agent",
+                partial=partial,
+                content=types.Content(role="model", parts=[types.Part(text="answer")]),
+                usage_metadata=types.GenerateContentResponseUsageMetadata(
+                    prompt_token_count=input_tokens,
+                    candidates_token_count=output_tokens,
+                    cached_content_token_count=0,
+                ),
+            ),
+            expected_author="offline_agent",
+        )
+    usage = observed.current_usage()
+    assert (usage.input_tokens, usage.output_tokens) == (5, 3)
+    assert (
+        usage.input_tokens_complete,
+        usage.output_tokens_complete,
+        usage.cached_input_tokens_complete,
+    ) == (True, True, True)
 
 
 class _Resolver:
@@ -180,6 +355,42 @@ def _install_blocking_stream_runner(
 
 
 @pytest.mark.asyncio
+async def test_initial_sdk_runner_error_has_unknown_usage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_runner(**_kwargs: Any) -> None:
+        raise RuntimeError("offline runner failure")
+
+    monkeypatch.setattr(runtime_module, "Runner", fail_runner)
+    runtime = AdkRuntime(_Resolver(), "secret://forge/offline-budget")
+    result = await runtime.invoke(_invocation(FunctionTool(lambda: {"status": "unused"})))
+    assert result.finish_reason is AdkFinishReason.FAILED
+    assert (
+        result.usage.input_tokens_complete,
+        result.usage.output_tokens_complete,
+        result.usage.cached_input_tokens_complete,
+    ) == (False, False, False)
+
+
+@pytest.mark.asyncio
+async def test_credential_deadline_before_model_has_unknown_usage() -> None:
+    class _SlowResolver:
+        async def resolve(self, _reference: str) -> str:
+            await asyncio.Event().wait()
+            return "unreachable"
+
+    runtime = AdkRuntime(_SlowResolver(), "secret://forge/offline-budget")
+    request = _invocation(FunctionTool(lambda: {"status": "unused"}), max_duration_ms=50)
+    result = await runtime.invoke(request)
+    assert result.finish_reason is AdkFinishReason.BUDGET_EXHAUSTED
+    assert (
+        result.usage.input_tokens_complete,
+        result.usage.output_tokens_complete,
+        result.usage.cached_input_tokens_complete,
+    ) == (False, False, False)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("caller_cancellation", [False, True])
 @pytest.mark.parametrize("propagate_cancellation", [False, True])
 async def test_actual_runtime_bounded_cleanup_cancels_blocking_close(
@@ -206,7 +417,13 @@ async def test_actual_runtime_bounded_cleanup_cancels_blocking_close(
             with pytest.raises(asyncio.CancelledError):
                 await task
         else:
-            assert (await task).finish_reason is AdkFinishReason.BUDGET_EXHAUSTED
+            result = await task
+            assert result.finish_reason is AdkFinishReason.BUDGET_EXHAUSTED
+            assert (
+                result.usage.input_tokens_complete,
+                result.usage.output_tokens_complete,
+                result.usage.cached_input_tokens_complete,
+            ) == (False, False, False)
         assert stream.cleanup_cancelled.is_set() is True
         assert stream.active_closes == 0
     finally:
@@ -275,6 +492,39 @@ async def test_actual_sdk_cost_estimator_allows_exact_boundary_before_tool(
     assert result.finish_reason is AdkFinishReason.COMPLETED
     assert result.usage.input_tokens == 1
     assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_actual_sdk_tool_cycle_preserves_complete_usage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def controlled_effect() -> dict[str, str]:
+        return {"status": "ok"}
+
+    def metadata(prompt: int, output: int) -> types.GenerateContentResponseUsageMetadata:
+        return types.GenerateContentResponseUsageMetadata(
+            prompt_token_count=prompt,
+            candidates_token_count=output,
+            cached_content_token_count=0,
+        )
+
+    first = _call("complete-usage").model_copy(update={"usage_metadata": metadata(2, 1)})
+    last = _answer().model_copy(update={"usage_metadata": metadata(3, 2)})
+    result = await _run(
+        monkeypatch, [first, last], controlled_effect, cost_estimator=lambda _usage: 0
+    )
+
+    assert result.finish_reason is AdkFinishReason.COMPLETED
+    assert (
+        result.usage.input_tokens,
+        result.usage.output_tokens,
+        result.usage.tool_call_count,
+    ) == (5, 3, 1)
+    assert (
+        result.usage.input_tokens_complete,
+        result.usage.output_tokens_complete,
+        result.usage.cached_input_tokens_complete,
+    ) == (True, True, True)
 
 
 @pytest.mark.asyncio

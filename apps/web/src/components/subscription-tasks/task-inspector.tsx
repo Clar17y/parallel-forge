@@ -10,6 +10,7 @@ import { TaskControls, TaskControlSummary } from './task-controls';
 import { TaskFeedback } from './task-feedback';
 import { recoveryReason, TaskRecovery } from './task-recovery';
 import { RecoveryReceiptHistory } from './recovery-receipt-history';
+import { RunUsageCheckpoint } from './run-usage-checkpoint';
 import type { components } from '@/lib/api/schema';
 
 type TaskPage = components['schemas']['SubscriptionTaskPage'];
@@ -24,15 +25,21 @@ export function TaskInspector({ runId }: { runId: string }) {
   const [selected, setSelected] = useState<string | null>(null);
   const tasks = useApi<TaskPage>(`/runs/${runId}/subscription-tasks?offset=${offset}&limit=${pageSize}`, { refreshIntervalMs: 5000, keepPreviousOnRefresh: true });
   const movePage = (next: number) => { setSelected(null); setOffset(next); };
-  return <section id="subscription-tasks" aria-label="Subscription tasks" className="my-6 min-w-0 space-y-4 rounded-lg border border-slate-300 p-4">
+  return <section id="subscription-tasks" aria-label="Run usage and subscription tasks" className="my-6 min-w-0 space-y-4 rounded-lg border border-slate-300 p-4">
     <div className="flex flex-wrap items-center justify-between gap-3">
-      <h2 className="text-lg font-semibold">Subscription tasks</h2>
+      <h2 className="text-lg font-semibold">Run usage and subscription tasks</h2>
       <button type="button" onClick={tasks.refresh}>Refresh tasks</button>
     </div>
     {tasks.refreshing && !tasks.loading ? <p role="status">Refreshing task state…</p> : null}
     {tasks.loading ? <LoadingStatus>Loading tasks…</LoadingStatus> : tasks.failed ?
       <p role="alert">Task inspection unavailable. Use Refresh tasks to retry.</p> :
-      tasks.value && !tasks.value.subscription ? <p>Legacy run: subscription tasks do not apply.</p> : tasks.value ? <>
+      tasks.value ? <>
+        <RunUsageCheckpoint runId={runId} runAllowsExecution={tasks.value.run_allows_execution}
+          runIsTerminal={tasks.value.run_is_terminal}
+          quotaBlocked={tasks.value.subscription && tasks.value.tasks.some(task => task.quota_status?.status === 'blocked')}
+          manualPause={tasks.value.subscription && tasks.value.tasks.some(task => task.purpose === 'primary'
+            && (task.pause_requested || task.control?.status === 'paused'))} />
+        {!tasks.value.subscription ? <p>Legacy run: subscription tasks do not apply.</p> : <>
         <p>Candidate: {tasks.value.candidate_state ?? 'Unknown'} · epoch {unknown(tasks.value.candidate_epoch)}</p>
         <CapacityStatus capacity={tasks.value.capacity} />
         <p><Link href="/subscription-profiles#client-setup">Inspect worker registration and client setup</Link></p>
@@ -75,6 +82,7 @@ export function TaskInspector({ runId }: { runId: string }) {
           <span>Page {Math.floor(offset / pageSize) + 1}</span>
           <button type="button" disabled={!tasks.value.has_more} onClick={() => movePage(offset + pageSize)}>Next tasks</button>
         </nav>
+        </>}
       </> : null}
   </section>;
 }

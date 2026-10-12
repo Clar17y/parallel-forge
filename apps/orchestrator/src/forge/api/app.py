@@ -39,6 +39,7 @@ from forge.api.routes.subscription_quota import router_for as subscription_quota
 from forge.api.routes.subscription_runtime import router_for as subscription_runtime_router_for
 from forge.api.routes.subscription_tasks import router_for as subscription_task_router_for
 from forge.api.routes.subscription_usage import router_for as subscription_usage_router_for
+from forge.api.routes.task_usage_controls import router_for as task_usage_controls_router_for
 from forge.api.routes.task_usage_reporting import router_for as task_usage_reporting_router_for
 from forge.api.routes.tasks import router_for as task_router_for
 from forge.api.security import parse_web_origin
@@ -73,7 +74,8 @@ from forge.application.services.subscription_profiles import SubscriptionProfile
 from forge.application.services.subscription_quota import SubscriptionQuotaService
 from forge.application.services.subscription_recovery import SubscriptionRecoveryService
 from forge.application.services.subscription_task_controls import SubscriptionTaskControlService
-from forge.application.services.task_usage_baselines import TaskUsageBaselineService
+from forge.application.services.task_usage_composition import compose_task_usage
+from forge.application.services.task_usage_controls import RunTaskUsageControls
 from forge.application.services.task_usage_policy import TaskUsagePolicyService
 from forge.application.services.tasks import TaskService
 from forge.artifacts.filesystem import FilesystemArtifactStore
@@ -86,13 +88,10 @@ from forge.persistence.queries.events import EventQuery
 from forge.persistence.queries.run_list import RunListQuery
 from forge.persistence.queries.subscription_tasks import SubscriptionTaskQuery
 from forge.persistence.queries.subscription_usage import SubscriptionUsageQuery
-from forge.persistence.queries.task_usage_baselines import TaskUsageBaselineQuery
-from forge.persistence.queries.task_usage_totals import TaskUsageTotalsQuery
 from forge.persistence.repositories.epic_decomposition import PostgresEpicDecompositionUnitOfWork
 from forge.persistence.repositories.subscription_runtime_status import (
     SubscriptionRuntimeStatusStore,
 )
-from forge.persistence.repositories.task_usage_observations import PostgresTaskUsageObservations
 from forge.persistence.unit_of_work import PostgresUnitOfWork
 from forge.release.credentials import LocalGitHubCredentialResolver
 from forge.release.github_client import GitHubClient
@@ -270,16 +269,20 @@ def create_app(
     app.state.approval_authorization_service = resolved_authorization_service
     app.state.project_service = resolved_project_service
     app.state.task_usage_policy_service = resolved_task_usage_policy_service
-    if task_usage_baseline_service is None and session_factory is not None:
-        task_usage_baseline_service = TaskUsageBaselineService(
-            TaskUsageBaselineQuery(session_factory)
-        )
+    task_usage_composition = compose_task_usage(session_factory) if session_factory is not None else None
+    if task_usage_baseline_service is None and task_usage_composition is not None:
+        task_usage_baseline_service = task_usage_composition.baselines
     app.state.task_usage_baseline_service = task_usage_baseline_service
     app.state.task_usage_observations = (
-        PostgresTaskUsageObservations(session_factory) if session_factory is not None else None
+        task_usage_composition.observations if task_usage_composition is not None else None
     )
     app.state.task_usage_totals = (
-        TaskUsageTotalsQuery(session_factory) if session_factory is not None else None
+        task_usage_composition.totals if task_usage_composition is not None else None
+    )
+    app.state.run_task_usage_controls = (
+        RunTaskUsageControls(session_factory, task_usage_composition.totals)
+        if session_factory is not None and task_usage_composition is not None
+        else None
     )
     app.state.task_service = resolved_task_service
     app.state.epic_brief_service = resolved_epic_brief_service
@@ -367,6 +370,7 @@ def create_app(
     app.include_router(approval_router_for(), prefix="/api")
     app.include_router(project_router_for(), prefix="/api")
     app.include_router(task_usage_reporting_router_for(), prefix="/api")
+    app.include_router(task_usage_controls_router_for(), prefix="/api")
     app.include_router(subscription_profile_router_for(), prefix="/api")
     app.include_router(subscription_quota_router_for(), prefix="/api")
     app.include_router(subscription_task_router_for(), prefix="/api")

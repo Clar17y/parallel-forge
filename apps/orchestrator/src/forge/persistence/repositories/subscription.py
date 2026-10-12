@@ -80,6 +80,7 @@ from forge.persistence.models.subscription import (
     SubscriptionTaskDependency,
 )
 from forge.persistence.models.subscription_results import SubscriptionAttemptResult
+from forge.persistence.models.task_usage import TaskUsageCheckpoint
 from forge.persistence.repositories.operations import PostgresOperationRepository
 from forge.persistence.repositories.projects import ProjectNotFound
 from forge.persistence.repositories.runs import PostgresRunRepository
@@ -428,6 +429,8 @@ class PostgresSubscriptionRepository:
         # Serialize with attempt creation and tool budget admission. Scheduler
         # task precedes scheduler run, matching admit_effect's lock order.
         await self._lock_run(context.run_id)
+        if await self._usage_checkpoint_active(context.run_id):
+            return None
         envelope = await self._session.get(
             SubscriptionEnvelope, context.run_id, with_for_update=True
         )
@@ -593,6 +596,20 @@ class PostgresSubscriptionRepository:
         ).scalar_one_or_none()
         if row is None:
             raise SubscriptionConflict("run not found")
+
+    async def _usage_checkpoint_active(self, run_id: UUID) -> bool:
+        return (
+            await self._session.scalar(
+                select(TaskUsageCheckpoint.id)
+                .where(
+                    TaskUsageCheckpoint.subject_kind == "run",
+                    TaskUsageCheckpoint.subject_id == run_id,
+                    TaskUsageCheckpoint.state.in_(("checkpoint_requested", "pausing", "paused")),
+                )
+                .limit(1)
+            )
+            is not None
+        )
 
     async def _lock_project(self, project_id: UUID) -> None:
         row = (
@@ -777,13 +794,17 @@ class PostgresSubscriptionRepository:
         )
         result: dict[UUID, dict[str, object]] = {}
         for run_id, profile_id, profile_version, payload in rows:
-            source = payload.get("subscription_profile_selection_source") if isinstance(payload, Mapping) else None
+            source = (
+                payload.get("subscription_profile_selection_source")
+                if isinstance(payload, Mapping)
+                else None
+            )
             result[run_id] = {
                 "profile_id": profile_id,
                 "profile_version": profile_version,
-                "selection_source": source if type(source) is str and source in {
-                    "project_default", "run_override"
-                } else None,
+                "selection_source": source
+                if type(source) is str and source in {"project_default", "run_override"}
+                else None,
             }
         return result
 
@@ -806,6 +827,8 @@ class PostgresSubscriptionRepository:
             if row.payload != payload:
                 raise SubscriptionConflict("task replay conflicts")
             return self._decode(row.payload, LogicalTaskContract)
+        if await self._usage_checkpoint_active(contract.run_id):
+            raise SubscriptionConflict("run usage checkpoint fences new tasks")
 
         # Prospective DAG validation under short run lock
         existing_rows = (
@@ -899,6 +922,8 @@ class PostgresSubscriptionRepository:
             ):
                 raise SubscriptionConflict("attempt replay conflicts")
             return attempt
+        if await self._usage_checkpoint_active(attempt.run_id):
+            raise SubscriptionConflict("run usage checkpoint fences new attempts")
         self._session.add(
             SubscriptionAttempt(
                 id=attempt.attempt_id,

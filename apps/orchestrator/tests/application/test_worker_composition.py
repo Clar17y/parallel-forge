@@ -202,7 +202,7 @@ async def test_composed_recovery_dispatches_final_acceptance(tmp_path, monkeypat
         Settings(provider_secret_reference="", prompt_root=_make_prompt_root(tmp_path)),
         session_factory=object(),
     )
-    identity, applied, active = uuid4(), [], []
+    identity, run_id, project_id, applied, active = uuid4(), uuid4(), uuid4(), [], []
     recorded_success = []
 
     async def pending(cursor, limit):
@@ -223,6 +223,19 @@ async def test_composed_recovery_dispatches_final_acceptance(tmp_path, monkeypat
         assert attempt_id == identity
         return 1
 
+    async def attempt_run_id(attempt_id):
+        assert active and attempt_id == identity
+        return run_id
+
+    async def run_for_checkpoint(identity):
+        assert active and identity == run_id
+        return SimpleNamespace(id=run_id, project_id=project_id)
+
+    async def no_active_checkpoint(subject):
+        assert active
+        assert subject.project_id == project_id
+        assert subject.kind == "run" and subject.subject_id == run_id
+
     async def role_violation(attempt_id):
         assert active
         assert attempt_id == identity
@@ -239,9 +252,12 @@ async def test_composed_recovery_dispatches_final_acceptance(tmp_path, monkeypat
                 subscription_decisions=SimpleNamespace(pending_applications=pending),
                 subscription_recovery=SimpleNamespace(
                     due_version=due_version,
+                    attempt_run_id=attempt_run_id,
                     role_violation=role_violation,
                     record_success=record_success,
                 ),
+                runs=SimpleNamespace(get=run_for_checkpoint),
+                task_usage_checkpoints=SimpleNamespace(active_for_subject=no_active_checkpoint),
                 rollback=rollback,
                 commit=commit,
             )

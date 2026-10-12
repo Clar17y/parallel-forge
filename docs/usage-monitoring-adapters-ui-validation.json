@@ -7,7 +7,48 @@
     99,
     103
   ],
-  "status": "fifth_codex_repair_local_candidate_awaiting_current_head_hosted_review",
+  "status": "Merged PR #109; final hosted and merge reconciliation recorded in final_delivery. Earlier entries retain their historical snapshots.",
+  "final_delivery": {
+    "pr": "https://github.com/Clar17y/parallel-forge/pull/109",
+    "tested_pr_head": "3446690547427085a1c0d563b36984caeb00b5e6",
+    "merged_commit": "558645377ce919a7c6e79cbd144a8c3dff9ffba6",
+    "merged_at_utc": "2026-10-11T19:34:10Z",
+    "tested_tree": "73ce5da231edd23ac6e218a89019f99831b7ba1a",
+    "merged_tree_matches_tested_head": true,
+    "automatic_smoke": {
+      "conclusion": "SUCCESS",
+      "url": "https://github.com/Clar17y/parallel-forge/actions/runs/38166702040"
+    },
+    "codex": {
+      "completed": true,
+      "verdict": "No major issues on tested head",
+      "finding_conversations": 11,
+      "unresolved": 0,
+      "evidence_backed_replies": true,
+      "clear_comment": "https://github.com/Clar17y/parallel-forge/pull/109#issuecomment-6112658979"
+    },
+    "retained_closed_children": [
+      95,
+      96,
+      97,
+      100,
+      105
+    ],
+    "receipts_root": "C:/Users/sdyer/.codex/worktree-evidence/parallel-forge/usage-monitoring-adapters-ui-3446690-pr109-148ad79c87cf47cc8f84dfdc896c8050",
+    "historical_scope": "Earlier publication, issue-state, acceptance and unrun-check entries retain their recorded historical snapshots. Automatic PR smoke and final Codex review later passed. Earlier broad backend failures plus scoped repairs are not a final whole-suite pass. No runtime live-provider conformance or full signed64 browser round trip is claimed. Checkpoints, continuation, authenticated browser journeys and production assembly are reconciled in the next batch under #106.",
+    "receipts": [
+      "preservation.json",
+      "teardown-complete.json",
+      ".llm-output/usage-adapters-ui/pr109-final/hosted-acceptance.json",
+      ".llm-output/usage-adapters-ui/pr109-final/hosted-final.json"
+    ],
+    "open_children": [
+      98,
+      99,
+      103
+    ],
+    "simplify_complete": true
+  },
   "feature_complete": false,
   "source": {
     "base": "e2c93d0a35102fd16162ee492da4044b3070a59f",

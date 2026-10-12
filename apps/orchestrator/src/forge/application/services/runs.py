@@ -28,12 +28,18 @@ from forge.application.ports.subscription import SubscriptionRepository
 from forge.application.ports.tasks import TaskRecord, TaskRepository
 from forge.application.ports.unit_of_work import EventRepository
 from forge.application.services.auth import AuthenticatedActor
+from forge.application.services.task_usage_composition import (
+    configured_project_cohort,
+    configured_run_cohort,
+)
 from forge.domain.command import CommandEnvelope
 from forge.domain.event import RunEvent
 from forge.domain.operation import canonical_digest
+from forge.domain.policy import ProjectPolicy
 from forge.domain.run import RunSnapshot, RunState
 from forge.domain.subscription import OperatorProfile, encode_subscription_record
 from forge.domain.subscription_envelope import freeze_profile
+from forge.domain.task_usage_contract import SubjectKey
 from forge.domain.teardown import TEARDOWN_STATES, has_removable_resources, teardown_confirmation
 from forge.persistence.repositories.commands import IdempotencyConflict
 from forge.persistence.repositories.runs import (
@@ -353,6 +359,7 @@ class RunService:
         else:
             profile = await work.subscription.project_profile(project.id)
         routing: dict[str, object] = {}
+        envelope = None
         if profile is not None:
             try:
                 envelope = freeze_profile(
@@ -371,6 +378,19 @@ class RunService:
                     encode_subscription_record(envelope)
                 ),
             }
+        admissions = getattr(work, "task_usage_admissions", None)
+        if admissions is not None:
+            if envelope is not None:
+                cohort = configured_run_cohort(envelope)
+            elif project.policy is not None:
+                cohort = configured_project_cohort(
+                    ProjectPolicy.model_validate(project.policy.document)
+                )
+            else:
+                raise RunCreationError("admitted project has no frozen route policy")
+            await admissions.admit(
+                SubjectKey(project_id=project.id, kind="run", subject_id=run.id), cohort
+            )
         event_writer = _event_writer(work.events)
         await event_writer.append(
             RunEvent(

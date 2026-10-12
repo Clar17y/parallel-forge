@@ -165,7 +165,7 @@ class BudgetSection(ProjectionModel):
     remote_remediation_count: int
     remote_remediation_limit: int
     remote_remediation_remaining: int
-    token_limit: int
+    token_limit: int | None
     cost_limit_minor: int
     duration_limit_seconds: int
 

@@ -24,6 +24,18 @@ def test_final_replaces_live_and_keeps_disagreement() -> None:
     assert "final_below_live" in projected.disagreements
 
 
+def test_unknown_final_keeps_positive_live_measurement_as_lower_bound() -> None:
+    fixture = examples()
+    live = replace(fixture["live"], tokens=TokenCounts(input_tokens=17, output_tokens=2),
+                   unknown_dimensions=())
+    final = replace(fixture["final"], tokens=TokenCounts(input_tokens=None, output_tokens=0),
+                    unknown_dimensions=("input_tokens",))
+    projected = project_source((live, final))
+    assert (projected.input_tokens, projected.output_tokens) == (17, 0)
+    assert projected.completeness == "lower_bound"
+    assert projected.known_total_tokens == 17
+
+
 def test_delta_replay_and_unknown_dimension() -> None:
     fixture = examples()
     delta = fixture["delta"]

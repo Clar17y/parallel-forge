@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import cast
 from uuid import UUID, uuid4
 
 from forge.application.ports.epic_decomposition import (
@@ -10,7 +11,9 @@ from forge.application.ports.epic_decomposition import (
     DecompositionAuthoringPort,
     EpicDecompositionUnitOfWork,
 )
+from forge.application.ports.task_usage import OwnerCommandReceipt, UsageReport
 from forge.application.services.auth import AuthenticatedActor
+from forge.application.services.epic_brainstorm import EpicBrainstormService
 from forge.domain.epic_brainstorm import (
     AuthoringOutcome,
     AuthoringReceipt,
@@ -30,6 +33,7 @@ from forge.domain.epic_items import (
     validate_graph,
 )
 from forge.domain.operation import canonical_digest
+from forge.domain.task_usage_contract import CheckpointRecord, OwnerCommand
 
 
 class EpicDecompositionService:
@@ -189,6 +193,67 @@ class EpicDecompositionService:
             key=key,
             owner_override=owner_override,
             override_note=override_note,
+        )
+
+    async def usage_checkpoint(
+        self,
+        *,
+        epic_id: UUID,
+        project_id: UUID,
+        job_id: UUID,
+    ) -> CheckpointRecord | None:
+        await self._authoring.require_kind(
+            epic_id=epic_id,
+            project_id=project_id,
+            job_id=job_id,
+            kind="decomposition",
+        )
+        return await cast(EpicBrainstormService, self._authoring).usage_checkpoint(
+            epic_id=epic_id,
+            project_id=project_id,
+            job_id=job_id,
+        )
+
+    async def usage_checkpoint_view(
+        self,
+        *,
+        epic_id: UUID,
+        project_id: UUID,
+        job_id: UUID,
+    ) -> tuple[CheckpointRecord | None, UsageReport | None]:
+        await self._authoring.require_kind(
+            epic_id=epic_id,
+            project_id=project_id,
+            job_id=job_id,
+            kind="decomposition",
+        )
+        return await cast(EpicBrainstormService, self._authoring).usage_checkpoint_view(
+            epic_id=epic_id,
+            project_id=project_id,
+            job_id=job_id,
+        )
+
+    async def apply_checkpoint_command(
+        self,
+        *,
+        epic_id: UUID,
+        project_id: UUID,
+        job_id: UUID,
+        actor: AuthenticatedActor,
+        command: OwnerCommand,
+    ) -> tuple[OwnerCommandReceipt, CheckpointRecord]:
+        await self._authoring.require_kind(
+            epic_id=epic_id,
+            project_id=project_id,
+            job_id=job_id,
+            kind="decomposition",
+        )
+        return await cast(EpicBrainstormService, self._authoring).apply_checkpoint_command(
+            epic_id=epic_id,
+            project_id=project_id,
+            job_id=job_id,
+            actor=actor,
+            command=command,
         )
 
     async def adopt(

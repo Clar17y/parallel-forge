@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, test, vi } from 'vitest';
 import { TaskInspector } from './task-inspector';
@@ -22,16 +22,16 @@ test('loads attempts on selection and preserves unknown usage', async () => {
   render(<TaskInspector runId="run-1" />);
   await screen.findByText('src');
   expect(screen.getByText('Execution capacity: Unknown')).toBeInTheDocument();
-  expect(fetcher.mock.calls).toHaveLength(1);
+  expect(fetcher.mock.calls.some(([url]) => String(url).includes('/usage-checkpoint'))).toBe(true);
   await userEvent.click(screen.getByRole('button', { name: 'Inspect primary task task-1' }));
   await screen.findByText('Attempt 1 · running');
   expect(screen.getAllByText('Unknown').length).toBeGreaterThan(1);
   expect(screen.getByText('1 unsettled effect(s)')).toBeInTheDocument();
   expect(screen.getByText(/Effective:.*gpt-6-astra/)).toBeInTheDocument();
-  expect(fetcher.mock.calls[1][0]).toContain('/subscription-tasks/task-1/attempts');
+  expect(fetcher.mock.calls.some(([url]) => String(url).includes('/subscription-tasks/task-1/attempts'))).toBe(true);
 });
 
-test('legacy runs retain their existing run view without a task inspector', async () => {
+test('non-subscription runs retain the legacy message without subscription task controls', async () => {
   vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
     run_id: 'legacy', subscription: false, tasks: [], has_more: false,
   })));
@@ -39,6 +39,40 @@ test('legacy runs retain their existing run view without a task inspector', asyn
   await screen.findByText('Legacy run: subscription tasks do not apply.');
   expect(screen.queryByRole('button', { name: /Inspect/ })).not.toBeInTheDocument();
   expect(screen.queryByLabelText('Execution capacity')).not.toBeInTheDocument();
+});
+
+test('ordinary non-subscription run shows measured checkpoint controls and can continue an owner checkpoint', async () => {
+  const binding = {
+    subject: { project_id: 'project-1', kind: 'run', subject_id: 'run-1', schema_version: 1 }, work_unit_id: 'unit-1',
+    admitted_phase_id: 'implementation', configured_route: { fingerprint: 'a'.repeat(64), members: [] },
+    effective_route: { fingerprint: 'b'.repeat(64), members: [] }, source: { kind: 'agent_execution', source_id: 'source-1', parent_id: null }, schema_version: 1,
+  };
+  const checkpoint = { checkpoint_id: 'checkpoint-1', binding, baseline_binding: binding, state: 'paused', policy_revision: 1,
+    reference_digest: 'c'.repeat(64), trigger_event_id: 'trigger-1', version: 2, generation: 1, process_settled: true,
+    next_checkpoint_threshold_tokens: null, usage_pauses_disabled: false, monitoring_policy_revision: 1 };
+  const baseline = { binding, policy_revision: 1, snapshot_digest: 'd'.repeat(64), cohort_digest: 'e'.repeat(64), history_digest: 'f'.repeat(64),
+    estimator_version: 'v1', comparison_scope: 'route', completeness: 'complete', coverage_count: 4, sample_count: 4, outcome_count: 4,
+    source_count: 4, window_limit: 20, minimum_comparables: 3, status: 'ready', reference_tokens: 100, mean_tokens: 100,
+    median_tokens: 100, p90_tokens: 120, warning_threshold_tokens: 150, checkpoint_threshold_tokens: 200, frozen_at: '2026-10-11T10:00:00Z', schema_version: 1 };
+  const report = { binding, policy_revision: 1, baseline, input_tokens: 25, output_tokens: 30, cached_input_tokens: null,
+    reasoning_output_tokens: null, context_occupied_tokens: null, context_peak_tokens: null, context_capacity_tokens: null,
+    compaction_count: null, completeness: 'complete', freshness: 'final', sources: [] };
+  const response = { checkpoint, report };
+  const page = { run_id: 'run-1', subscription: false, tasks: [], has_more: false, run_allows_execution: true, run_is_terminal: false,
+    quota_statuses: [{ provider: 'claude', account: 'personal', pool: 'daily', status: 'blocked', revision: 2, observed_at: null,
+      reason: 'limit_reached', reset_at: null, next_eligible_at: null, retry_basis: null, probe_attempt_id: null, recovered_at: null }] };
+  const user = userEvent.setup();
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    if ((init?.method ?? 'GET') === 'POST') return new Response(JSON.stringify({ receipt: { checkpoint_id: 'checkpoint-1', action: 'continue', state: 'resumed', result_version: 3 }, checkpoint: { ...checkpoint, state: 'resumed', version: 3 }, report }), { status: 200 });
+    return new Response(JSON.stringify(String(input).includes('/usage-checkpoint') ? response : page), { status: 200 });
+  });
+  render(<TaskInspector runId="run-1" />);
+  expect(await screen.findByText('Legacy run: subscription tasks do not apply.')).toBeInTheDocument();
+  const region = await screen.findByRole('region', { name: 'Run usage checkpoint' });
+  expect(region).toHaveTextContent('Input tokens: 25');
+  expect(region).not.toHaveTextContent(/subscription task on this page is waiting for provider quota/i);
+  await user.click(within(region).getByRole('button', { name: 'Continue to next checkpoint' }));
+  expect(await screen.findByText(/Continue recorded/)).toBeVisible();
 });
 
 test('shows observed execution capacity and the reason a selected route is queued', async () => {
@@ -63,7 +97,8 @@ test('shows observed execution capacity and the reason a selected route is queue
 
 test('shows task quota reason and retry time beyond the global status page', async () => {
   const route = { provider: 'anthropic', client: 'claude_code', model: 'opus', effort: 'medium', auth_mode: 'subscription', billing_mode: 'allowance_only' };
-  vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async input => new Response(JSON.stringify(String(input).includes('/usage-checkpoint')
+    ? { checkpoint: null, report: null } : {
     run_id: 'run-1', subscription: true, tasks: [{
       task_id: 'task-1', parent_task_id: 'primary', dependency_task_ids: [], purpose: 'routine_implementation', owned_paths: ['src'],
       state: 'queued', pause_requested: false, cancel_requested: false, version: 1, repairs: 0, unsettled_effects: 0,
@@ -75,6 +110,7 @@ test('shows task quota reason and retry time beyond the global status page', asy
   })));
   render(<TaskInspector runId="run-1" />);
   await screen.findByText('Reason: operator_report');
+  expect(await screen.findByText('A subscription task on this page is waiting for provider quota eligibility. Recording a monitoring choice does not clear the quota wait.')).toBeInTheDocument();
   expect(screen.getByText(/Next probe:/)).toBeInTheDocument();
   expect(screen.getByText(/approved fallback selected/)).toBeInTheDocument();
 });

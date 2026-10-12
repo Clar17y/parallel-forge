@@ -93,6 +93,7 @@ from forge.persistence.models.subscription_results import (
     SubscriptionRepairDebit,
 )
 from forge.persistence.models.subscription_usage import SubscriptionAttemptConsumption
+from forge.persistence.models.task_usage import TaskUsageCheckpoint
 from forge.persistence.repositories.commands import PostgresCommandRepository
 from forge.persistence.repositories.projects import PostgresProjectRepository
 from forge.persistence.repositories.runs import PostgresRunRepository
@@ -142,7 +143,9 @@ def _selected_review_task(
         purpose=SpecialistPurpose.INDEPENDENT_REVIEW,
         route=route,
         budget=replace(
-            budget_with_role_defaults(parent.budget, envelope, SpecialistPurpose.INDEPENDENT_REVIEW),
+            budget_with_role_defaults(
+                parent.budget, envelope, SpecialistPurpose.INDEPENDENT_REVIEW
+            ),
             max_repairs=0,
         ),
         max_repairs=0,
@@ -1704,6 +1707,19 @@ class PostgresSubscriptionDecisionRepository:
                 ):
                     raise SubscriptionDecisionError("decision rejection receipt differs")
             return SubscriptionSettlement(result.accepted, result.disposition, True)
+        if (
+            await self._session.scalar(
+                select(TaskUsageCheckpoint.id)
+                .where(
+                    TaskUsageCheckpoint.subject_kind == "run",
+                    TaskUsageCheckpoint.subject_id == run_id,
+                    TaskUsageCheckpoint.state.in_(("checkpoint_requested", "pausing", "paused")),
+                )
+                .limit(1)
+            )
+            is not None
+        ):
+            raise SubscriptionDecisionError("decision application is fenced by usage checkpoint")
         task = await self._session.get(
             SubscriptionTask, parent.task_id, with_for_update=True, populate_existing=True
         )

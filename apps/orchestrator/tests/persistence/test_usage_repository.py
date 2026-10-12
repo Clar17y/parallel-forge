@@ -35,7 +35,9 @@ async def test_usage_round_trip_and_grouped_totals(session_factory, persisted_ru
     record = await repository.record(
         persisted_run.id,
         execution_id,
-        UsageRecord(provider="gemini", model="test", input_tokens=2_000_000, output_tokens=500_000),
+        UsageRecord(provider="gemini", model="test", input_tokens=2_000_000, output_tokens=500_000,
+                    input_tokens_complete=True, output_tokens_complete=True,
+                    cached_input_tokens_complete=False),
         catalog=catalog,
         currency="USD",
     )

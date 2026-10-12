@@ -28,7 +28,7 @@ from forge.persistence.repositories.task_usage_observations import (
     decode_observation,
 )
 
-__all__ = ["FinalizedSourceFact", "TaskUsageTotalsQuery", "UsageTotals"]
+__all__ = ["FinalizedSourceFact", "TaskUsageTotalsQuery", "UsageTotals", "complete_model_usage_tokens"]
 _BATCH_SIZE = 1000
 
 
@@ -43,6 +43,29 @@ def _sum_known(values: list[int | None]) -> int | None:
         return None
     total = sum(known)
     return total if total <= MAX_SIGNED_BIGINT else None
+
+
+def _sum_complete(values: list[int | None]) -> int | None:
+    return _sum_known(values) if values and all(value is not None for value in values) else None
+
+
+def complete_model_usage_tokens(records: list[ModelUsage]) -> TokenCounts:
+    """Project only explicitly complete dimensions across every final model row."""
+    return TokenCounts(
+        input_tokens=_sum_complete([
+            row.input_tokens + row.cached_input_tokens
+            if row.input_tokens_complete is True else None
+            for row in records
+        ]),
+        output_tokens=_sum_complete([
+            row.output_tokens if row.output_tokens_complete is True else None
+            for row in records
+        ]),
+        cached_input_tokens=_sum_complete([
+            row.cached_input_tokens if row.cached_input_tokens_complete is True else None
+            for row in records
+        ]),
+    )
 
 
 def _measured(value: object) -> int | None:
@@ -66,6 +89,9 @@ def _from_authoritative(
     input_tokens: int | None,
     output_tokens: int | None,
     cached_input_tokens: int | None,
+    input_lower_bound: int | None = None,
+    output_lower_bound: int | None = None,
+    cached_lower_bound: int | None = None,
 ) -> SourceUsage:
     # Existing final consumption/model usage wins even if a late live event arrives.
     TokenCounts(
@@ -84,17 +110,26 @@ def _from_authoritative(
     if reasoning is not None and (output_tokens is None or reasoning > output_tokens):
         reasoning = None
         disagreements.append("reasoning_subset_unverified")
+    def resolved(exact: int | None, partial: int | None, live_value: int | None) -> int | None:
+        if exact is not None:
+            return exact
+        positive = [value for value in (partial, live_value) if value is not None and value > 0]
+        return max(positive) if positive else None
+
+    measured_input = resolved(input_tokens, input_lower_bound, live.input_tokens)
+    measured_output = resolved(output_tokens, output_lower_bound, live.output_tokens)
+    measured_cache = resolved(cached_input_tokens, cached_lower_bound, live.cached_input_tokens)
     return replace(
         live,
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
-        cached_input_tokens=cached_input_tokens,
+        input_tokens=measured_input,
+        output_tokens=measured_output,
+        cached_input_tokens=measured_cache,
         reasoning_output_tokens=reasoning,
         final=True,
         final_status=live.final_status or "settled",
         completeness=(
             "unknown"
-            if input_tokens is None and output_tokens is None
+            if measured_input is None and measured_output is None
             else "complete"
             if input_tokens is not None and output_tokens is not None
             else "lower_bound"
@@ -240,15 +275,15 @@ def _project_totals(
         elif unit.source_kind == "agent_execution":
             records = model_rows.get((subject.subject_id, unit.source_id), [])
             if records:
+                model_counts = complete_model_usage_tokens(records)
                 usage = _from_authoritative(
                     usage,
-                    input_tokens=_sum_known([
-                        record.input_tokens + record.cached_input_tokens for record in records
-                    ]),
-                    output_tokens=_sum_known([record.output_tokens for record in records]),
-                    cached_input_tokens=_sum_known(
-                        [record.cached_input_tokens for record in records]
-                    ),
+                    input_tokens=model_counts.input_tokens,
+                    output_tokens=model_counts.output_tokens,
+                    cached_input_tokens=model_counts.cached_input_tokens,
+                    input_lower_bound=_sum_known([row.input_tokens + row.cached_input_tokens for row in records]),
+                    output_lower_bound=_sum_known([row.output_tokens for row in records]),
+                    cached_lower_bound=_sum_known([row.cached_input_tokens for row in records]),
                 )
                 evidence_kind = "model_usage"
                 fingerprint.append(("model_usage", [str(record.id) for record in records]))

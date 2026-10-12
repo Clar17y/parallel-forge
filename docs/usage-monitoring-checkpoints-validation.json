@@ -1,0 +1,1170 @@
+{
+  "schema_version": 1,
+  "repository": "Clar17y/parallel-forge",
+  "epic": 94,
+  "batch_issues": [
+    101,
+    102,
+    104,
+    106
+  ],
+  "status": "Final repaired candidate passed focused accounting, policy/lifecycle, actual separate-process acceptance and static/web checks. One integrated independent review and full simplify completed; all five substantiated findings repaired and checked. Publication and latest automatic hosted receipts follow on the PR.",
+  "feature_complete": false,
+  "source": {
+    "base": "558645377ce919a7c6e79cbd144a8c3dff9ffba6",
+    "branch": "codex/usage-checkpoint-continuation",
+    "managed_worktree": "C:/Users/sdyer/.codex/worktrees/usage-checkpoint-continuation/parallel-forge",
+    "candidate": "Base HEAD plus the complete scoped source/test snapshot identified by code_input_sha256; complete staged diff and review receipts are retained locally. Published head-specific receipts belong to the PR and issue updates.",
+    "code_input_sha256": "a66034ab6e4d1ab33cb1a45abb5f66427eaaa12a1c66958adae00ec7c610f149",
+    "input_manifest": ".llm-output/usage-checkpoints/candidate-final-inputs.json"
+  },
+  "prior_deliveries": {
+    "108": {
+      "pr": "https://github.com/Clar17y/parallel-forge/pull/108",
+      "tested_pr_head": "29041086f80638426179be0797cac79569a4025b",
+      "merged_commit": "e2c93d0a35102fd16162ee492da4044b3070a59f",
+      "merged_at_utc": "2026-10-11T12:13:52Z",
+      "tested_tree": "7eea7d35ad7aaf76ce99390b3cd6110b0d3f8df6",
+      "merged_tree_matches_tested_head": true,
+      "automatic_smoke": {
+        "conclusion": "SUCCESS",
+        "url": "https://github.com/Clar17y/parallel-forge/actions/runs/38108655877"
+      },
+      "codex": {
+        "completed": true,
+        "verdict": "No major issues on tested head",
+        "finding_conversations": 13,
+        "unresolved": 0,
+        "evidence_backed_replies": true
+      },
+      "retained_closed_children": [
+        95,
+        96,
+        97,
+        100,
+        105
+      ],
+      "receipts_root": "C:/Users/sdyer/.codex/worktree-evidence/parallel-forge/usage-monitoring-batch-2904108-pr108-35871bc4d8214a3fa4dc8a0194876fe1/.llm-output",
+      "historical_scope": "Earlier publication, issue-state, acceptance and unrun-check entries retain their recorded historical snapshots. Automatic PR smoke and final Codex review later passed. Earlier broad backend failures plus scoped repairs are not a final whole-suite pass. No runtime live-provider conformance or full signed64 browser round trip is claimed. Checkpoints, continuation, authenticated browser journeys and production assembly are reconciled in the next batch under #106.",
+      "receipts": [
+        "pr108-round7/hosted-acceptance.json",
+        "pr108-round7/acceptance.json",
+        "teardown-pr108/merge-reconciliation.json"
+      ]
+    },
+    "109": {
+      "pr": "https://github.com/Clar17y/parallel-forge/pull/109",
+      "tested_pr_head": "3446690547427085a1c0d563b36984caeb00b5e6",
+      "merged_commit": "558645377ce919a7c6e79cbd144a8c3dff9ffba6",
+      "merged_at_utc": "2026-10-11T19:34:10Z",
+      "tested_tree": "73ce5da231edd23ac6e218a89019f99831b7ba1a",
+      "merged_tree_matches_tested_head": true,
+      "automatic_smoke": {
+        "conclusion": "SUCCESS",
+        "url": "https://github.com/Clar17y/parallel-forge/actions/runs/38166702040"
+      },
+      "codex": {
+        "completed": true,
+        "verdict": "No major issues on tested head",
+        "finding_conversations": 11,
+        "unresolved": 0,
+        "evidence_backed_replies": true,
+        "clear_comment": "https://github.com/Clar17y/parallel-forge/pull/109#issuecomment-6112658979"
+      },
+      "retained_closed_children": [
+        95,
+        96,
+        97,
+        100,
+        105
+      ],
+      "receipts_root": "C:/Users/sdyer/.codex/worktree-evidence/parallel-forge/usage-monitoring-adapters-ui-3446690-pr109-148ad79c87cf47cc8f84dfdc896c8050",
+      "historical_scope": "Earlier publication, issue-state, acceptance and unrun-check entries retain their recorded historical snapshots. Automatic PR smoke and final Codex review later passed. Earlier broad backend failures plus scoped repairs are not a final whole-suite pass. No runtime live-provider conformance or full signed64 browser round trip is claimed. Checkpoints, continuation, authenticated browser journeys and production assembly are reconciled in the next batch under #106.",
+      "receipts": [
+        "preservation.json",
+        "teardown-complete.json",
+        ".llm-output/usage-adapters-ui/pr109-final/hosted-acceptance.json",
+        ".llm-output/usage-adapters-ui/pr109-final/hosted-final.json"
+      ],
+      "open_children": [
+        98,
+        99,
+        103
+      ],
+      "simplify_complete": true
+    }
+  },
+  "environment": {
+    "python": "3.14.5",
+    "node": "24.20.0",
+    "postgresql": "Existing local port5435, disposable test databases",
+    "source_import": "3.14.5\nC:\\Users\\sdyer\\.codex\\worktrees\\usage-checkpoint-continuation\\parallel-forge\\apps\\orchestrator\\src\\forge\\__init__.py",
+    "main_unrelated_file_sha256": "0f70629890b72a0a82e91972cc032c04b658b26c265373cb711cf576bfbf8fcc"
+  },
+  "authorization": {
+    "push_and_one_pr": true,
+    "normal_automatic_checks_and_codex_review": true,
+    "necessary_repair_pushes_reviews_and_findings_replies_resolution": true,
+    "manual_full_hosted_ci": false,
+    "runtime_live_provider": false,
+    "merge": false
+  },
+  "coverage": [
+    {
+      "invariant": "Admission references remain frozen",
+      "cases": [
+        "Distinct run and authoring subjects capture configured route cohort, policy revision including absence, and history cutoff before delayed launch.",
+        "Later policy/history changes do not rewrite the admitted reference; generations retain its digest."
+      ],
+      "check": "Shared PostgreSQL admission/checkpoint contracts and actual process assertions",
+      "status": "proved",
+      "evidence": [
+        ".llm-output/usage-checkpoints/integration/evidence.md: shared contract/migration/monitor command, 19 passed; run creation 19 passed.",
+        "tests/acceptance/test_task_usage_monitoring_process.py: authoring and delegated baseline identity/digest assertions; process-final.log 3 passed and delegated-exact-totals.log 1 passed."
+      ]
+    },
+    {
+      "invariant": "Measured accounting remains honest",
+      "cases": [
+        "Explicit reported zero differs from absent/legacy metadata; partial positive counters remain lower bounds.",
+        "Cache/reasoning subsets are not extra parent totals; missing parent prompt with positive cache is incomplete rather than negative.",
+        "Unknown finals preserve known live lower bounds; authoritative complete finals reconcile the source once.",
+        "Root and delegated source identities aggregate exactly once, including restart final sweeps."
+      ],
+      "check": "ADK metadata, PostgreSQL projections and actual process exact totals",
+      "status": "proved",
+      "evidence": [
+        ".llm-output/usage-checkpoints/integration/adk-metadata-final.log: 94 passed.",
+        ".llm-output/usage-checkpoints/integration/final-projection-pg.log: 33 passed.",
+        ".llm-output/usage-checkpoints/run/final-model-hash.log: 5 passed.",
+        ".llm-output/usage-checkpoints/integration/delegated-exact-totals.log: 62/42 -> 122/82; two primary 1/1 and two distinct child 60/40 observations.",
+        ".llm-output/usage-checkpoints/integration/authoring-process-continue-2.log: 60/40 -> 70/45 from two distinct settled attempts."
+      ]
+    },
+    {
+      "invariant": "Source ancestry reflects durable task identity",
+      "cases": [
+        "Subscription root and child reports join the durable parent_task_id within the matching run; provider source kind and role do not imply delegation.",
+        "Agent execution, authoring attempt and unsupported/missing legacy task ancestry remain nullable unknown through JSON and both checkpoint panels.",
+        "Four source IDs and ordering remain unchanged, with cumulative122 input/82 output; attribution does not affect accounting, eligibility or frozen references."
+      ],
+      "check": "Focused failing report assertion, PostgreSQL source/report integration and nullable generated-client component checks",
+      "status": "proved",
+      "evidence": [
+        ".llm-output/usage-checkpoints/source-attribution/command-receipts.md: original red excerpt;26 affected Python tests passed, followed by5 final focused assertion cases;24 UI tests passed. Tool identifiers and scoped hashes retained.",
+        ".llm-output/usage-checkpoints/pre-review-final-gates/batch-final-web-tests.log:119 tests/7files passed on final generated schema and current components.",
+        ".llm-output/usage-checkpoints/source-attribution/command-receipts.md: final type-only None narrowing,5 focused tests and scoped mypy passed; updated report hash9cac28e42f6b7837577d5dfb6740a1644f068547062407886407a1eec79ac181."
+      ],
+      "limitation": "Browser owner journeys and storage snapshots predate this label-only correction; no corrected checkpoint-panel screenshot was recaptured. Actual four-source ancestry and JSON wire are proved by PostgreSQL; current nullable labels by component tests. The type-only None narrowing passed5 focused tests and final whole-source typing."
+    },
+    {
+      "invariant": "Checkpoint request fences admission atomically",
+      "cases": [
+        "Concurrent observers share one active checkpoint and existing root command/child admission is fenced.",
+        "Decision, plan and acceptance application check the run fence before and after artifact I/O; no database transaction spans provider work."
+      ],
+      "check": "Combined owner/monitor PostgreSQL tests and unchanged guarded application suites",
+      "status": "proved",
+      "evidence": [
+        ".llm-output/usage-checkpoints/run/owner-replay-auth.log: 6 combined actor/replay/concurrent observer/control cases passed.",
+        ".llm-output/usage-checkpoints/run/final-owned-focused.log: 19 passed.",
+        ".llm-output/usage-checkpoints/run/candidate-20261011.md: matching 67-case decision/plan/acceptance receipt a51158, exit 0; affected plan service pre-artifact cases 2/2."
+      ]
+    },
+    {
+      "invariant": "Paused means actual owned process/effect settlement",
+      "cases": [
+        "Requested/pausing remain fenced until gateway/process, launch, consumption and effect proof settles.",
+        "Corrupt or incomplete pending-decision proofs cannot count as quiescent.",
+        "Cooperative interrupted/cancelled authoring result under an active checkpoint pauses only after settlement."
+      ],
+      "check": "Run settlement, authoring combined boundaries and supervised child journeys",
+      "status": "proved",
+      "evidence": [
+        ".llm-output/usage-checkpoints/run/final-owned-focused.log: 19 passed, including test_task_usage_settlement.py.",
+        ".llm-output/usage-checkpoints/authoring/cooperative-all-focused.log: 23 passed.",
+        ".llm-output/usage-checkpoints/integration/process-final.log: separate API/worker/supervised child process journeys, 3 passed."
+      ]
+    },
+    {
+      "invariant": "Racing work is retained without implicit adoption",
+      "cases": [
+        "Settled pending decisions survive usage pause and dispatch after continuation without another provider or repair debit.",
+        "Valid successful authoring proposals racing usage request remain proposals and are not adopted.",
+        "Terminal final-only threshold crossing records the crossing and settlement without retroactive failure or false pause."
+      ],
+      "check": "Run pending-decision/terminal cases and both authoring-kind worker cases",
+      "status": "proved",
+      "evidence": [
+        ".llm-output/usage-checkpoints/run/final-owned-focused.log: 19 passed.",
+        ".llm-output/usage-checkpoints/authoring/cooperative-all-focused.log: 23 passed.",
+        ".llm-output/usage-checkpoints/authoring/cooperative-legacy-boundaries.log: 9 passed.",
+        ".llm-output/usage-checkpoints/integration/authoring-process-continue-2.log: final state proposed, report 70/45 and unchanged input revision."
+      ]
+    },
+    {
+      "invariant": "Owner commands are authenticated and replay bound",
+      "cases": [
+        "Actor, subject/project, checkpoint version and command key are bound; changed actor/payload and stale versions conflict.",
+        "Exact replay can return a causal receipt after later same-checkpoint actions; polling does not rewrite an uncertain retry body/key.",
+        "Authoring job/run changes cannot reuse a previous subject command state."
+      ],
+      "check": "PostgreSQL controls, API/CSRF cases and generated-client component interactions",
+      "status": "proved",
+      "evidence": [
+        ".llm-output/usage-checkpoints/run/owner-replay-auth.log: 6 passed.",
+        ".llm-output/usage-checkpoints/authoring/focused-final-6.log: both authoring-kind receipt/revision cases passed.",
+        ".llm-output/usage-checkpoints/integration/process-final.log: authenticated HTTP owner action, CSRF denial and idempotent replay.",
+        ".llm-output/usage-checkpoints/ui/lower-bound-repair.log: 7 files/110 passed including causal receipt and subject-reset tests; unchanged cases reused after localized quota repair."
+      ]
+    },
+    {
+      "invariant": "Continuation preserves reference, caps and accounting",
+      "cases": [
+        "Next threshold is above current measured complete/lower-bound usage; bypass changes monitoring only.",
+        "Set-policy retains explicit stored cap and run token budget; omitted caps remain optional.",
+        "Monitoring continuation adds no repair debit; a genuinely new provider attempt adds its normal debit.",
+        "The Windows scheduled casefolded path key is compared to the canonical admitted owned path; unrelated tampered paths still fail."
+      ],
+      "check": "Combined owner/debit/scope tests and real provider attempt assertions",
+      "status": "proved",
+      "evidence": [
+        ".llm-output/usage-checkpoints/run/final-owned-focused.log: 19 passed.",
+        ".llm-output/usage-checkpoints/run/debit-after-continuation.log: recovery unchanged debits, admitted child adds one normal attempt.",
+        ".llm-output/usage-checkpoints/run/primary-scope.log: canonical post-prepare admission accepted and tampered scope rejected.",
+        ".llm-output/usage-checkpoints/integration/delegated-exact-totals.log: 3 -> 4 normal attempts, repair debit 0, frozen digest unchanged.",
+        ".llm-output/usage-checkpoints/integration/authoring-process-continue-2.log: attempts 1 -> 2, preserved proposed output."
+      ]
+    },
+    {
+      "invariant": "Independent controls survive usage continuation",
+      "cases": [
+        "Manual pause/cancellation and stale authoring inputs remain independent conflicts.",
+        "Quota/cancellation/timeout classifications supersede a simultaneous authoring checkpoint as appropriate.",
+        "Usage bypass may be recorded during quota backoff; admission remains blocked until quota reset and actual new admission consumes one attempt.",
+        "Unknown cost/remaining quota stays unknown: delegated acceptance explicitly configures two uncertain attempts; production guards are unchanged."
+      ],
+      "check": "Coupled PostgreSQL authoring/run controls and production guard diagnostics",
+      "status": "proved",
+      "evidence": [
+        ".llm-output/usage-checkpoints/run/quota-continuation.log: bypass retained quota, pre-reset admission blocked, post-reset attempt +1 and repair 0.",
+        ".llm-output/usage-checkpoints/run/owner-replay-auth.log: manual/cancel and actor/CAS/replay cases passed.",
+        ".llm-output/usage-checkpoints/authoring/cooperative-boundaries.log: 12 passed; cooperative-all-focused.log 23 passed.",
+        ".llm-output/usage-checkpoints/integration/delegated-claim-guards-stopped.log: budget_fits=False with max_uncertain_attempts=1; delegated-exact-totals.log passed with explicit bounded fixture allowance 2."
+      ]
+    },
+    {
+      "invariant": "Restart and supported local recovery preserve evidence",
+      "cases": [
+        "Separate worker restart sweeps requested -> pausing -> paused from persisted observations.",
+        "Retained settled pending decision applies after usage continuation without a duplicate provider attempt.",
+        "Both authoring kinds retain conversation/proposals and independent adoption; unsupported in-flight resume is described as a settled retry."
+      ],
+      "check": "Seeded restart process case plus repository/worker state cases",
+      "status": "proved",
+      "evidence": [
+        ".llm-output/usage-checkpoints/integration/process-final.log: seeded restart case passes; explicitly not provider-trigger proof.",
+        ".llm-output/usage-checkpoints/run/final-owned-focused.log: pending-decision continuation/recovery passed.",
+        ".llm-output/usage-checkpoints/authoring/cooperative-legacy-boundaries.log: 9 passed; focused-final-6.log covers separate adoption/input revisions."
+      ]
+    },
+    {
+      "invariant": "Production assembly uses real roles and durable PostgreSQL",
+      "cases": [
+        "Actual separate API/worker and supervised provider child emit authoring 60/40, settle a checkpoint, accept owner Continue and produce 10/5 proposal.",
+        "Authenticated plan approval and actual worktree preparation precede delegated child 60/40 checkpoint and a second distinct 60/40 attempt after owner Continue.",
+        "Observation-capable wrappers preserve binding through actual composition; ordinary legacy execute remains usable."
+      ],
+      "check": "Real process scenarios replace seeded-only trigger evidence",
+      "status": "proved",
+      "evidence": [
+        ".llm-output/usage-checkpoints/integration/process-final.log: 3 passed in 55.41s.",
+        ".llm-output/usage-checkpoints/integration/authoring-process-continue-2.log: 1 passed in 13.55s.",
+        ".llm-output/usage-checkpoints/integration/delegated-exact-totals.log: 1 passed in 34.19s.",
+        ".llm-output/usage-checkpoints/integration/pinned-wrapper-final.log: 8 passed."
+      ]
+    },
+    {
+      "invariant": "Migration and source compatibility",
+      "cases": [
+        "Migration0040 adds durable admission/checkpoint and nullable metadata evidence; legacy null metadata stays unknown.",
+        "Disposable upgrade/downgrade mechanics and existing usage repository reads remain compatible.",
+        "Python source typing/style and regenerated OpenAPI/client parity are checked separately from behavioral tests."
+      ],
+      "check": "PostgreSQL migration/projection tests and stable static receipts",
+      "status": "proved",
+      "evidence": [
+        ".llm-output/usage-checkpoints/integration/final-projection-pg.log: 33 passed, including migration tests.",
+        ".llm-output/usage-checkpoints/backend-final-mypy-2.log: 564 source files, no issues, exit 0.",
+        ".llm-output/usage-checkpoints/backend-final-ruff-2.log: all source style passed, exit 0.",
+        ".llm-output/usage-checkpoints/backend-final-stable-inputs.json: candidate-specific source hashes; only two static repairs changed the earlier source snapshot.",
+        ".llm-output/usage-checkpoints/pre-review-final-gates/batch-final-backend-receipt.json: full final source types, repository Python style and live OpenAPI parity passed on matching hashed inputs."
+      ]
+    },
+    {
+      "invariant": "Generated-client reporting and safe direct controls",
+      "status": "proved",
+      "cases": [
+        "Historical project/provider/model/effort/task filters, pooled versus comparable/manual references and unknown context are displayed honestly in component contracts.",
+        "Both run and authoring Next support safe known lower-bound sums without filling an unknown dimension with zero.",
+        "Relevant quota waits are warnings while recording monitoring continuation; unrelated global quota rows do not disable ordinary runs.",
+        "Every copied optional manual estimate/token cap/context cap is null/omitted or a safe nonnegative integer. Unsafe browser values cannot save a rounded policy revision and eligible Next/bypass/Stop remain available.",
+        "Safe, zero and null retained values are copied exactly; uncertain retries and subject resets retain their earlier contracts."
+      ],
+      "check": "Affected component tests plus final generated-schema/static/build checks",
+      "evidence": [
+        ".llm-output/usage-checkpoints/ui/lower-bound-repair.log: 7 files/110 passed; unchanged component inputs reused.",
+        ".llm-output/usage-checkpoints/ui/quota-focused-tests.log: 2 files/17 passed.",
+        ".llm-output/usage-checkpoints/ui/retained-integers-focused-tests.log: 3 files/32 passed, exit 0. Raw red six cases fail with the new safe-copy helper disabled to reproduce old behavior; this is a regression mutation, not a claim of an unmodified-HEAD run.",
+        ".llm-output/usage-checkpoints/ui/retained-integers-source-hashes.txt: earlier primary verification; root message repair changed the two panels later.",
+        ".llm-output/usage-checkpoints/web-final-receipt.json: full web typecheck/lint/build exit 0; earlier passing static receipt; final stable generated inputs require the forthcoming batch-final gates.",
+        ".llm-output/usage-checkpoints/recovery-path-green.log: 3 files/32 passed after both recovery messages name the mounted POST /api/projects/{project_id}/monitoring-policy endpoint; helper semantics unchanged.",
+        ".llm-output/usage-checkpoints/plan-panel-green.log: 2 files/22 passed; nullable run budget renders Unbounded, zero/configured caps retained.",
+        ".llm-output/usage-checkpoints/pre-review-final-gates/batch-final-web-receipt.json: final seven affected component suites, generated client parity, full web typing/style/production build passed on matching hashed source and schema inputs."
+      ]
+    },
+    {
+      "invariant": "Authenticated browser and owner editor storage round trips",
+      "cases": [
+        "Actual browser Continue: original authoring paused60/40 -> proposed70/45 without adoption; delegated run paused62/42 -> generation2 paused122/82 through a real second child attempt.",
+        "Project monitoring revision2 cap5000/manual20 -> revision3 capNULL/manual25 -> revision4 cap5000/manual25 -> revision5 warning1.6; frozen original run/job references stay revision2/manual20.",
+        "Append profile version2 without numeric caps, version3 Primary input5000/outputNULL; select version3 for future work, retaining historical run version1.",
+        "Create a normal epic without numeric allowances and start a new authoring job admitted under policy5/manual25; Continue retains its unadopted70/45 proposal.",
+        "Apply real project/task-kind/provider/model/effort history filters; exact brainstorm route reports two incomplete live-only jobs as exclusions with unknown statistics."
+      ],
+      "check": "Held integration browser fixture, direct CUA actions and before/after persisted snapshots",
+      "status": "proved",
+      "limitation": "Only one actual project in the browser fixture. Existing accessible-project service filtering and authenticated route contracts are separate evidence, not an actual multi-project owner/browser journey. Advanced epic execution-cap editor browser round trip remains unproved; a normal draft was not turned into an execution merely to expose that editor. Fixture maintenance restart preserves identical storage, but does not prove foreign-host product recovery.",
+      "evidence": [
+        ".llm-output/usage-checkpoints/browser-cua-actions.json: primary direct CUA owner-action witness; not an automated test receipt.",
+        ".llm-output/usage-checkpoints/integration/browser-final-storage.json: persisted policy history, jobs, checkpoints, distinct sources, admissions, frozen references and current project/profile selection.",
+        ".llm-output/usage-checkpoints/integration/browser-readonly-final.json: current-source read-only browser/API assertions, exact filtered 0 eligible/2 excluded/incomplete_usage2.",
+        ".llm-output/usage-checkpoints/integration/evidence.md: fixture process/database teardown and verified retained dump; source-attribution screenshot correction is pending."
+      ]
+    },
+    {
+      "invariant": "Remaining complete assembly combinations",
+      "cases": [
+        "Checkpoint-specific uncertain foreign-host restart while resuming; simultaneous manual cancellation across two worker hosts; noncooperative external process/effect delays.",
+        "No-policy HTTP reporting and all learned/manual/unavailable-reference x streaming/final-only x explicit/absent-cap process combinations.",
+        "Actual cross-project owner/browser filtering against multiple stored projects and the advanced epic execution-cap editor journey."
+      ],
+      "check": "Additional explicitly bounded process scenarios under #106",
+      "status": "unproved",
+      "limitation": "Existing focused tests prove individual and named combined cases only. These remaining combinations are unproved, so #94/#106 remain open."
+    },
+    {
+      "invariant": "Live and full browser-number boundaries",
+      "cases": [
+        "Paid/live provider/native-client network conformance and pricing; complete signed64 browser integer round trip."
+      ],
+      "check": "Separate authorization for live work; exact integer browser/client support remains outside this batch",
+      "status": "unproved",
+      "limitation": "No live provider work authorized. Browser JSON Number values above MAX_SAFE_INTEGER cannot round trip exactly; unsafe monitoring writes are rejected and exact API/client recovery is required. Historical cancellation/deadline/noncooperative combinations remain unproved unless named above."
+    },
+    {
+      "invariant": "Migration data rollback with active production rows",
+      "cases": [
+        "Downgrade preservation of live checkpoint/admission/metadata rows."
+      ],
+      "check": "Recoverable backup and deployed schema compatibility assessment",
+      "status": "unproved",
+      "limitation": "Disposable migration mechanics do not prove active-row data preservation. Guide describes report_only owner rollback and explicit compatibility/data-backup requirements."
+    },
+    {
+      "invariant": "Model evidence completeness around SDK control events",
+      "cases": [
+        "Model -> tool response -> model",
+        "Empty/error/timeout/control-only streams versus explicit reported zero",
+        "Missing/partial dimensions across actual model turns"
+      ],
+      "check": "UM-R1; SDK-shaped ADK runtime and gateway regression tests",
+      "status": "proved",
+      "limits": "Providerless SDK event/Runner execution; no live provider or unrelated adapter audit.",
+      "evidence": [
+        ".llm-output/usage-checkpoints/accounting-repair/coverage.json and raw red/focused/affected-final logs: two expected reds, five focused greens,100 runtime/gateway regressions; installed SDK Event roles and offline Runner tool cycle.",
+        ".llm-output/usage-checkpoints/accounting-repair/candidate-hashes.json: all four relevant file hashes match; final scoped mypy/ruff/format exit0 inspected."
+      ]
+    },
+    {
+      "invariant": "Effective policy provenance after override and frozen absence",
+      "cases": [
+        "Run and both authoring successor generations after owner set_policy",
+        "No-policy run admission followed by project policy creation",
+        "Original baseline digest/caps and causal replay stay frozen"
+      ],
+      "check": "UM-R2; PostgreSQL report/evaluation/generation tests",
+      "status": "proved",
+      "limits": "Generation3 checked through shared checkpoint repository; authoring flow checked through generation2. Legacy missing-admission lookup remains explicit.",
+      "evidence": [
+        ".llm-output/usage-checkpoints/pre-live-lifecycle/repair-lifecycle-affected-final.log:54 passed on matching checkpoint repository, run control and route inputs.",
+        ".llm-output/usage-checkpoints/pre-live-lifecycle/repair-lifecycle-evidence.md: repository generations2/3 retain effective revision2 and thresholds while baseline revision1/digest stay frozen; both authoring generation2 paths; actual no-policy admission report remains absent after newer policy."
+      ]
+    },
+    {
+      "invariant": "Recoverable stale monitoring policy edits",
+      "cases": [
+        "Actual run/brainstorm/decomposition stale CAS returns409",
+        "Two consecutive edits and external policy changes in both panels",
+        "Definite conflicts restore controls; truly uncertain request identity remains exact"
+      ],
+      "check": "UM-R3; authenticated route and component tests",
+      "status": "proved",
+      "limits": "Service CAS and route translation are layered checks. Repaired multi-edit/409/uncertain request behavior is proved by component tests; an actual two-tab browser timing race was not exercised.",
+      "evidence": [
+        ".llm-output/usage-checkpoints/repair-lifecycle-green-api.log: three authenticated route translation cases return409; actual PostgreSQL stale policy CAS assertions pass separately in run/brainstorm/decomposition service tests.",
+        ".llm-output/usage-checkpoints/ui-policy-repair/command-receipts.json and candidate-hashes.json: real Gemini Flash TDD and40 affected component tests; subsequent primary final127 web tests plus typing/style/build pass on matching inputs."
+      ]
+    },
+    {
+      "invariant": "Authoring observation replay and terminal-cause precedence",
+      "cases": [
+        "Committed observation before evaluation then timeout/restart",
+        "Recorded timeout/expired invocation/cancellation versus monitoring-only interruption",
+        "Live/unsettled and final-only completed crossings; replay, generation override and bypass"
+      ],
+      "check": "UM-R4/UM-R5 consolidated production-worker recovery tests",
+      "status": "proved",
+      "limits": "Injected post-commit sink failure is a PostgreSQL production-worker fixture; the separate OS-process journey uses normal observation delivery. Known quota reset combined with a foreign-host live process during crash recovery remains unproved; no reset or process settlement is inferred from absent evidence.",
+      "evidence": [
+        ".llm-output/usage-checkpoints/repair-live-authoring-suite.log and its recovered native numeric-exit receipt:47 passed on final source/test hashes, covering both kinds' terminal recovery, independent timeout/cancellation/quota and owner continuation.",
+        ".llm-output/usage-checkpoints/repair-live-focused-final.log:14 passed; both kinds commit then miss evaluation while provider remains live, reach requested/pausing with unsettled proof, and pause only after lifecycle settlement. Terminal live/final-only replay is idempotent; successful proposal is retained.",
+        ".llm-output/usage-checkpoints/repair-live-process-authoring.log: final production separate-process authoring checkpoint/continuation,1 passed; original run/delegated process inputs unchanged.",
+        ".llm-output/usage-checkpoints/native-repair-command-receipts.json: original missing-checkpoint red and intermediate requested/pausing ordering failure recovered with actual exit1; final greens have actual numeric exit0."
+      ]
+    }
+  ],
+  "checks": [
+    {
+      "scope": "Real separate-process source journeys",
+      "command": "uv run --frozen --extra dev python -m pytest tests/acceptance/test_task_usage_monitoring_process.py -q",
+      "result": {
+        "exit_code": 0,
+        "tests_passed": 3,
+        "elapsed_seconds": 55.41
+      },
+      "receipt": ".llm-output/usage-checkpoints/integration/process-final.log",
+      "limits": "Delegated exact assertions strengthened later; authoring/seeded inputs unchanged."
+    },
+    {
+      "scope": "Delegated exact totals and debits",
+      "command": "uv run --frozen --extra dev python -m pytest tests/acceptance/test_task_usage_monitoring_process.py::test_supervised_delegated_observation_requests_checkpoint_across_processes -q",
+      "result": {
+        "exit_code": 0,
+        "tests_passed": 1,
+        "elapsed_seconds": 34.19
+      },
+      "receipt": ".llm-output/usage-checkpoints/integration/delegated-exact-totals.log",
+      "limits": "Isolated delegated process case with strengthened exact independent assertions."
+    },
+    {
+      "scope": "Authoring cooperative repair",
+      "command": "python -m pytest apps/orchestrator/tests/epic_brainstorm/test_usage_checkpoints.py apps/orchestrator/tests/epic_decomposition/test_usage_checkpoints.py -q",
+      "result": {
+        "exit_code": 0,
+        "tests_passed": 23,
+        "elapsed_seconds": 75.03
+      },
+      "receipt": ".llm-output/usage-checkpoints/authoring/cooperative-all-focused.log",
+      "candidate_inputs": ".llm-output/usage-checkpoints/authoring-cooperative-inputs.json"
+    },
+    {
+      "scope": "Authoring legacy combined boundaries",
+      "command": ".venv/Scripts/python.exe -m pytest apps/orchestrator/tests/epic_brainstorm/test_brainstorm_worker.py -q -k 'restart_reconciles_only_confirmed_gone_physical_peer or cancel_active_supervised_peer_reaps_before_settlement or confirmed_exhaustion_blocks_pool_before_process_settles or duration_expiry_revokes_tools_launch_and_preserves_timeout or predeadline_stop_keeps_interrupted_cause_across_expiry_and_recovery'",
+      "result": {
+        "exit_code": 0,
+        "tests_passed": 9,
+        "elapsed_seconds": 39.32
+      },
+      "receipt": ".llm-output/usage-checkpoints/authoring/cooperative-legacy-boundaries.log"
+    },
+    {
+      "scope": "Run final monitor/control/settlement repair",
+      "command": "python -m pytest apps/orchestrator/tests/application/test_task_usage_monitor.py apps/orchestrator/tests/worker/test_task_usage_monitor.py apps/orchestrator/tests/persistence/test_task_usage_settlement.py -q",
+      "result": {
+        "exit_code": 0,
+        "tests_passed": 19,
+        "elapsed_seconds": 51.73
+      },
+      "receipt": ".llm-output/usage-checkpoints/run/final-owned-focused.log",
+      "candidate_inputs": ".llm-output/usage-checkpoints/run/scoped-inputs.sha256"
+    },
+    {
+      "scope": "Run metadata final projection",
+      "command": "See run/final-model-hash.log for the five final-source dimension cases",
+      "result": {
+        "exit_code": 0,
+        "tests_passed": 5,
+        "elapsed_seconds": 14.21
+      },
+      "receipt": ".llm-output/usage-checkpoints/run/final-model-hash.log",
+      "candidate_inputs": ".llm-output/usage-checkpoints/run/scoped-inputs.sha256"
+    },
+    {
+      "scope": "ADK completeness including missing/cache-only parent",
+      "command": "uv run --frozen --extra dev python -m pytest apps/orchestrator/tests/agents/test_adk_runtime_budget.py apps/orchestrator/tests/agents/test_adk_gateway.py -q",
+      "result": {
+        "exit_code": 0,
+        "tests_passed": 94,
+        "elapsed_seconds": 3.13
+      },
+      "receipt": ".llm-output/usage-checkpoints/integration/adk-metadata-final.log"
+    },
+    {
+      "scope": "PostgreSQL observations, finals, migration and monitor",
+      "command": "uv run --frozen --extra dev python -m pytest apps/orchestrator/tests/persistence/test_task_usage_observations.py apps/orchestrator/tests/persistence/test_usage_repository.py apps/orchestrator/tests/task_usage_contract/test_migration.py apps/orchestrator/tests/application/test_task_usage_monitor.py -q",
+      "result": {
+        "exit_code": 0,
+        "tests_passed": 33,
+        "elapsed_seconds": 69.78
+      },
+      "receipt": ".llm-output/usage-checkpoints/integration/final-projection-pg.log"
+    },
+    {
+      "scope": "Observation binding through pinned gateway",
+      "command": "uv run --frozen --extra dev python -m pytest apps/orchestrator/tests/agents/test_runtime_factory.py -q",
+      "result": {
+        "exit_code": 0,
+        "tests_passed": 8,
+        "elapsed_seconds": 1.43
+      },
+      "receipt": ".llm-output/usage-checkpoints/integration/pinned-wrapper-final.log"
+    },
+    {
+      "scope": "Stable full Python source types",
+      "command": "rtk proxy .venv/Scripts/python.exe -m mypy",
+      "result": {
+        "exit_code": 0,
+        "source_files_checked": 564
+      },
+      "receipt": ".llm-output/usage-checkpoints/backend-final-mypy-2.log",
+      "candidate_inputs": ".llm-output/usage-checkpoints/backend-final-stable-inputs.json",
+      "limits": "Earlier passing input snapshot; final stable batch gates will supersede relevant static or changed component inputs."
+    },
+    {
+      "scope": "Stable full Python source style",
+      "command": "rtk proxy .venv/Scripts/python.exe -m ruff check apps/orchestrator/src",
+      "result": {
+        "exit_code": 0
+      },
+      "receipt": ".llm-output/usage-checkpoints/backend-final-ruff-2.log",
+      "candidate_inputs": ".llm-output/usage-checkpoints/backend-final-stable-inputs.json",
+      "limits": "Earlier passing input snapshot; final stable batch gates will supersede relevant static or changed component inputs."
+    },
+    {
+      "scope": "UI lower-bound/replay/reporting contracts before localized quota/integer repairs",
+      "command": "npm run test:web -- --run (seven affected component files listed in ui/lower-bound-repair.log)",
+      "result": {
+        "exit_code": 0,
+        "test_files_passed": 7,
+        "tests_passed": 110
+      },
+      "receipt": ".llm-output/usage-checkpoints/ui/lower-bound-repair.log",
+      "limits": "Reused for unchanged behavior only; later quota, safe integer, recovery-path and source-label checks supersede affected panels."
+    },
+    {
+      "scope": "UI quota warning and command eligibility repair",
+      "command": "npm run test:web -- --run src/components/subscription-tasks/run-usage-checkpoint.test.tsx src/components/subscription-tasks/task-inspector.test.tsx",
+      "result": {
+        "exit_code": 0,
+        "test_files_passed": 2,
+        "tests_passed": 17
+      },
+      "receipt": ".llm-output/usage-checkpoints/ui/quota-focused-tests.log",
+      "candidate_inputs": ".llm-output/usage-checkpoints/ui/quota-source-hashes.txt",
+      "limits": "Red receipt is a written summary of reproduced old predicates, not raw complete runner output. Green runner output and exit status are retained."
+    },
+    {
+      "scope": "Final web typecheck",
+      "command": "rtk proxy npm run typecheck:web",
+      "result": {
+        "exit_code": 0
+      },
+      "receipt": ".llm-output/usage-checkpoints/web-final-typecheck.log",
+      "candidate_inputs": ".llm-output/usage-checkpoints/web-final-inputs.json",
+      "limits": "Earlier passing input snapshot; final stable batch gates will supersede relevant static or changed component inputs."
+    },
+    {
+      "scope": "Final web lint",
+      "command": "rtk proxy npm run lint:web",
+      "result": {
+        "exit_code": 0
+      },
+      "receipt": ".llm-output/usage-checkpoints/web-final-lint.log",
+      "candidate_inputs": ".llm-output/usage-checkpoints/web-final-inputs.json",
+      "limits": "Earlier passing input snapshot; final stable batch gates will supersede relevant static or changed component inputs."
+    },
+    {
+      "scope": "Final web build",
+      "command": "rtk proxy npm run build:web",
+      "result": {
+        "exit_code": 0
+      },
+      "receipt": ".llm-output/usage-checkpoints/web-final-build.log",
+      "candidate_inputs": ".llm-output/usage-checkpoints/web-final-inputs.json",
+      "limits": "Earlier passing input snapshot; final stable batch gates will supersede relevant static or changed component inputs."
+    },
+    {
+      "scope": "Final retained-policy integer/replay/quota UI cases",
+      "command": "npm run test:web -- --run src/components/subscription-tasks/run-usage-checkpoint.test.tsx src/components/epics/authoring-usage-checkpoint.test.tsx src/components/subscription-tasks/task-inspector.test.tsx",
+      "result": {
+        "exit_code": 0,
+        "test_files_passed": 3,
+        "tests_passed": 32
+      },
+      "receipt": ".llm-output/usage-checkpoints/ui/retained-integers-focused-tests.log",
+      "candidate_inputs": ".llm-output/usage-checkpoints/ui/retained-integers-source-hashes.txt",
+      "limits": "Earlier passing input snapshot; final stable batch gates will supersede relevant static or changed component inputs."
+    },
+    {
+      "scope": "Final repository source/test/script style",
+      "command": "rtk proxy .venv/Scripts/python.exe -m ruff check apps/orchestrator/src apps/orchestrator/tests tests scripts",
+      "result": {
+        "exit_code": 0
+      },
+      "receipt": ".llm-output/usage-checkpoints/full-ruff-final-2.log",
+      "limits": "Earlier passing input snapshot; final stable batch gates will supersede relevant static or changed component inputs."
+    },
+    {
+      "scope": "Live API to exported OpenAPI parity",
+      "command": "rtk proxy .venv/Scripts/python.exe scripts/export-openapi.py",
+      "result": {
+        "exit_code": 0
+      },
+      "receipt": ".llm-output/usage-checkpoints/live-openapi-final-check-2.log"
+    },
+    {
+      "scope": "Exported OpenAPI to client type parity",
+      "command": "rtk proxy npm run api:check",
+      "result": {
+        "exit_code": 0
+      },
+      "receipt": ".llm-output/usage-checkpoints/api-final-check-2.log"
+    },
+    {
+      "scope": "Typed live-only historical route and metadata fixture repair",
+      "command": "uv run --frozen --extra dev python -m pytest apps/orchestrator/tests/persistence/test_task_usage_baselines.py apps/orchestrator/tests/api/test_projections.py -q --tb=short",
+      "result": {
+        "exit_code": 0,
+        "tests_passed": 50,
+        "elapsed_seconds": 186.73
+      },
+      "receipt": ".llm-output/usage-checkpoints/integration/baseline-final.log",
+      "limits": "Focused route red failed first; 12 earlier broader synthetic fixtures lacked explicit completeness flags and were repaired only where measured counters were deliberately asserted. Legacy absent flags remain unknown. Source-attribution changes require their own affected validation."
+    },
+    {
+      "scope": "ADK helper explicit completeness regression",
+      "command": "uv run --frozen --extra dev python -m pytest apps/orchestrator/tests/agents/test_adk_gateway.py -q",
+      "result": {
+        "exit_code": 0,
+        "tests_passed": 76
+      },
+      "receipt": ".llm-output/usage-checkpoints/integration/adk-helper-final.log"
+    },
+    {
+      "scope": "Optional run budget display and checkpoint panel regression",
+      "command": "npm run test:web -- --run src/components/runs/plan-panel.test.tsx src/components/subscription-tasks/run-usage-checkpoint.test.tsx",
+      "result": {
+        "exit_code": 0,
+        "test_files_passed": 2,
+        "tests_passed": 22
+      },
+      "receipt": ".llm-output/usage-checkpoints/plan-panel-green.log"
+    },
+    {
+      "scope": "Mounted exact integer recovery endpoint and checkpoint regression",
+      "command": "npm run test:web -- --run src/components/epics/authoring-usage-checkpoint.test.tsx src/components/subscription-tasks/run-usage-checkpoint.test.tsx src/components/subscription-tasks/task-inspector.test.tsx",
+      "result": {
+        "exit_code": 0,
+        "test_files_passed": 3,
+        "tests_passed": 32
+      },
+      "receipt": ".llm-output/usage-checkpoints/recovery-path-green.log"
+    },
+    {
+      "scope": "Actual repaired browser read-only API/render check",
+      "command": "node tests/acceptance/task_usage_monitoring_browser.mjs against held disposable production-composition fixture",
+      "result": {
+        "exit_code": 0,
+        "filtered_eligible": 0,
+        "filtered_excluded": 2,
+        "incomplete_usage": 2
+      },
+      "receipt": ".llm-output/usage-checkpoints/integration/browser-readonly-final.json",
+      "limits": "Primary performed owner actions through CUA; this driver reads the retained result without duplicating owner mutations."
+    },
+    {
+      "scope": "Durable source ancestry query/report/wire",
+      "command": ".venv/Scripts/python.exe -m pytest apps/orchestrator/tests/task_usage_contract/test_report_builder.py apps/orchestrator/tests/persistence/test_task_usage_observations.py -q",
+      "result": {
+        "exit_code": 0,
+        "tests_passed": 26,
+        "elapsed_seconds": 53.35
+      },
+      "receipt": ".llm-output/usage-checkpoints/source-attribution/command-receipts.md",
+      "limits": "Final type-only None narrowing preserves behavior;5 focused cases and final whole-source mypy passed on the updated candidate. Earlier26-case source suite remains matching unchanged assertions outside that typed branch."
+    },
+    {
+      "scope": "Final source ancestry order/null-wire assertions",
+      "command": ".venv/Scripts/python.exe -m pytest apps/orchestrator/tests/task_usage_contract/test_report_builder.py apps/orchestrator/tests/persistence/test_task_usage_observations.py::test_run_report_uses_durable_task_ancestry_without_changing_totals -q",
+      "result": {
+        "exit_code": 0,
+        "tests_passed": 5,
+        "elapsed_seconds": 4.0
+      },
+      "receipt": ".llm-output/usage-checkpoints/source-attribution/command-receipts.md"
+    },
+    {
+      "scope": "Type-only nullable ancestry repair",
+      "command": ".venv/Scripts/python.exe -m pytest apps/orchestrator/tests/task_usage_contract/test_report_builder.py apps/orchestrator/tests/persistence/test_task_usage_observations.py::test_run_report_uses_durable_task_ancestry_without_changing_totals -q",
+      "result": {
+        "exit_code": 0,
+        "tests_passed": 5
+      },
+      "receipt": ".llm-output/usage-checkpoints/source-attribution/command-receipts.md",
+      "limits": "Original full mypy failure retained in batch-final-python-types-nullable-red.log; current full source typing passes."
+    },
+    {
+      "scope": "Pre-review stable batch python-types",
+      "command": "C:\\Users\\sdyer\\AppData\\Local\\Microsoft\\WinGet\\Packages\\rtk-ai.rtk_Microsoft.Winget.Source_8wekyb3d8bbwe\\rtk.EXE proxy C:\\Users\\sdyer\\.codex\\worktrees\\usage-checkpoint-continuation\\parallel-forge\\.venv\\Scripts\\python.exe -m mypy",
+      "result": {
+        "exit_code": 0,
+        "elapsed_seconds": 1.669408,
+        "source_files_checked": 568
+      },
+      "receipt": ".llm-output/usage-checkpoints/pre-review-final-gates/batch-final-python-types.log",
+      "candidate_inputs": ".llm-output/usage-checkpoints/pre-review-final-gates/batch-final-backend-receipt.json",
+      "limits": "Passing pre-review input snapshot. Post-review repairs require affected checks on the new candidate; unchanged evidence remains reusable."
+    },
+    {
+      "scope": "Pre-review stable batch python-style",
+      "command": "C:\\Users\\sdyer\\AppData\\Local\\Microsoft\\WinGet\\Packages\\rtk-ai.rtk_Microsoft.Winget.Source_8wekyb3d8bbwe\\rtk.EXE proxy C:\\Users\\sdyer\\.codex\\worktrees\\usage-checkpoint-continuation\\parallel-forge\\.venv\\Scripts\\python.exe -m ruff check apps/orchestrator/src apps/orchestrator/tests tests scripts",
+      "result": {
+        "exit_code": 0,
+        "elapsed_seconds": 0.208167
+      },
+      "receipt": ".llm-output/usage-checkpoints/pre-review-final-gates/batch-final-python-style.log",
+      "candidate_inputs": ".llm-output/usage-checkpoints/pre-review-final-gates/batch-final-backend-receipt.json",
+      "limits": "Passing pre-review input snapshot. Post-review repairs require affected checks on the new candidate; unchanged evidence remains reusable."
+    },
+    {
+      "scope": "Pre-review stable batch live-openapi",
+      "command": "C:\\Users\\sdyer\\AppData\\Local\\Microsoft\\WinGet\\Packages\\rtk-ai.rtk_Microsoft.Winget.Source_8wekyb3d8bbwe\\rtk.EXE proxy C:\\Users\\sdyer\\.codex\\worktrees\\usage-checkpoint-continuation\\parallel-forge\\.venv\\Scripts\\python.exe scripts/export-openapi.py",
+      "result": {
+        "exit_code": 0,
+        "elapsed_seconds": 3.089632
+      },
+      "receipt": ".llm-output/usage-checkpoints/pre-review-final-gates/batch-final-live-openapi.log",
+      "candidate_inputs": ".llm-output/usage-checkpoints/pre-review-final-gates/batch-final-backend-receipt.json",
+      "limits": "Passing pre-review input snapshot. Post-review repairs require affected checks on the new candidate; unchanged evidence remains reusable."
+    },
+    {
+      "scope": "Pre-review stable batch web-tests",
+      "command": "C:\\Users\\sdyer\\AppData\\Local\\Microsoft\\WinGet\\Packages\\rtk-ai.rtk_Microsoft.Winget.Source_8wekyb3d8bbwe\\rtk.EXE proxy npm run test:web -- --run src/components/task-usage/historical-usage-report.test.tsx src/components/epics/authoring-usage-checkpoint.test.tsx src/components/epics/authoring-workspace.test.tsx src/components/epics/decomposition-workspace.test.tsx src/components/subscription-tasks/run-usage-checkpoint.test.tsx src/components/subscription-tasks/task-inspector.test.tsx src/components/runs/plan-panel.test.tsx",
+      "result": {
+        "exit_code": 0,
+        "elapsed_seconds": 21.457919,
+        "tests_passed": 119,
+        "test_files_passed": 7
+      },
+      "receipt": ".llm-output/usage-checkpoints/pre-review-final-gates/batch-final-web-tests.log",
+      "candidate_inputs": ".llm-output/usage-checkpoints/pre-review-final-gates/batch-final-web-receipt.json",
+      "limits": "Passing pre-review input snapshot. Post-review repairs require affected checks on the new candidate; unchanged evidence remains reusable."
+    },
+    {
+      "scope": "Pre-review stable batch api-types",
+      "command": "C:\\Users\\sdyer\\AppData\\Local\\Microsoft\\WinGet\\Packages\\rtk-ai.rtk_Microsoft.Winget.Source_8wekyb3d8bbwe\\rtk.EXE proxy npm run api:check",
+      "result": {
+        "exit_code": 0,
+        "elapsed_seconds": 1.706217
+      },
+      "receipt": ".llm-output/usage-checkpoints/pre-review-final-gates/batch-final-api-types.log",
+      "candidate_inputs": ".llm-output/usage-checkpoints/pre-review-final-gates/batch-final-web-receipt.json",
+      "limits": "Passing pre-review input snapshot. Post-review repairs require affected checks on the new candidate; unchanged evidence remains reusable."
+    },
+    {
+      "scope": "Pre-review stable batch web-types",
+      "command": "C:\\Users\\sdyer\\AppData\\Local\\Microsoft\\WinGet\\Packages\\rtk-ai.rtk_Microsoft.Winget.Source_8wekyb3d8bbwe\\rtk.EXE proxy npm run typecheck:web",
+      "result": {
+        "exit_code": 0,
+        "elapsed_seconds": 1.159338
+      },
+      "receipt": ".llm-output/usage-checkpoints/pre-review-final-gates/batch-final-web-types.log",
+      "candidate_inputs": ".llm-output/usage-checkpoints/pre-review-final-gates/batch-final-web-receipt.json",
+      "limits": "Passing pre-review input snapshot. Post-review repairs require affected checks on the new candidate; unchanged evidence remains reusable."
+    },
+    {
+      "scope": "Pre-review stable batch web-style",
+      "command": "C:\\Users\\sdyer\\AppData\\Local\\Microsoft\\WinGet\\Packages\\rtk-ai.rtk_Microsoft.Winget.Source_8wekyb3d8bbwe\\rtk.EXE proxy npm run lint:web",
+      "result": {
+        "exit_code": 0,
+        "elapsed_seconds": 16.250974
+      },
+      "receipt": ".llm-output/usage-checkpoints/pre-review-final-gates/batch-final-web-style.log",
+      "candidate_inputs": ".llm-output/usage-checkpoints/pre-review-final-gates/batch-final-web-receipt.json",
+      "limits": "Passing pre-review input snapshot. Post-review repairs require affected checks on the new candidate; unchanged evidence remains reusable."
+    },
+    {
+      "scope": "Pre-review stable batch web-build",
+      "command": "C:\\Users\\sdyer\\AppData\\Local\\Microsoft\\WinGet\\Packages\\rtk-ai.rtk_Microsoft.Winget.Source_8wekyb3d8bbwe\\rtk.EXE proxy npm run build:web",
+      "result": {
+        "exit_code": 0,
+        "elapsed_seconds": 29.88268
+      },
+      "receipt": ".llm-output/usage-checkpoints/pre-review-final-gates/batch-final-web-build.log",
+      "candidate_inputs": ".llm-output/usage-checkpoints/pre-review-final-gates/batch-final-web-receipt.json",
+      "limits": "Passing pre-review input snapshot. Post-review repairs require affected checks on the new candidate; unchanged evidence remains reusable."
+    },
+    {
+      "scope": "Final repaired batch python-types",
+      "command": "C:\\Users\\sdyer\\AppData\\Local\\Microsoft\\WinGet\\Packages\\rtk-ai.rtk_Microsoft.Winget.Source_8wekyb3d8bbwe\\rtk.EXE proxy C:\\Users\\sdyer\\.codex\\worktrees\\usage-checkpoint-continuation\\parallel-forge\\.venv\\Scripts\\python.exe -m mypy",
+      "result": {
+        "exit_code": 0,
+        "elapsed_seconds": 2.0444,
+        "source_files_checked": 568
+      },
+      "receipt": ".llm-output/usage-checkpoints/batch-final-python-types.log",
+      "candidate_inputs": ".llm-output/usage-checkpoints/batch-final-backend-receipt.json",
+      "limits": "Actual command receipt and complete relevant source inputs match the final candidate. Counts overlap."
+    },
+    {
+      "scope": "Final repaired batch python-style",
+      "command": "C:\\Users\\sdyer\\AppData\\Local\\Microsoft\\WinGet\\Packages\\rtk-ai.rtk_Microsoft.Winget.Source_8wekyb3d8bbwe\\rtk.EXE proxy C:\\Users\\sdyer\\.codex\\worktrees\\usage-checkpoint-continuation\\parallel-forge\\.venv\\Scripts\\python.exe -m ruff check apps/orchestrator/src apps/orchestrator/tests tests scripts",
+      "result": {
+        "exit_code": 0,
+        "elapsed_seconds": 0.181528
+      },
+      "receipt": ".llm-output/usage-checkpoints/batch-final-python-style.log",
+      "candidate_inputs": ".llm-output/usage-checkpoints/batch-final-backend-receipt.json",
+      "limits": "Actual command receipt and complete relevant source inputs match the final candidate. Counts overlap."
+    },
+    {
+      "scope": "Final repaired batch live-openapi",
+      "command": "C:\\Users\\sdyer\\AppData\\Local\\Microsoft\\WinGet\\Packages\\rtk-ai.rtk_Microsoft.Winget.Source_8wekyb3d8bbwe\\rtk.EXE proxy C:\\Users\\sdyer\\.codex\\worktrees\\usage-checkpoint-continuation\\parallel-forge\\.venv\\Scripts\\python.exe scripts/export-openapi.py",
+      "result": {
+        "exit_code": 0,
+        "elapsed_seconds": 3.193504
+      },
+      "receipt": ".llm-output/usage-checkpoints/batch-final-live-openapi.log",
+      "candidate_inputs": ".llm-output/usage-checkpoints/batch-final-backend-receipt.json",
+      "limits": "Actual command receipt and complete relevant source inputs match the final candidate. Counts overlap."
+    },
+    {
+      "scope": "Final repaired batch web-tests",
+      "command": "C:\\Users\\sdyer\\AppData\\Local\\Microsoft\\WinGet\\Packages\\rtk-ai.rtk_Microsoft.Winget.Source_8wekyb3d8bbwe\\rtk.EXE proxy npm run test:web -- --run src/components/task-usage/historical-usage-report.test.tsx src/components/epics/authoring-usage-checkpoint.test.tsx src/components/epics/authoring-workspace.test.tsx src/components/epics/decomposition-workspace.test.tsx src/components/subscription-tasks/run-usage-checkpoint.test.tsx src/components/subscription-tasks/task-inspector.test.tsx src/components/runs/plan-panel.test.tsx",
+      "result": {
+        "exit_code": 0,
+        "elapsed_seconds": 21.41557,
+        "tests_passed": 127,
+        "test_files_passed": 7
+      },
+      "receipt": ".llm-output/usage-checkpoints/batch-final-web-tests.log",
+      "candidate_inputs": ".llm-output/usage-checkpoints/batch-final-web-receipt.json",
+      "limits": "Actual command receipt and complete relevant source inputs match the final candidate. Counts overlap."
+    },
+    {
+      "scope": "Final repaired batch api-types",
+      "command": "C:\\Users\\sdyer\\AppData\\Local\\Microsoft\\WinGet\\Packages\\rtk-ai.rtk_Microsoft.Winget.Source_8wekyb3d8bbwe\\rtk.EXE proxy npm run api:check",
+      "result": {
+        "exit_code": 0,
+        "elapsed_seconds": 1.715016
+      },
+      "receipt": ".llm-output/usage-checkpoints/batch-final-api-types.log",
+      "candidate_inputs": ".llm-output/usage-checkpoints/batch-final-web-receipt.json",
+      "limits": "Actual command receipt and complete relevant source inputs match the final candidate. Counts overlap."
+    },
+    {
+      "scope": "Final repaired batch web-types",
+      "command": "C:\\Users\\sdyer\\AppData\\Local\\Microsoft\\WinGet\\Packages\\rtk-ai.rtk_Microsoft.Winget.Source_8wekyb3d8bbwe\\rtk.EXE proxy npm run typecheck:web",
+      "result": {
+        "exit_code": 0,
+        "elapsed_seconds": 1.182875
+      },
+      "receipt": ".llm-output/usage-checkpoints/batch-final-web-types.log",
+      "candidate_inputs": ".llm-output/usage-checkpoints/batch-final-web-receipt.json",
+      "limits": "Actual command receipt and complete relevant source inputs match the final candidate. Counts overlap."
+    },
+    {
+      "scope": "Final repaired batch web-style",
+      "command": "C:\\Users\\sdyer\\AppData\\Local\\Microsoft\\WinGet\\Packages\\rtk-ai.rtk_Microsoft.Winget.Source_8wekyb3d8bbwe\\rtk.EXE proxy npm run lint:web",
+      "result": {
+        "exit_code": 0,
+        "elapsed_seconds": 16.036469
+      },
+      "receipt": ".llm-output/usage-checkpoints/batch-final-web-style.log",
+      "candidate_inputs": ".llm-output/usage-checkpoints/batch-final-web-receipt.json",
+      "limits": "Actual command receipt and complete relevant source inputs match the final candidate. Counts overlap."
+    },
+    {
+      "scope": "Final repaired batch web-build",
+      "command": "C:\\Users\\sdyer\\AppData\\Local\\Microsoft\\WinGet\\Packages\\rtk-ai.rtk_Microsoft.Winget.Source_8wekyb3d8bbwe\\rtk.EXE proxy npm run build:web",
+      "result": {
+        "exit_code": 0,
+        "elapsed_seconds": 8.317612
+      },
+      "receipt": ".llm-output/usage-checkpoints/batch-final-web-build.log",
+      "candidate_inputs": ".llm-output/usage-checkpoints/batch-final-web-receipt.json",
+      "limits": "Actual command receipt and complete relevant source inputs match the final candidate. Counts overlap."
+    },
+    {
+      "scope": "Final ADK model-evidence repair",
+      "command": "python -m pytest apps/orchestrator/tests/agents/test_adk_runtime_budget.py apps/orchestrator/tests/agents/test_adk_gateway.py -q",
+      "result": {
+        "exit_code": 0,
+        "tests_passed": 100
+      },
+      "receipt": ".llm-output/usage-checkpoints/accounting-repair/affected-final.log",
+      "candidate_inputs": ".llm-output/usage-checkpoints/accounting-repair/candidate-hashes.json",
+      "limits": "Expected red failures, SDK event/tool-cycle assertions, final scoped typing/style/format and exact hashes were inspected. No live provider behavior or other-adapter audit is claimed."
+    },
+    {
+      "scope": "Integrated backend policy/lifecycle repair before quota follow-up",
+      "command": "python -m pytest apps/orchestrator/tests/application/test_task_usage_monitor.py apps/orchestrator/tests/persistence/test_task_usage_checkpoints.py apps/orchestrator/tests/worker/test_task_usage_monitor.py apps/orchestrator/tests/epic_brainstorm/test_usage_checkpoints.py apps/orchestrator/tests/epic_decomposition/test_usage_checkpoints.py apps/orchestrator/tests/api/test_task_usage_controls.py -q",
+      "result": {
+        "exit_code": 0,
+        "tests_passed": 54,
+        "elapsed_seconds": 149.15
+      },
+      "receipt": ".llm-output/usage-checkpoints/pre-live-lifecycle/repair-lifecycle-affected-final.log",
+      "candidate_inputs": ".llm-output/usage-checkpoints/pre-live-lifecycle/repair-lifecycle-evidence.md",
+      "limits": "Precedes the final quota-settlement line and later live-poll repair. Reused only for unchanged policy/repository/route inputs; affected authoring cases require their later receipts. Earlier49-pass/1-fixture-failure receipt remains retained."
+    },
+    {
+      "scope": "Post-quota authoring affected checks before live-poll follow-up",
+      "command": "python -m pytest apps/orchestrator/tests/epic_brainstorm/test_usage_checkpoints.py apps/orchestrator/tests/epic_decomposition/test_usage_checkpoints.py -q",
+      "result": {
+        "exit_code": 0,
+        "tests_passed": 34,
+        "elapsed_seconds": 108.82
+      },
+      "receipt": ".llm-output/usage-checkpoints/pre-live-lifecycle/repair-lifecycle-authoring-final.log",
+      "candidate_inputs": ".llm-output/usage-checkpoints/pre-live-lifecycle/lifecycle-accepted-hashes.json",
+      "limits": "Passing source snapshot precedes the later live-poll repair and expanded decomposition assertions; preserved as historical evidence."
+    },
+    {
+      "scope": "Both-kind terminal replay/recovery matrix before live-poll follow-up",
+      "command": "python -m pytest apps/orchestrator/tests/epic_brainstorm/test_usage_checkpoints.py -q -k 'replays_committed_authoring_crossing_after_sink_timeout or settled_recovery_keeps_independent_terminal_causes'",
+      "result": {
+        "exit_code": 0,
+        "tests_passed": 22,
+        "elapsed_seconds": 77.63
+      },
+      "receipt": ".llm-output/usage-checkpoints/pre-live-lifecycle/repair-lifecycle-replay-recovery-both-kinds-final.log",
+      "candidate_inputs": ".llm-output/usage-checkpoints/pre-live-lifecycle/lifecycle-accepted-hashes.json",
+      "limits": "Actual post-terminal replay, both kinds, quota-blocked pool and continuation rejection. Does not prove live missed-evaluation recovery; that acceptance gap was explicitly returned to the same owner."
+    },
+    {
+      "scope": "Final both-kind live and terminal replay matrix",
+      "command": "python -m pytest apps/orchestrator/tests/epic_brainstorm/test_usage_checkpoints.py -q -k 'live_poll_replays_committed_crossing_before_provider_settlement or worker_tick_replays_committed_authoring_crossing_after_sink_timeout'",
+      "result": {
+        "exit_code": 0,
+        "tests_passed": 14,
+        "elapsed_seconds": 57.18
+      },
+      "receipt": ".llm-output/usage-checkpoints/repair-live-focused-final.log",
+      "exit_evidence": ".llm-output/usage-checkpoints/repair-live-focused-final-tool-result.json",
+      "candidate_inputs": ".llm-output/usage-checkpoints/lifecycle-final-accepted-hashes.json",
+      "limits": "Both kinds; live commit/evaluation failure with held process proof, late final-only terminal outcomes and retained successful proposal. Injected missed evaluation uses the PostgreSQL worker fixture, not a separate OS process."
+    },
+    {
+      "scope": "Final affected authoring lifecycle suite",
+      "command": "python -m pytest apps/orchestrator/tests/epic_brainstorm/test_usage_checkpoints.py apps/orchestrator/tests/epic_decomposition/test_usage_checkpoints.py -q",
+      "result": {
+        "exit_code": 0,
+        "tests_passed": 47,
+        "elapsed_seconds": 155.85
+      },
+      "receipt": ".llm-output/usage-checkpoints/repair-live-authoring-suite.log",
+      "exit_evidence": ".llm-output/usage-checkpoints/repair-live-authoring-suite-tool-result.json",
+      "candidate_inputs": ".llm-output/usage-checkpoints/lifecycle-final-accepted-hashes.json",
+      "limits": "Final source and test hashes match. Includes quota pool and owner rejection, independent causes, policy override, settlement and successful result races."
+    },
+    {
+      "scope": "Final separate-process supervised authoring continuation",
+      "command": "python -m pytest tests/acceptance/test_task_usage_monitoring_process.py -q -k supervised_authoring_observation_requests_checkpoint_across_processes",
+      "result": {
+        "exit_code": 0,
+        "tests_passed": 1,
+        "elapsed_seconds": 13.83
+      },
+      "receipt": ".llm-output/usage-checkpoints/repair-live-process-authoring.log",
+      "exit_evidence": ".llm-output/usage-checkpoints/repair-live-process-authoring-tool-result.json",
+      "candidate_inputs": ".llm-output/usage-checkpoints/lifecycle-final-accepted-hashes.json",
+      "limits": "Actual separate API/worker and supervised provider processes. Normal synchronous observation; injected missed-evaluation window proved separately in PostgreSQL worker tests. Two unchanged run/delegated process cases reuse prior3-case repair-lifecycle-process.log; quota recovery is not a scenario in that process receipt."
+    }
+  ],
+  "remaining_limitations": [
+    "No final whole-backend-suite all-pass claim: earlier broad failures and later scoped repair receipts remain distinct.",
+    "Runtime live provider/native client conformance and actual pricing were not authorized or run.",
+    "Catalog estimates use observed numeric subsets; incomplete-counter zero estimates do not prove actual zero spending. Monetary admission semantics are unchanged.",
+    "Full signed64 browser round trip remains unproved; unsafe retained policy integers require an exact API/client path.",
+    "Foreign-host restart, external noncooperative process/effect delays and unlisted multi-control combinations remain unproved.",
+    "Disposable downgrade tests do not establish preservation of active production data.",
+    "Advanced epic execution-cap editor browser round trip remains unproved. Policy/profile optional-cap and normal epic-without-allowance browser/storage journeys passed.",
+    "Actual multi-project authenticated browser authorization remains unproved; one-project browser actions and service/component access/filter tests are recorded separately."
+  ],
+  "evidence_policy": "Counts overlap and are not added into a whole-suite total. Matching scoped source/test inputs and actual command receipts were inspected by the primary. Earlier failing or superseded receipts remain preserved; review output is not test evidence.",
+  "journeys": {
+    "authoring": {
+      "transport": "scripted supervised provider through production API/worker composition",
+      "before": {
+        "input_tokens": 60,
+        "output_tokens": 40,
+        "normal_attempts": 1,
+        "state": "paused"
+      },
+      "after": {
+        "input_tokens": 70,
+        "output_tokens": 45,
+        "normal_attempts": 2,
+        "state": "proposed"
+      },
+      "implicit_adoption": false,
+      "frozen_manual_estimate_tokens": 20
+    },
+    "delegated_run": {
+      "transport": "scripted root plus supervised delegated provider through production API/worker composition",
+      "before": {
+        "input_tokens": 62,
+        "output_tokens": 42,
+        "normal_attempts": 3,
+        "state": "paused"
+      },
+      "after": {
+        "input_tokens": 122,
+        "output_tokens": 82,
+        "normal_attempts": 4,
+        "checkpoint_generation": 2,
+        "state": "paused"
+      },
+      "repair_debits": 0,
+      "frozen_manual_estimate_tokens": 20,
+      "fixture_uncertain_attempt_allowance": 2,
+      "actual_cost_and_remaining_quota": "unknown"
+    }
+  },
+  "review": {
+    "status": "completed_findings_repaired_and_evidence_verified",
+    "scope": "One integrated independent review including full simplify reuse/quality/efficiency",
+    "initial_diff_sha256": "6bb25431e3f0dde460d13bde0dba1722535f4bcec1851a0ad91aefdde1554ce3",
+    "initial_code_input_sha256": "31d4da8cd1ec8c99cf519c36265adf59870e56a7cf3611c7d72717f6c408704b",
+    "jev": {
+      "status": "partial",
+      "result": ".llm-output/usage-checkpoints/initial-reviewed-jev.json",
+      "coverage_reasons": [
+        "hunk_limit",
+        "operation_budget_reached",
+        "oversized_hunk_omitted"
+      ],
+      "absence_or_test_success_claim": false,
+      "candidate": "Initial integrated independent review candidate; final push advisory is separately bound to candidate.diff."
+    },
+    "claude_attempt": {
+      "model": "claude-opus-5-5",
+      "effort": "high",
+      "status": "authentication_failed",
+      "error": "OAuth session expired and could not be refreshed",
+      "result": ".llm-output\\usage-checkpoints\\independent-review-adapter-result.json",
+      "quota_exhaustion": false
+    },
+    "fallback": {
+      "role": "reviewer",
+      "model": "gpt-6-astra",
+      "effort": "low",
+      "agent": "/root/integrated_review",
+      "read_only": true
+    },
+    "findings": [
+      {
+        "id": "UM-R1",
+        "priority": 2,
+        "issue": "ADK model/tool event and empty-stream completeness",
+        "status": "repaired_and_evidence_verified",
+        "owner": "accounting",
+        "primary_evidence": "ADK every-event completeness and initial true flags were confirmed; installed SDK function_response_event has matching agent author and no usage metadata.",
+        "evidence": {
+          "tests_passed": 100,
+          "receipt": ".llm-output/usage-checkpoints/accounting-repair/coverage.json",
+          "hashes": ".llm-output/usage-checkpoints/accounting-repair/candidate-hashes.json",
+          "red": "2 expected failures",
+          "focused_green": "5 passed",
+          "repair_diff_sha256": "ecbf0a5c7032db7c3d55cb6eac21ab87b550edcf8de1324a1899d5db9fcb0886",
+          "format": "format-final.log/.exit0; earlier format1 retained"
+        }
+      },
+      {
+        "id": "UM-R2",
+        "priority": 2,
+        "issue": "Effective policy successor generations and frozen no-policy reporting",
+        "status": "repaired_and_evidence_verified",
+        "owner": "lifecycle",
+        "primary_evidence": "Run and authoring successor CheckpointRecord constructors omit the effective monitoring_policy_revision; no-baseline run reporting passes None to latest-policy lookup."
+      },
+      {
+        "id": "UM-R3",
+        "priority": 2,
+        "issue": "Policy CAS409 and stale panel query recovery",
+        "status": "repaired_and_evidence_verified",
+        "owner": "lifecycle/backend and ui-policy/frontend",
+        "primary_evidence": "Both panels refresh checkpoint only after successful or409 command results; three route handlers lack MonitoringPolicyConflict409 mapping.",
+        "frontend_status": "repaired_scoped_and_final_web_evidence_verified",
+        "frontend_evidence": {
+          "provider": "gemini-3.8-flash-medium",
+          "terminal": "completed exit0, stream terminal seen",
+          "raw_steps": ".llm-output/usage-checkpoints/ui-policy-repair/command-receipts.json",
+          "focused_tests": 40,
+          "files": 3,
+          "red_failures": 5,
+          "hashes": ".llm-output/usage-checkpoints/ui-policy-repair/candidate-hashes.json",
+          "final_static": "Root final web gates running; numeric static exit receipts/full input manifest were missing from the provider handoff. Parent workspace/build checks also require current panel inputs."
+        },
+        "backend_status": "pg_service_cas_and_authenticated_route_409_verified"
+      },
+      {
+        "id": "UM-R4",
+        "priority": 2,
+        "issue": "Authoring timeout precedence during settled recovery",
+        "status": "repaired_and_evidence_verified",
+        "owner": "lifecycle",
+        "primary_evidence": "Authoring _reconcile_candidate chooses paused/lost_result for any active checkpoint before recorded timeout or expired invocation."
+      },
+      {
+        "id": "UM-R5",
+        "priority": 2,
+        "issue": "Committed authoring observation evaluation recovery",
+        "status": "repaired_and_evidence_verified",
+        "owner": "/root/source_attribution",
+        "primary_evidence": "Authoring observer commits append before evaluating; reconcile_settled recovers existing checkpoint rows without evaluating durable committed crossings.",
+        "primary_acceptance_gap": "Production polling serially awaits run_once; committed observation replay must also run while a provider remains live after append/evaluation delivery timeout. Existing22-case matrix proves post-terminal replay, not this live path.",
+        "live_acceptance_gap_status": "repaired_both_kinds_and_settlement_verified",
+        "evidence": ".llm-output/usage-checkpoints/repair-live-evidence.md"
+      }
+    ],
+    "simplify": {
+      "reuse": "Existing token projection and durable source ancestry reuse appropriate.",
+      "quality": "Five material findings substantiated and consolidated into accounting, backend lifecycle/policy, and panel recovery outcomes.",
+      "efficiency": "Existing evaluator/checkpoint repository reused. Resolved-subject sweep optimization deferred: without a durable final-observation criterion, filtering could discard late telemetry. Authoring sweep is bounded to100 subjects with a rotating cursor. No cosmetic refactor warranted.",
+      "cosmetic_refactor": "No cosmetic refactor warranted.",
+      "react": "Checklist included in the same integrated review; cleanup/keyed mounting inspected."
+    },
+    "extra_gate": "One integrated independent review retained. Primary traced the serial live polling gap, returned one consolidated follow-up to the existing owner, then checked final code and concrete both-kind47/14 results plus production authoring1/1. This answers the named live/terminal settlement question; no extra gate selected. Foreign-host/noncooperative and unlisted combinations remain explicit limitations.",
+    "repair_evidence": ".llm-output/usage-checkpoints/accepted-repair-evidence.json",
+    "retained_failures": {
+      "original_red": ".llm-output/usage-checkpoints/repair-live-red.log",
+      "intermediate_requested_vs_pausing": ".llm-output/usage-checkpoints/repair-live-intermediate-tool-result.json",
+      "recovery": "The overwritten intermediate redirected log was recovered from the exact local native tool result, including its actual exit1 and pytest output; the original session remains intact.",
+      "remaining_limit": "The complete intermediate redirected log was overwritten. Its exact native tool-result preserves captured pytest output and actual exit1; it is not claimed as the complete original stdout."
+    },
+    "final_push_jev": {
+      "status": "required_attempt_on_final_diff",
+      "result": ".llm-output/usage-checkpoints/jev-review.json",
+      "candidate_identity": ".llm-output/usage-checkpoints/candidate-review-identity.json",
+      "limits": "Exact diff binding and actual completion/partial/unavailable status are retained locally and reconciled on the PR; advisory scores are not absence, tests or merge proof."
+    }
+  },
+  "publication": {
+    "status": "Local candidate accepted; one PR and its authorized normal automatic checks/Codex review pending.",
+    "merged": false,
+    "manually_dispatched_full_hosted_ci": false
+  }
+}

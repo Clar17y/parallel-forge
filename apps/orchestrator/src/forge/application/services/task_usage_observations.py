@@ -110,14 +110,19 @@ def project_source(observations: tuple[Observation, ...]) -> SourceUsage:
         if final is not None:
             if live is not None and final_value is not None and final_value < live:
                 disagreements.append("final_below_live")
-            totals[name] = final_value
+            # A final with an absent dimension cannot invalidate an earlier
+            # positive measurement. It remains a lower bound, never an exact final.
+            totals[name] = final_value if final_value is not None else (
+                live if live is not None and live > 0 else None
+            )
         else:
             totals[name] = live
     selected = final or ordered[-1]
     context = selected.context
     if final is not None:
         unknown_required = any(
-            getattr(final.tokens, name) is None for name in ("input_tokens", "output_tokens")
+            getattr(final.tokens, name) is None or name in final.unknown_dimensions
+            for name in ("input_tokens", "output_tokens")
         )
     completeness = (
         "unknown"

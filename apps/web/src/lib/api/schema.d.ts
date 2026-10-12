@@ -487,6 +487,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/epics/{epic_id}/brainstorm-jobs/{job_id}/usage-checkpoint": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Usage Checkpoint */
+        get: operations["usage_checkpoint_api_epics__epic_id__brainstorm_jobs__job_id__usage_checkpoint_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/epics/{epic_id}/brainstorm-jobs/{job_id}/usage-checkpoint/commands": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Apply Checkpoint Command */
+        post: operations["apply_checkpoint_command_api_epics__epic_id__brainstorm_jobs__job_id__usage_checkpoint_commands_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/epics/{epic_id}/brief-adoptions": {
         parameters: {
             query?: never;
@@ -689,6 +723,40 @@ export interface paths {
         put?: never;
         /** Retry */
         post: operations["retry_api_epics__epic_id__decomposition_jobs__job_id__retry_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/epics/{epic_id}/decomposition-jobs/{job_id}/usage-checkpoint": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Usage Checkpoint */
+        get: operations["usage_checkpoint_api_epics__epic_id__decomposition_jobs__job_id__usage_checkpoint_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/epics/{epic_id}/decomposition-jobs/{job_id}/usage-checkpoint/commands": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Apply Checkpoint Command */
+        post: operations["apply_checkpoint_command_api_epics__epic_id__decomposition_jobs__job_id__usage_checkpoint_commands_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1343,6 +1411,40 @@ export interface paths {
         get: operations["run_usage_api_runs__run_id__usage_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{run_id}/usage-checkpoint": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Checkpoint */
+        get: operations["checkpoint_api_runs__run_id__usage_checkpoint_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{run_id}/usage-checkpoint/commands": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Owner Command */
+        post: operations["owner_command_api_runs__run_id__usage_checkpoint_commands_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2112,7 +2214,7 @@ export interface components {
              * State
              * @enum {string}
              */
-            state: "queued" | "running" | "quota_wait" | "capacity_wait" | "cancel_requested" | "cancelled" | "proposed" | "failed" | "reconciling";
+            state: "queued" | "running" | "paused" | "quota_wait" | "capacity_wait" | "cancel_requested" | "cancelled" | "proposed" | "failed" | "reconciling";
         };
         /** AvailableCommand */
         AvailableCommand: {
@@ -2128,6 +2230,76 @@ export interface components {
             policy_version?: number | null;
             /** Requires Feedback */
             requires_feedback: boolean;
+        };
+        /** BaselineReference */
+        BaselineReference: {
+            binding: components["schemas"]["WorkUnitBinding"];
+            /** Checkpoint Threshold Tokens */
+            checkpoint_threshold_tokens?: number | null;
+            /** Cohort Digest */
+            cohort_digest: string;
+            /**
+             * Comparison Scope
+             * @default subject
+             */
+            comparison_scope: string;
+            /**
+             * Completeness
+             * @default complete
+             */
+            completeness: string;
+            /**
+             * Coverage Count
+             * @default 0
+             */
+            coverage_count: number;
+            /** Estimator Version */
+            estimator_version: string;
+            /** Frozen At */
+            frozen_at?: string | null;
+            /** History Digest */
+            history_digest: string;
+            /** Mean Tokens */
+            mean_tokens?: number | null;
+            /** Median Tokens */
+            median_tokens?: number | null;
+            /** Minimum Comparables */
+            minimum_comparables: number;
+            /**
+             * Outcome Count
+             * @default 0
+             */
+            outcome_count: number;
+            /** P90 Tokens */
+            p90_tokens?: number | null;
+            /** Policy Revision */
+            policy_revision: number;
+            /** Reference Tokens */
+            reference_tokens?: number | null;
+            /** Sample Count */
+            sample_count: number;
+            /**
+             * Schema Version
+             * @default 1
+             */
+            schema_version: number;
+            /** Snapshot Digest */
+            snapshot_digest: string;
+            /**
+             * Source Count
+             * @default 0
+             */
+            source_count: number;
+            /** Status */
+            status: string;
+            /** Warning Threshold Tokens */
+            warning_threshold_tokens?: number | null;
+            /** Window Ended At */
+            window_ended_at?: string | null;
+            /** Window Limit */
+            window_limit: number;
+            /** Window Started At */
+            window_started_at?: string | null;
         };
         /**
          * BillingMode
@@ -2341,7 +2513,7 @@ export interface components {
             tool_call_count: number;
         };
         /** @enum {string} */
-        BrainstormState: "queued" | "running" | "quota_wait" | "capacity_wait" | "cancel_requested" | "cancelled" | "proposed" | "failed" | "reconciling";
+        BrainstormState: "queued" | "running" | "paused" | "quota_wait" | "capacity_wait" | "cancel_requested" | "cancelled" | "proposed" | "failed" | "reconciling";
         /** BrainstormThread */
         BrainstormThread: {
             /**
@@ -2521,7 +2693,7 @@ export interface components {
             /** Remote Remediation Remaining */
             remote_remediation_remaining: number;
             /** Token Limit */
-            token_limit: number;
+            token_limit: number | null;
         };
         /** CandidateSection */
         CandidateSection: {
@@ -2608,6 +2780,52 @@ export interface components {
             /** Status */
             status: string;
         };
+        /** CheckpointRecord */
+        CheckpointRecord: {
+            baseline_binding: components["schemas"]["WorkUnitBinding"];
+            binding: components["schemas"]["WorkUnitBinding"];
+            /**
+             * Checkpoint Id
+             * Format: uuid
+             */
+            checkpoint_id: string;
+            /**
+             * Generation
+             * @default 1
+             */
+            generation: number;
+            /** Monitoring Policy Revision */
+            monitoring_policy_revision?: number | null;
+            /** Next Checkpoint Threshold Tokens */
+            next_checkpoint_threshold_tokens?: number | null;
+            /** Policy Revision */
+            policy_revision: number;
+            /**
+             * Process Settled
+             * @default false
+             */
+            process_settled: boolean;
+            /** Reference Digest */
+            reference_digest: string;
+            state: components["schemas"]["CheckpointState"];
+            /** Trigger Event Id */
+            trigger_event_id: string;
+            /**
+             * Usage Pauses Disabled
+             * @default false
+             */
+            usage_pauses_disabled: boolean;
+            /**
+             * Version
+             * @default 0
+             */
+            version: number;
+        };
+        /**
+         * CheckpointState
+         * @enum {string}
+         */
+        CheckpointState: "checkpoint_requested" | "pausing" | "paused" | "resumed" | "resolved";
         /** CommandNetworkPolicy */
         CommandNetworkPolicy: {
             /** Name */
@@ -4283,6 +4501,54 @@ export interface components {
             /** Warnings */
             warnings: string[];
         };
+        /** MonitoringPolicy */
+        MonitoringPolicy: {
+            /**
+             * Allow Cross Project Fallback
+             * @default true
+             */
+            allow_cross_project_fallback: boolean;
+            /**
+             * Checkpoint Multiplier
+             * @default 2
+             */
+            checkpoint_multiplier: number;
+            /** Hard Context Cap */
+            hard_context_cap?: number | null;
+            /** Hard Token Cap */
+            hard_token_cap?: number | null;
+            /**
+             * History Limit
+             * @default 50
+             */
+            history_limit: number;
+            /** Manual Estimate Tokens */
+            manual_estimate_tokens?: number | null;
+            /**
+             * Minimum Comparables
+             * @default 20
+             */
+            minimum_comparables: number;
+            /** @default report_only */
+            mode: components["schemas"]["MonitoringMode"];
+            /**
+             * Project Id
+             * Format: uuid
+             */
+            project_id: string;
+            /**
+             * Revision
+             * @default 1
+             */
+            revision: number;
+            /**
+             * Warning Multiplier
+             * @default 1.5
+             */
+            warning_multiplier: number;
+            /** Window Days */
+            window_days?: number | null;
+        };
         /** MonitoringPolicyResponse */
         MonitoringPolicyResponse: {
             /** Allow Cross Project Fallback */
@@ -4342,6 +4608,42 @@ export interface components {
             warning_multiplier?: number | null;
             /** Window Days */
             window_days?: number | null;
+        };
+        /** OwnerCommandReceipt */
+        OwnerCommandReceipt: {
+            /** Action */
+            action: string;
+            /**
+             * Actor Id
+             * Format: uuid
+             */
+            actor_id: string;
+            /** Affected Snapshot */
+            affected_snapshot: string;
+            /**
+             * Checkpoint Id
+             * Format: uuid
+             */
+            checkpoint_id: string;
+            /**
+             * Command Id
+             * Format: uuid
+             */
+            command_id: string;
+            /**
+             * Replayed
+             * @default false
+             */
+            replayed: boolean;
+            /** Result Version */
+            result_version: number;
+            /** State */
+            state: string;
+            /**
+             * Warnings
+             * @default []
+             */
+            warnings: string[];
         };
         /** PermissionItem */
         PermissionItem: {
@@ -5036,6 +5338,13 @@ export interface components {
              */
             validation_evidence_set_id: string;
         };
+        /** RouteCohort */
+        RouteCohort: {
+            /** Fingerprint */
+            fingerprint: string;
+            /** Members */
+            members: components["schemas"]["RouteMember"][];
+        };
         /** RouteInput */
         RouteInput: {
             /** @default subscription */
@@ -5050,6 +5359,19 @@ export interface components {
             model: string;
             /** Provider */
             provider: string;
+        };
+        /** RouteMember */
+        RouteMember: {
+            /** Model */
+            model: string;
+            /** Ordinal */
+            ordinal: number;
+            /** Provider */
+            provider: string;
+            /** Reasoning Effort */
+            reasoning_effort?: string | null;
+            /** Role */
+            role: string;
         };
         /**
          * RouteSpec
@@ -5386,6 +5708,18 @@ export interface components {
             /** Idle Expires At */
             idle_expires_at: string;
         };
+        /** SourceBinding */
+        SourceBinding: {
+            /** Kind */
+            kind: string;
+            /** Parent Id */
+            parent_id?: string | null;
+            /**
+             * Source Id
+             * Format: uuid
+             */
+            source_id: string;
+        };
         /**
          * SpecialistPurpose
          * @description Closed vocabulary of specialist purposes separating purpose from tools.
@@ -5398,6 +5732,26 @@ export interface components {
          * @enum {string}
          */
         StepKind: "bootstrap" | "install" | "migration" | "seed" | "test" | "lint" | "typecheck" | "build" | "custom_named";
+        /** SubjectKey */
+        SubjectKey: {
+            /** Kind */
+            kind: string;
+            /**
+             * Project Id
+             * Format: uuid
+             */
+            project_id: string;
+            /**
+             * Schema Version
+             * @default 1
+             */
+            schema_version: number;
+            /**
+             * Subject Id
+             * Format: uuid
+             */
+            subject_id: string;
+        };
         /** SubscriptionAttemptPage */
         SubscriptionAttemptPage: {
             /** Attempts */
@@ -6143,6 +6497,11 @@ export interface components {
             /** Untrusted External Content */
             untrusted_external_content: boolean;
         };
+        /** TaskUsageCheckpointResponse */
+        TaskUsageCheckpointResponse: {
+            checkpoint: components["schemas"]["CheckpointRecord"] | null;
+            report?: components["schemas"]["UsageReport"] | null;
+        };
         /**
          * TaskUsageHistoryResponse
          * @description Measured history, sample coverage and comparable references for generated clients.
@@ -6188,6 +6547,37 @@ export interface components {
             failed_attempt_count: number;
             filters: components["schemas"]["UsageHistoryFiltersResponse"];
             overview: components["schemas"]["UsageHistorySummaryResponse"];
+        };
+        /**
+         * TaskUsageOwnerCommandRequest
+         * @description The route supplies the authenticated actor; a caller cannot assert one.
+         */
+        TaskUsageOwnerCommandRequest: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "continue" | "resume" | "resolve" | "set_policy" | "override_checkpoint" | "stop";
+            /**
+             * Checkpoint Id
+             * Format: uuid
+             */
+            checkpoint_id: string;
+            /** Continue Mode */
+            continue_mode?: ("next_checkpoint" | "without_usage_pauses") | null;
+            /** Expected Version */
+            expected_version: number;
+            /** Idempotency Key */
+            idempotency_key: string;
+            /** Override Note */
+            override_note?: string | null;
+            requested_policy?: components["schemas"]["MonitoringPolicy"] | null;
+        };
+        /** TaskUsageOwnerCommandResponse */
+        TaskUsageOwnerCommandResponse: {
+            checkpoint: components["schemas"]["CheckpointRecord"];
+            receipt: components["schemas"]["OwnerCommandReceipt"];
+            report?: components["schemas"]["UsageReport"] | null;
         };
         /** TokenBudgetDefaultsInput */
         TokenBudgetDefaultsInput: {
@@ -6348,6 +6738,70 @@ export interface components {
             /** Tokens */
             tokens: number | null;
         };
+        /** UsageReport */
+        UsageReport: {
+            baseline: components["schemas"]["BaselineReference"] | null;
+            binding: components["schemas"]["WorkUnitBinding"];
+            /** Cached Input Tokens */
+            cached_input_tokens?: number | null;
+            checkpoint?: components["schemas"]["CheckpointRecord"] | null;
+            /** Checkpoint Version */
+            checkpoint_version?: number | null;
+            /** Compaction Count */
+            compaction_count?: number | null;
+            /**
+             * Completeness
+             * @default unknown
+             */
+            completeness: string;
+            /** Context Capacity Tokens */
+            context_capacity_tokens?: number | null;
+            /** Context Occupied Tokens */
+            context_occupied_tokens: number | null;
+            /** Context Peak Tokens */
+            context_peak_tokens?: number | null;
+            /** Freshness */
+            freshness: string;
+            /** Input Tokens */
+            input_tokens: number | null;
+            /** Output Tokens */
+            output_tokens: number | null;
+            /** Policy Revision */
+            policy_revision: number | null;
+            /** Reasoning Output Tokens */
+            reasoning_output_tokens?: number | null;
+            /**
+             * Sources
+             * @default []
+             */
+            sources: components["schemas"]["UsageSourceReport"][];
+            /** Warning */
+            warning?: string | null;
+        };
+        /** UsageSourceReport */
+        UsageSourceReport: {
+            binding: components["schemas"]["WorkUnitBinding"];
+            /** Compaction Count */
+            compaction_count?: number | null;
+            /** Completeness */
+            completeness: string;
+            /** Context Capacity Tokens */
+            context_capacity_tokens?: number | null;
+            /** Context Occupied Tokens */
+            context_occupied_tokens?: number | null;
+            /** Context Peak Tokens */
+            context_peak_tokens?: number | null;
+            /** Delegated */
+            delegated: boolean | null;
+            /** Input Tokens */
+            input_tokens: number | null;
+            /** Output Tokens */
+            output_tokens: number | null;
+            /** Phase */
+            phase: string;
+            /** Role */
+            role: string;
+        };
         /** UsageSummary */
         UsageSummary: {
             /** Cached Input Tokens */
@@ -6377,6 +6831,25 @@ export interface components {
             msg: string;
             /** Error Type */
             type: string;
+        };
+        /** WorkUnitBinding */
+        WorkUnitBinding: {
+            /** Admitted Phase Id */
+            admitted_phase_id: string;
+            configured_route: components["schemas"]["RouteCohort"];
+            effective_route: components["schemas"]["RouteCohort"];
+            /**
+             * Schema Version
+             * @default 1
+             */
+            schema_version: number;
+            source: components["schemas"]["SourceBinding"];
+            subject: components["schemas"]["SubjectKey"];
+            /**
+             * Work Unit Id
+             * Format: uuid
+             */
+            work_unit_id: string;
         };
     };
     responses: never;
@@ -7397,6 +7870,78 @@ export interface operations {
             };
         };
     };
+    usage_checkpoint_api_epics__epic_id__brainstorm_jobs__job_id__usage_checkpoint_get: {
+        parameters: {
+            query: {
+                project_id: string;
+            };
+            header?: never;
+            path: {
+                epic_id: string;
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskUsageCheckpointResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    apply_checkpoint_command_api_epics__epic_id__brainstorm_jobs__job_id__usage_checkpoint_commands_post: {
+        parameters: {
+            query: {
+                project_id: string;
+            };
+            header?: never;
+            path: {
+                epic_id: string;
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TaskUsageOwnerCommandRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskUsageOwnerCommandResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     adopt_brief_revision_api_epics__epic_id__brief_adoptions_post: {
         parameters: {
             query?: never;
@@ -7958,6 +8503,78 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AuthoringReceipt"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    usage_checkpoint_api_epics__epic_id__decomposition_jobs__job_id__usage_checkpoint_get: {
+        parameters: {
+            query: {
+                project_id: string;
+            };
+            header?: never;
+            path: {
+                epic_id: string;
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskUsageCheckpointResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    apply_checkpoint_command_api_epics__epic_id__decomposition_jobs__job_id__usage_checkpoint_commands_post: {
+        parameters: {
+            query: {
+                project_id: string;
+            };
+            header?: never;
+            path: {
+                epic_id: string;
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TaskUsageOwnerCommandRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskUsageOwnerCommandResponse"];
                 };
             };
             /** @description Validation Error */
@@ -9507,6 +10124,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ListPage_RunUsageItem_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    checkpoint_api_runs__run_id__usage_checkpoint_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskUsageCheckpointResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    owner_command_api_runs__run_id__usage_checkpoint_commands_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TaskUsageOwnerCommandRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskUsageOwnerCommandResponse"];
                 };
             };
             /** @description Validation Error */

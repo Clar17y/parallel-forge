@@ -21,6 +21,11 @@ from forge.api.schemas.epic_decomposition import (
     DecompositionProposalAdopt,
     DecompositionTurnAppend,
 )
+from forge.api.schemas.task_usage import (
+    TaskUsageCheckpointResponse,
+    TaskUsageOwnerCommandRequest,
+    TaskUsageOwnerCommandResponse,
+)
 from forge.application.services.auth import AuthenticatedActor
 from forge.application.services.epic_decomposition import EpicDecompositionService
 from forge.domain.epic_brainstorm import (
@@ -36,6 +41,8 @@ from forge.domain.epic_decomposition import (
     DecompositionValidationError,
 )
 from forge.domain.epic_items import GraphBindingConflict, GraphValidationError
+from forge.persistence.repositories.task_usage_checkpoints import CheckpointConflict
+from forge.persistence.repositories.task_usage_policy import MonitoringPolicyConflict
 
 
 def _service(request: Request) -> EpicDecompositionService:
@@ -57,6 +64,8 @@ def _error(error: Exception) -> HTTPException:
             BriefBindingConflict,
             BriefNotAccepted,
             GraphBindingConflict,
+            CheckpointConflict,
+            MonitoringPolicyConflict,
         ),
     ):
         return HTTPException(status_code=409, detail=str(error))
@@ -243,6 +252,59 @@ def router_for() -> APIRouter:
                 graph_digest=result.graph_digest,
                 epic_version=result.epic_version,
                 job_version=result.job_version,
+            )
+        except Exception as error:  # noqa: BLE001
+            raise _error(error) from None
+
+    @router.get("/epics/{epic_id}/decomposition-jobs/{job_id}/usage-checkpoint")
+    async def usage_checkpoint(
+        epic_id: UUID,
+        job_id: UUID,
+        request: Request,
+        project_id: UUID = Query(),
+        _actor: AuthenticatedActor = Depends(require_operator),
+    ) -> TaskUsageCheckpointResponse:
+        try:
+            record, report = await _service(request).usage_checkpoint_view(
+                epic_id=epic_id, project_id=project_id, job_id=job_id
+            )
+            return TaskUsageCheckpointResponse(checkpoint=record, report=report)
+        except Exception as error:  # noqa: BLE001
+            raise _error(error) from None
+
+    @router.post("/epics/{epic_id}/decomposition-jobs/{job_id}/usage-checkpoint/commands")
+    async def apply_checkpoint_command(
+        epic_id: UUID,
+        job_id: UUID,
+        body: TaskUsageOwnerCommandRequest,
+        request: Request,
+        project_id: UUID = Query(),
+        actor: AuthenticatedActor = Depends(require_operator_mutation),
+    ) -> TaskUsageOwnerCommandResponse:
+        from uuid import uuid4
+
+        from forge.domain.task_usage_contract import OwnerCommand
+
+        try:
+            command = OwnerCommand(
+                command_id=uuid4(),
+                checkpoint_id=body.checkpoint_id,
+                expected_version=body.expected_version,
+                idempotency_key=body.idempotency_key,
+                action=body.action,
+                actor_id=actor.actor_id,
+                continue_mode=body.continue_mode,
+                requested_policy=body.requested_policy,
+                override_note=body.override_note,
+            )
+            receipt, checkpoint = await _service(request).apply_checkpoint_command(
+                epic_id=epic_id, project_id=project_id, job_id=job_id, actor=actor, command=command
+            )
+            _, report = await _service(request).usage_checkpoint_view(
+                epic_id=epic_id, project_id=project_id, job_id=job_id
+            )
+            return TaskUsageOwnerCommandResponse(
+                receipt=receipt, checkpoint=checkpoint, report=report
             )
         except Exception as error:  # noqa: BLE001
             raise _error(error) from None

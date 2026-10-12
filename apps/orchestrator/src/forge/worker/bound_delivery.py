@@ -17,6 +17,11 @@ from forge.application.ports.executions import ExecutionAdmission, ExecutionStat
 from forge.application.ports.unit_of_work import UnitOfWork
 from forge.application.ports.worktrees import ControlledGitPort, ManagedWorktree
 from forge.application.services.approved_plan import ApprovedPlan, ApprovedPlanLoader
+from forge.application.services.task_usage_composition import (
+    AdmissionFreezingObservationStore,
+    admitted_run_cohort,
+    bind_agent_execution_usage,
+)
 from forge.application.services.task_usage_policy import budget_for_frozen_admission
 from forge.application.services.tools import CapabilityMatrix, ControlledToolService
 from forge.domain.actor import AgentRole
@@ -40,6 +45,7 @@ class BoundDeliveryGateway:
             [AgentRequest, ApprovedPlan, ManagedWorktree], Awaitable[ControlledToolService]
         ],
         gateway_factory: Callable[[PerRequestToolProvider], AgentGateway],
+        usage_bindings: AdmissionFreezingObservationStore | None = None,
     ) -> None:
         self._uow = unit_of_work_factory
         self._store = artifact_store
@@ -48,6 +54,7 @@ class BoundDeliveryGateway:
         self._tools = tool_service_factory
         self._gateway = gateway_factory
         self._approved = ApprovedPlanLoader(artifact_store)
+        self._usage_bindings = usage_bindings
 
     async def execute(self, request: AgentRequest) -> AgentResult:
         if type(request) is not AgentRequest or request.role not in {
@@ -78,8 +85,26 @@ class BoundDeliveryGateway:
                 current, current_admission, current_tree = await self._binding(request, work)
                 if current != approved or current_admission != admission or current_tree != tree:
                     raise AgentGatewayError("delivery authority changed")
+                configured_usage_route = (
+                    await admitted_run_cohort(
+                        work,
+                        project_id=approved.run.project_id,
+                        run_id=request.run_id,
+                        policy=approved.policy,
+                    )
+                    if self._usage_bindings is not None
+                    else None
+                )
                 await work.commit()
             self._prompts.verify_unchanged(request)
+            if self._usage_bindings is not None and configured_usage_route is not None:
+                await bind_agent_execution_usage(
+                    self._usage_bindings,
+                    request=request,
+                    project_id=approved.run.project_id,
+                    configured_route=configured_usage_route,
+                    admitted_phase_id=admission.kind,
+                )
         except AgentGatewayError:
             raise
         except Exception:  # noqa: BLE001 - configuration/authority errors contain no source diagnostics

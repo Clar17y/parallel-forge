@@ -25,6 +25,7 @@ from forge.domain.approval import (
 )
 from forge.domain.plan import PlanOutput
 from forge.domain.run import RunState
+from forge.domain.task_usage_contract import SubjectKey
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +48,15 @@ class SubscriptionPlanGateService:
         self._artifacts = artifacts
         self._unit_of_work_factory = unit_of_work_factory
 
+    async def _checkpoint_active(self, work: UnitOfWork, run_id: UUID) -> bool:
+        run = await work.runs.get(run_id)
+        return (
+            await work.task_usage_checkpoints.active_for_subject(
+                SubjectKey(project_id=run.project_id, kind="run", subject_id=run.id)
+            )
+            is not None
+        )
+
     async def request_settled(
         self, attempt_id: UUID
     ) -> SubscriptionPlanGateOutcome | SubscriptionSettlement:
@@ -58,6 +68,8 @@ class SubscriptionPlanGateService:
                 return replay
             proposal = await work.subscription_plan_gate.proposal(attempt_id)
             run = await work.runs.get_for_update(proposal.producer.run_id)
+            if await self._checkpoint_active(work, run.id):
+                raise SubscriptionPlanGateError("plan publication is fenced by usage checkpoint")
             try:
                 evidence = await build_subscription_plan_evidence(
                     work, run, proposal.producer, proposal.result_digest, proposal.plan
@@ -76,6 +88,11 @@ class SubscriptionPlanGateService:
     async def request(
         self, evidence: SubscriptionPlanApprovalEvidence, plan: PlanOutput
     ) -> SubscriptionPlanGateOutcome:
+        async with self._unit_of_work_factory() as work:
+            if await work.subscription_plan_gate.get(
+                evidence.producer.attempt_id
+            ) is None and await self._checkpoint_active(work, evidence.producer.run_id):
+                raise SubscriptionPlanGateError("plan publication is fenced by usage checkpoint")
         evidence_bytes = _canonical_bytes(evidence)
         if hashlib.sha256(evidence_bytes).hexdigest() != canonical_digest(evidence):
             raise SubscriptionPlanGateError("subscription evidence cannot be canonically stored")
@@ -124,6 +141,8 @@ class SubscriptionPlanGateService:
                 await work.subscription_plan_gate.verify(evidence)
                 await work.commit()
                 return SubscriptionPlanGateOutcome(existing.evidence_digest, run.version, True)
+            if await self._checkpoint_active(work, run.id):
+                raise SubscriptionPlanGateError("plan publication is fenced by usage checkpoint")
             if (
                 run.state is not RunState.PLANNING
                 or run.policy_version != evidence.policy_version
