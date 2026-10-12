@@ -5,7 +5,7 @@ from dataclasses import replace
 from pathlib import Path
 from uuid import NAMESPACE_URL, UUID, uuid5
 
-from sqlalchemy import String, and_, case, cast, or_, select
+from sqlalchemy import String, and_, case, cast, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from forge.application.ports.subscription_acceptance import (
@@ -88,6 +88,7 @@ from forge.persistence.models.subscription import (
     SubscriptionDecisionRecord,
     SubscriptionTask,
 )
+from forge.persistence.models.subscription_handoff import SubscriptionHandoffFence
 from forge.persistence.models.subscription_results import (
     SubscriptionAttemptResult,
     SubscriptionRepairDebit,
@@ -179,6 +180,7 @@ def _rejection_handoff(
     candidate: bool = False,
     acceptance: bool = False,
     receipt_issue: AcceptanceReceiptClaimError | None = None,
+    primary_role_mismatch: bool = False,
 ) -> TaskHandoff:
     return TaskHandoff(
         run_id=attempt.run_id,
@@ -186,7 +188,9 @@ def _rejection_handoff(
         attempt_id=attempt.id,
         status=HandoffStatus.FAILED if repair else HandoffStatus.REPAIRS_EXHAUSTED,
         summary=(
-            f"Acceptance intent rejected: {receipt_issue}"
+            "Primary role cannot hand off work; issue a permitted primary decision"
+            if primary_role_mismatch
+            else f"Acceptance intent rejected: {receipt_issue}"
             if receipt_issue is not None
             else "Acceptance intent rejected: candidate, review or receipt claims differ"
             if acceptance
@@ -1028,6 +1032,29 @@ class PostgresSubscriptionDecisionRepository:
         assert isinstance(result, SettledSubscriptionHandoff)
         return result
 
+    async def reject_invalid_primary_handoff(
+        self, attempt_id: UUID
+    ) -> SubscriptionSettlement | None:
+        result = await self._session.get(SubscriptionAttemptResult, attempt_id)
+        if result is None:
+            raise SubscriptionDecisionError("handoff source is absent")
+        try:
+            context = result.result_payload["proposal_context"]
+            if not isinstance(context, dict):
+                raise TypeError
+            task = decode_subscription_record(context["task"])
+        except KeyError, TypeError, ValueError:
+            raise SubscriptionDecisionError("handoff source proof differs") from None
+        if not isinstance(task, LogicalTaskContract):
+            raise SubscriptionDecisionError("handoff source proof differs")
+        if task.purpose is not SpecialistPurpose.PRIMARY:
+            return None
+        outcome = await self._apply(
+            attempt_id, decision_type=TaskHandoff, invalid_primary_handoff=True
+        )
+        assert isinstance(outcome, SubscriptionSettlement)
+        return outcome
+
     async def handoff_replay(self, attempt_id: UUID) -> SubscriptionSettlement | None:
         result = await self._apply(attempt_id, decision_type=TaskHandoff, historical_handoff=True)
         assert result is None or isinstance(result, SubscriptionSettlement)
@@ -1088,18 +1115,21 @@ class PostgresSubscriptionDecisionRepository:
         observation: HandoffObservation | None = None,
         verified: VerifiedSubscriptionHandoff | None = None,
         historical_handoff: bool = False,
+        invalid_primary_handoff: bool = False,
         rejection: RejectedSubscriptionHandoff | None = None,
         claim_rejection: bool = False,
     ) -> SubscriptionSettlement | SettledSubscriptionHandoff | None:
         # Handoffs without observation/proof only load a proposal. Application
         # shares these stopped-source guards and rechecks both under the locks.
-        handoff_proposal = decision_type is TaskHandoff
+        handoff_proposal = decision_type is TaskHandoff and not invalid_primary_handoff
         worker_decision = handoff_proposal or decision_type is ScopeRequestDecision
         disposition = "waiting" if decision_type is WaitDecision else "delegated"
         prefix = "wait" if decision_type is WaitDecision else "delegation"
         if handoff_proposal:
             prefix = "handoff"
             disposition = "handoff_completed"
+        elif invalid_primary_handoff:
+            prefix = "handoff"
         elif decision_type is ScopeRequestDecision:
             prefix, disposition = "scope-request", "scope_requested"
         elif decision_type is BoundScopeResponseDecision:
@@ -1175,6 +1205,15 @@ class PostgresSubscriptionDecisionRepository:
         )
         if attempt is None or result is None:
             raise SubscriptionDecisionError("delegation source is absent")
+        if invalid_primary_handoff:
+            receipt = {
+                "schema_version": 1,
+                "kind": "rejected_primary_handoff",
+                "reason": "primary_role_cannot_handoff",
+                "run_id": str(run_id),
+                "attempt_id": str(attempt_id),
+                "result_digest": result.result_digest,
+            }
         if historical_handoff:
             if result.disposition not in {
                 "handoff_completed",
@@ -1403,6 +1442,13 @@ class PostgresSubscriptionDecisionRepository:
             or candidate_selected
             or acceptance_rejected
         ):
+            if invalid_primary_handoff and (
+                receipt is None
+                or result.application_payload != receipt
+                or result.application_digest != canonical_digest(receipt)
+                or not rejected
+            ):
+                raise SubscriptionDecisionError("primary handoff rejection replay differs")
             if isinstance(decision, AcceptDecision):
                 expected_acceptance = None if rejected else acceptance_receipt
                 if (
@@ -1702,6 +1748,7 @@ class PostgresSubscriptionDecisionRepository:
                             candidate=candidate_rejected,
                             acceptance=isinstance(decision, AcceptDecision),
                             receipt_issue=receipt_issue,
+                            primary_role_mismatch=invalid_primary_handoff,
                         )
                     )
                 ):
@@ -1752,6 +1799,13 @@ class PostgresSubscriptionDecisionRepository:
             and scheduled is not None
             and await PostgresSchedulingRepository(self._session)._is_coordinator(scheduled)
         )
+        invalid_primary_coordinator = (
+            invalid_primary_handoff
+            and scheduler is not None
+            and scheduler.candidate_state in {"open", "draining", "closed"}
+            and scheduled is not None
+            and await PostgresSchedulingRepository(self._session)._is_coordinator(scheduled)
+        )
         if (
             result.disposition != "decision_pending"
             or result.application_payload is not None
@@ -1794,6 +1848,7 @@ class PostgresSubscriptionDecisionRepository:
             or task.version != await pending_decision_task_version(self._session, attempt, result)
             or not (
                 (scheduler.candidate_state == "open" and reopening_receipt is None)
+                or invalid_primary_coordinator
                 or closed_delegation
                 or closed_acceptance
                 or (
@@ -1823,6 +1878,29 @@ class PostgresSubscriptionDecisionRepository:
             raise SubscriptionDecisionError("delegation worktree identity differs") from None
         if scheduled.worktree_id != resource:
             raise SubscriptionDecisionError("delegation worktree identity differs")
+        if invalid_primary_handoff:
+            assert isinstance(decision, TaskHandoff) and receipt is not None
+            outstanding_effect = await self._session.scalar(
+                select(SubscriptionScheduledEffect.id)
+                .where(
+                    SubscriptionScheduledEffect.run_id == run_id,
+                    SubscriptionScheduledEffect.state.in_(("admitted", "reconciling")),
+                )
+                .limit(1)
+            )
+            active_fence = await self._session.scalar(
+                select(SubscriptionHandoffFence.worktree_id).where(
+                    SubscriptionHandoffFence.worktree_id == resource,
+                    SubscriptionHandoffFence.expires_at > func.clock_timestamp(),
+                )
+            )
+            if outstanding_effect is not None or active_fence is not None:
+                raise SubscriptionDecisionError("worktree effects or observation are still active")
+            result.application_payload = receipt
+            result.application_digest = canonical_digest(receipt)
+            return await self._reject(
+                task, scheduled, attempt, result, decision, key, primary_role_mismatch=True
+            )
         if task_acceptance:
             assert isinstance(decision, AcceptDecision)
             if acceptance_receipt is None:
@@ -2407,6 +2485,8 @@ class PostgresSubscriptionDecisionRepository:
         | ForwardFeedbackDecision
         | ReviewSelection,
         key: str,
+        *,
+        primary_role_mismatch: bool = False,
     ) -> SubscriptionSettlement:
         # Only semantic rejection reaches here, after current source, control,
         # usage and stopped-launch proofs. Preserve the original provider result.
@@ -2434,6 +2514,7 @@ class PostgresSubscriptionDecisionRepository:
                 handoff=isinstance(decision, TaskHandoff),
                 claim_error=_claim_rejection_reason(result.application_payload),
                 acceptance=isinstance(decision, AcceptDecision),
+                primary_role_mismatch=primary_role_mismatch,
             ),
             idempotency_key=f"decision-rejection:{attempt.id}",
         )

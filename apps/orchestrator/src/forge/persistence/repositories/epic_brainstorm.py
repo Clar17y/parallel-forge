@@ -896,6 +896,10 @@ class PostgresBrainstormRepository:
                 ),
                 "adopted_revision_id": row.adopted_revision_id,
                 "failure": row.failure,
+                "diagnostics": (
+                    {"attempt_id": attempt.id, **(getattr(attempt, "diagnostics", None) or {})}
+                    if attempt is not None else None
+                ),
                 "usage_known": attempt.usage_known
                 and not self._unsafe_usage(raw_usage or {})
                 and not current_money_conflict

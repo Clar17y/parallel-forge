@@ -34,6 +34,7 @@ class DecompositionGatewayResult:
     telemetry: AttemptTelemetry | None
     failure: str | None = None
     quota_reset_at: str | None = None
+    quota_exhausted: bool = False
 
 
 class DecompositionGateway(Protocol):
