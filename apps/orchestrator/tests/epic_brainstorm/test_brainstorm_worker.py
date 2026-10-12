@@ -7,7 +7,14 @@ from uuid import uuid4
 
 import pytest
 from alembic import command
-from forge.agents.client_process import ClientLaunchSpec, ClientProcessSupervisor, _process_token
+from forge.agents.client_process import (
+    ClientLaunchSpec,
+    ClientProcessReceipt,
+    ClientProcessResult,
+    ClientProcessSupervisor,
+    _process_token,
+)
+from forge.agents.epic_brainstorm_protocol import AuthoringTools, AuthoringUsage
 from forge.application.ports.epic_brainstorm import BrainstormGatewayResult, BriefInput
 from forge.application.services.auth import AuthenticatedActor
 from forge.application.services.epic_brainstorm import EpicBrainstormService
@@ -33,6 +40,8 @@ from forge.persistence.models.subscription_quota import (
     SubscriptionQuotaPool,
 )
 from forge.persistence.repositories.epic_brainstorm import PostgresBrainstormRepository
+from forge.tools.epic_brainstorm import BrainstormReadOnlyTools
+from forge.tools.repository import RepositoryReader
 from forge.worker.epic_brainstorm import (
     DurableBrainstormProcessLifecycle,
     EpicBrainstormWorker,
@@ -233,6 +242,84 @@ async def test_diagnostics_are_bounded_content_free_and_fenced_on_retry(
         first = await session.get(BrainstormAttemptRow, first_id)
         assert first is not None and first.diagnostics["dropped_events"] == 2
         assert len(first.diagnostics["events"]) == 128
+
+
+@pytest.mark.asyncio
+async def test_delayed_diagnostics_cannot_follow_process_settlement(
+    brainstorm_session_factory, tmp_path,
+):
+    await prepared(brainstorm_session_factory)
+    async with brainstorm_session_factory() as session, session.begin():
+        claimed = await PostgresBrainstormRepository(session).claim("delayed-diagnostic")
+        assert claimed is not None
+        _, attempt = claimed
+        attempt_id, fence = attempt.id, attempt.fence
+    lifecycle = DurableBrainstormProcessLifecycle(
+        brainstorm_session_factory, attempt_id, fence, "delayed-diagnostic"
+    )
+    receipt = ClientProcessReceipt("diagnostic-launch", 123, "scripted", 0.0)
+    result = ClientProcessResult(
+        receipt=receipt, return_code=None, frames=(), stdout_byte_count=0, stderr="",
+        stderr_byte_count=0, stdout_truncated=False, stderr_truncated=False,
+        outcome="unsettled", stop_confirmed=False,
+    )
+    await lifecycle.launch_intent(receipt.launch_id)
+    await lifecycle.started(receipt)
+    await lifecycle.finished(receipt, result)
+    await lifecycle.diagnostic("provider_wait")
+    async with brainstorm_session_factory() as session:
+        stored = await session.get(BrainstormAttemptRow, attempt_id)
+        assert stored is not None and not stored.process_settled
+        assert stored.diagnostics["events"][-1]["kind"] == "provider_wait"
+
+    release = asyncio.Event()
+    cancelled = asyncio.Event()
+    callback = None
+
+    async def delayed(kind: str, **fields: object) -> None:
+        nonlocal callback
+        callback = asyncio.current_task()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            await release.wait()
+        await lifecycle.diagnostic(kind, **fields)
+
+    tools = AuthoringTools(
+        BrainstormReadOnlyTools(RepositoryReader(root=str(tmp_path), secret_paths=())),
+        10, AuthoringUsage(), diagnostic=delayed,
+    )
+    try:
+        await asyncio.wait_for(tools.record("proposal_received"), 1)
+        await asyncio.wait_for(cancelled.wait(), 1)
+        assert callback is not None and not callback.done()
+        await asyncio.wait_for(lifecycle.finished(
+            receipt, replace(result, return_code=0, outcome="exited", stop_confirmed=True),
+        ), 1)
+        async with brainstorm_session_factory() as session:
+            stored = await session.get(BrainstormAttemptRow, attempt_id)
+            assert stored is not None and stored.process_settled
+            settled_diagnostics = stored.diagnostics
+            assert [event["kind"] for event in settled_diagnostics["events"]] == [
+                "launch", "provider_wait", "settlement_started", "process_settled",
+            ]
+    finally:
+        release.set()
+        if callback is not None:
+            await asyncio.wait_for(callback, 1)
+    for kind in (
+        "tool_started", "tool_completed", "tool_failed", "provider_wait",
+        "provider_retry", "provider_error", "proposal_received", "settlement_started",
+    ):
+        await lifecycle.diagnostic(kind)
+    async with brainstorm_session_factory() as session:
+        stored = await session.get(BrainstormAttemptRow, attempt_id)
+        assert stored is not None and stored.state == "admitted"
+        job = await session.get(BrainstormJobRow, stored.job_id)
+        assert job is not None and job.state == "running"
+        assert stored.lease_expires_at > datetime.now(UTC)
+        assert stored.diagnostics == settled_diagnostics
 
 
 @pytest.mark.asyncio
@@ -539,6 +626,8 @@ async def test_restart_adoption_and_stale_draft(brainstorm_session_factory):
     outcome = await service().observe(epic_id=epic_id, project_id=project_id, job_id=receipt.job_id)
     assert outcome.state == "proposed" and outcome.process_settled and outcome.usage_known
     assert outcome.proposal is not None and outcome.proposal_digest == outcome.proposal.digest
+    assert outcome.diagnostics is not None
+    assert outcome.diagnostics.events[-1].kind == "attempt_stopped"
     adopted = await service().adopt(
         epic_id=epic_id,
         project_id=project_id,
@@ -881,10 +970,20 @@ async def test_cancel_before_and_during_invocation_discards_late_proposal(
 
     class SlowGateway:
         async def execute(self, job, turns, reader, *, cancelled, lifecycle):
+            class ProposalLifecycle:
+                async def launch_intent(self, launch_id):
+                    await lifecycle.launch_intent(launch_id)
+
+                async def started(self, receipt):
+                    await lifecycle.started(receipt)
+
+                async def finished(self, receipt, result):
+                    await lifecycle.diagnostic("proposal_received")
+                    await lifecycle.finished(receipt, result)
+
             result = await FakeGateway().execute(
-                job, turns, reader, cancelled=cancelled, lifecycle=lifecycle
+                job, turns, reader, cancelled=cancelled, lifecycle=ProposalLifecycle()
             )
-            await lifecycle.diagnostic("proposal_received")
             started.set()
             await released.wait()
             assert await cancelled()
@@ -900,7 +999,8 @@ async def test_cancel_before_and_during_invocation_discards_late_proposal(
     await asyncio.wait_for(started.wait(), timeout=5)
     current = await service.observe(epic_id=epic_id, project_id=project_id, job_id=second.job_id)
     assert current.diagnostics is not None
-    assert "proposal_received" in [event.kind for event in current.diagnostics.events]
+    kinds = [event.kind for event in current.diagnostics.events]
+    assert kinds.index("proposal_received") < kinds.index("process_settled")
     await service.cancel(
         epic_id=epic_id,
         project_id=project_id,

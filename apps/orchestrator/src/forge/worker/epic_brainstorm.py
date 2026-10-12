@@ -153,7 +153,7 @@ class DurableBrainstormProcessLifecycle:
         self, kind: str, *, operation: str | None = None, tool_name: str | None = None,
         duration_ms: int | None = None, failure: str | None = None,
     ) -> None:
-        """Persist only closed metadata while this attempt still owns the job."""
+        """Persist closed metadata only while this attempt owns an unsettled process."""
         async with self.sessions() as session, session.begin():
             job_id = await session.scalar(
                 select(BrainstormAttemptRow.job_id).where(BrainstormAttemptRow.id == self.attempt_id)
@@ -165,7 +165,7 @@ class DurableBrainstormProcessLifecycle:
             if (
                 attempt is None or attempt.fence != self.fence or attempt.owner != self.owner
                 or attempt.state != "admitted"
-                or (kind == "settlement_started" and attempt.process_settled)
+                or attempt.process_settled
                 or job is None or job.current_attempt_id != self.attempt_id
                 or job.state != "running"
                 or attempt.lease_expires_at <= datetime.now(UTC)
