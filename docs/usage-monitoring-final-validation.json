@@ -544,16 +544,40 @@
         "typecheck": "npm run typecheck --workspace @parallel-forge/web; exit 0",
         "api": "npm run api:check --workspace @parallel-forge/web; exit 0"
       },
-      "input_sha256": {
-        "tests/acceptance/task_usage_monitoring_browser_fixture.py": "56ee8b249714f166279979f6bf5770241450d8ca288eea7ac136b11c1789e509",
-        "tests/acceptance/task_usage_monitoring_browser.mjs": "439eff4d86ecfda8e38389ccd23f0d8d46e278c20da7d756024c049f934c873a",
-        "apps/web/src/hooks/epics/use-epic-mutations.test.tsx": "9dc925954afb28fa7b7bc80b060631b6f0192ba436a1c15836ee719b09c97692",
-        "apps/web/src/lib/api/schema.d.ts": "ba650e4effb1fc4007f8dddd1407766b21cfb8a29e482327d264214879511dae",
-        "apps/web/src/hooks/epics/use-epic-mutations.ts": "433eace9be5b5aca955ece558662e76d6958058df7ad6cffee147eec980a55bc",
-        "apps/web/src/components/subscription-profiles/profile-list.tsx": "d8739c14fe0cf0a89a7004657206244cd84bf365e16f27f4c491080d9e42c1b1",
-        "apps/web/scripts/generate-api.mjs": "60a74625facefe252433fcecc0314d6be33c39fd356cba7f824a4a0675cd7115",
-        "apps/web/src/components/subscription-profiles/profile-list.test.tsx": "b26276a967972dcd6090770ab1e9e34a402b33800971ff71491c816d3a24ab5f"
-      },
+      "input_sha256": [
+        {
+          "path": "apps/web/scripts/generate-api.mjs",
+          "sha256": "60a74625facefe252433fcecc0314d6be33c39fd356cba7f824a4a0675cd7115"
+        },
+        {
+          "path": "apps/web/src/components/subscription-profiles/profile-list.test.tsx",
+          "sha256": "b26276a967972dcd6090770ab1e9e34a402b33800971ff71491c816d3a24ab5f"
+        },
+        {
+          "path": "apps/web/src/components/subscription-profiles/profile-list.tsx",
+          "sha256": "d8739c14fe0cf0a89a7004657206244cd84bf365e16f27f4c491080d9e42c1b1"
+        },
+        {
+          "path": "apps/web/src/hooks/epics/use-epic-mutations.test.tsx",
+          "sha256": "9dc925954afb28fa7b7bc80b060631b6f0192ba436a1c15836ee719b09c97692"
+        },
+        {
+          "path": "apps/web/src/hooks/epics/use-epic-mutations.ts",
+          "sha256": "433eace9be5b5aca955ece558662e76d6958058df7ad6cffee147eec980a55bc"
+        },
+        {
+          "path": "apps/web/src/lib/api/schema.d.ts",
+          "sha256": "ba650e4effb1fc4007f8dddd1407766b21cfb8a29e482327d264214879511dae"
+        },
+        {
+          "path": "tests/acceptance/task_usage_monitoring_browser.mjs",
+          "sha256": "439eff4d86ecfda8e38389ccd23f0d8d46e278c20da7d756024c049f934c873a"
+        },
+        {
+          "path": "tests/acceptance/task_usage_monitoring_browser_fixture.py",
+          "sha256": "56ee8b249714f166279979f6bf5770241450d8ca288eea7ac136b11c1789e509"
+        }
+      ],
       "browser_command": "node tests/acceptance/task_usage_monitoring_browser.mjs http://127.0.0.1:57206 .llm-output/usage-final/integration/profile-browser-final/receipt.json .llm-output/usage-final/integration/profile-browser-final/scenario.json",
       "fixture_command": ".venv/Scripts/python.exe -u -m tests.acceptance.task_usage_monitoring_browser_fixture",
       "fixture_environment": {
@@ -738,6 +762,14 @@
         "smoke": "passed",
         "smoke_url": "https://github.com/Clar17y/parallel-forge/actions/runs/38291517929",
         "codex": "completed with substantiated C1; one unresolved conversation before repair push"
+      },
+      {
+        "head": "86bf27ce157f6df4f687290d73db0d3304cac674",
+        "smoke": "failed secret scan before tests",
+        "smoke_url": "https://github.com/Clar17y/parallel-forge/actions/runs/38295462873",
+        "adjudication": "generic-api-key finding is a verified source SHA256 for apps/web/scripts/generate-api.mjs in the validation input map. Reformatting as path/sha256 entries preserves the same hashes without rule suppression.",
+        "redacted_evidence": ".llm-output/usage-final/gitleaks-86bf27c.tsv",
+        "C1_thread": "repaired with evidence reply and resolved"
       }
     ]
   },
