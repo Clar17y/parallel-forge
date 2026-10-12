@@ -8,13 +8,14 @@
     103,
     106
   ],
-  "status": "Required local acceptance and independent integrated review are complete; latest-head automatic PR checks and Codex review are recorded on the published PR and retained locally before final reporting.",
+  "status": "Required local acceptance and independent integrated review with named repair follow-ups are complete. The final pre-push snapshot awaits latest-head automatic PR checks and Codex acceptance; those receipts are retained locally and on PR112.",
   "feature_complete": "Required local acceptance established; publication acceptance is separate and merging remains unauthorized.",
   "source": {
     "base": "17552fb2a8529c460d9dca249ff0d931aa1b504a",
+    "parent_head": "518fae8659d8f376c144978900f536a5662d0a7f",
     "branch": "codex/usage-monitoring-final",
-    "recorded_at_utc": "2026-10-12T18:27:00.222772+00:00",
-    "code_input_sha256": "b93bfb8ee88009b29e7e424d016eaf103637b4ec189632eff0373e2a715216e4",
+    "recorded_at_utc": "2026-10-12T18:57:21.081559+00:00",
+    "code_input_sha256": "300c8d1b89bb685d162e904e90ccc2be07f60ea97ed396eceb78a69d1bfdbec4",
     "inputs": [
       {
         "path": "apps/orchestrator/tests/task_usage_contract/test_migration.py",
@@ -30,7 +31,7 @@
       },
       {
         "path": "apps/web/scripts/generate-api.mjs",
-        "sha256": "4c9ac5235e3ff6330da7f8fdf3780c2360c6b85e1875fc027bf86ced2f2c2fff"
+        "sha256": "60a74625facefe252433fcecc0314d6be33c39fd356cba7f824a4a0675cd7115"
       },
       {
         "path": "apps/web/src/components/epics/authoring-usage-checkpoint.test.tsx",
@@ -97,6 +98,14 @@
         "sha256": "e366933731e9f7d68035f747e637b7fcf3e8edfd1d47f8c04a17acdb381a3fa7"
       },
       {
+        "path": "apps/web/src/components/subscription-profiles/profile-list.test.tsx",
+        "sha256": "b26276a967972dcd6090770ab1e9e34a402b33800971ff71491c816d3a24ab5f"
+      },
+      {
+        "path": "apps/web/src/components/subscription-profiles/profile-list.tsx",
+        "sha256": "d8739c14fe0cf0a89a7004657206244cd84bf365e16f27f4c491080d9e42c1b1"
+      },
+      {
         "path": "apps/web/src/components/subscription-tasks/run-usage-checkpoint.test.tsx",
         "sha256": "be4f14c5bbd1e13a24c31264ba3eed10cbd21df5d0ba46ccba5f7fda6beebc60"
       },
@@ -122,11 +131,11 @@
       },
       {
         "path": "apps/web/src/hooks/epics/use-epic-mutations.test.tsx",
-        "sha256": "708d3c39f419bcb93263c6c35eab4e2330999045b13900252ca10f31f827b6e9"
+        "sha256": "9dc925954afb28fa7b7bc80b060631b6f0192ba436a1c15836ee719b09c97692"
       },
       {
         "path": "apps/web/src/hooks/epics/use-epic-mutations.ts",
-        "sha256": "ce165e4a448a30ac0720dec53ee910c82057957e8a04d22cb87d6144058e9c9a"
+        "sha256": "433eace9be5b5aca955ece558662e76d6958058df7ad6cffee147eec980a55bc"
       },
       {
         "path": "apps/web/src/lib/api/client.test.ts",
@@ -154,7 +163,7 @@
       },
       {
         "path": "apps/web/src/lib/api/schema.d.ts",
-        "sha256": "17e133869a3651217370e71352711056c8fd934ecf3e195a2475f68bf351f35d"
+        "sha256": "ba650e4effb1fc4007f8dddd1407766b21cfb8a29e482327d264214879511dae"
       },
       {
         "path": "tests/acceptance/process_harness.py",
@@ -162,11 +171,11 @@
       },
       {
         "path": "tests/acceptance/task_usage_monitoring_browser.mjs",
-        "sha256": "74eea5ee5ba08754f1402b72f98df99eccdc8d7cc1bc0d62c4bae0a9e66986e4"
+        "sha256": "439eff4d86ecfda8e38389ccd23f0d8d46e278c20da7d756024c049f934c873a"
       },
       {
         "path": "tests/acceptance/task_usage_monitoring_browser_fixture.py",
-        "sha256": "bcf801d784ff8fecc7d3e4bb2398d98fbbc066a0a6370fb5622ff40badb45c02"
+        "sha256": "56ee8b249714f166279979f6bf5770241450d8ca288eea7ac136b11c1789e509"
       },
       {
         "path": "tests/acceptance/test_task_usage_final_only_process.py",
@@ -306,7 +315,8 @@
       "invariant": "Exact browser integers and compatibility",
       "cases": [
         "MAX_SAFE, +1, +2, INT64_MAX; six monitoring fields, epic execution caps, profile and API-backed model caps; raw numeric API wire and exact PostgreSQL equality; invalid/unsafe/fraction/overflow refusal; null/clear and stale rebase.",
-        "Actual browser outbound epic PUT bodies contain unquoted numeric tokens at all four boundaries; a serializer failure precedes pending replay reservation, while uncertain valid requests retain the identical body/key."
+        "Actual browser outbound epic PUT bodies contain unquoted numeric tokens at all four boundaries; a serializer failure precedes pending replay reservation, while uncertain valid requests retain the identical body/key.",
+        "Actual profile creation and append versions1-4 save all four boundaries with numeric StrictInt POST bodies, exact per-version GET and PostgreSQL equality; version5 clears both caps while earlier immutable rows retain their values. NaN/Infinity cannot silently clear an epic cap through frozen-request copying."
       ],
       "check": [
         "apps/web/src/lib/api/exact-integer.test.ts",
@@ -314,7 +324,7 @@
         "tests/acceptance/task_usage_monitoring_browser.mjs"
       ],
       "status": "proved locally",
-      "evidence": ".llm-output/usage-final/integration/hook-red.log, hook-final53.log, browser-epic-outbound.json, browser-review-delta-receipt.json, exact API/SQL snapshots and source-bound review-delta-receipts.json."
+      "evidence": ".llm-output/usage-final/integration/hook-red.log, hook-final53.log, browser-epic-outbound.json, browser-review-delta-receipt.json, exact API/SQL snapshots and source-bound review-delta-receipts.json. C1 final actual profile write evidence: .llm-output/usage-final/integration/profile-browser-final/ and profile-repair-receipts.json. Earlier profile rendering was not this proof."
     },
     {
       "invariant": "Real multi-project access and reporting filters",
@@ -406,17 +416,18 @@
       "raw_log": ".llm-output/usage-final/integration/transport16.log"
     },
     "api_types_web_typing_style_build": {
-      "result": "Generated API/client unchanged and checked on the model-cap candidate; final delta web typing/lint/build passed.",
+      "result": "API/client generation, web typing/lint/build passed on the final C1 candidate.",
       "receipt": ".llm-output/usage-final/integration/model-cap-receipts.json",
-      "final_delta_receipt": ".llm-output/usage-final/integration/review-delta-receipts.json"
+      "final_delta_receipt": ".llm-output/usage-final/integration/profile-repair-receipts.json"
     },
     "actual_browser": {
       "result": "passed",
-      "receipt": ".llm-output/usage-final/integration/browser-review-delta-receipt.json",
-      "api": ".llm-output/usage-final/integration/browser-project-model-api.json",
-      "sql": ".llm-output/usage-final/integration/browser-sql-snapshot.json",
-      "outbound_epic_http": ".llm-output/usage-final/integration/browser-epic-outbound.json",
-      "supersedes": ".llm-output/usage-final/integration/browser-model-cap-receipt.json"
+      "receipt": ".llm-output/usage-final/integration/profile-browser-final/receipt.json",
+      "api": ".llm-output/usage-final/integration/profile-browser-final/browser-profile-api.json",
+      "sql": ".llm-output/usage-final/integration/profile-browser-final/browser-sql-snapshot.json",
+      "outbound_epic_http": ".llm-output/usage-final/integration/profile-browser-final/browser-epic-outbound.json",
+      "supersedes": ".llm-output/usage-final/integration/browser-review-delta-receipt.json",
+      "outbound_profile_http": ".llm-output/usage-final/integration/profile-browser-final/browser-profile-outbound.json"
     },
     "adk_reuse": {
       "passed": 100,
@@ -515,16 +526,57 @@
       "source_files": 568,
       "raw_log": ".llm-output/usage-final/source-mypy.log",
       "scope": "Current active-worktree production Python source; no production Python change in this batch."
+    },
+    "C1_repair": {
+      "passed": 97,
+      "files": 5,
+      "focused_command": "npm run test --workspace @parallel-forge/web -- --run src/components/subscription-profiles/profile-list.test.tsx src/components/subscription-profiles/profile-editor.test.tsx src/hooks/epics/use-epic-mutations.test.tsx src/lib/api/exact-integer.test.ts src/lib/api/client.test.ts",
+      "raw_green": ".llm-output/usage-final/integration/profile-repair-green.log",
+      "red": {
+        "profile": "profile-red-final.log: exit 1, 2 expected numeric-body failures, 13 passed",
+        "epic": "epic-freeze-red.log: exit 1, 3 expected nonfinite-cap failures, 37 passed"
+      },
+      "checks": {
+        "browser": "node tests/acceptance/task_usage_monitoring_browser.mjs fresh fixture; exit 0, profile create and versions 2-5, raw numeric POST/GET, SQL exact, full prior journey",
+        "build": "npm run build --workspace @parallel-forge/web; exit 0",
+        "focused": "npm run test --workspace @parallel-forge/web -- --run profile-list/profile-editor/use-epic-mutations/exact-integer/client; exit 0, 97 passed",
+        "lint": "npm run lint --workspace @parallel-forge/web; exit 0",
+        "typecheck": "npm run typecheck --workspace @parallel-forge/web; exit 0",
+        "api": "npm run api:check --workspace @parallel-forge/web; exit 0"
+      },
+      "input_sha256": {
+        "tests/acceptance/task_usage_monitoring_browser_fixture.py": "56ee8b249714f166279979f6bf5770241450d8ca288eea7ac136b11c1789e509",
+        "tests/acceptance/task_usage_monitoring_browser.mjs": "439eff4d86ecfda8e38389ccd23f0d8d46e278c20da7d756024c049f934c873a",
+        "apps/web/src/hooks/epics/use-epic-mutations.test.tsx": "9dc925954afb28fa7b7bc80b060631b6f0192ba436a1c15836ee719b09c97692",
+        "apps/web/src/lib/api/schema.d.ts": "ba650e4effb1fc4007f8dddd1407766b21cfb8a29e482327d264214879511dae",
+        "apps/web/src/hooks/epics/use-epic-mutations.ts": "433eace9be5b5aca955ece558662e76d6958058df7ad6cffee147eec980a55bc",
+        "apps/web/src/components/subscription-profiles/profile-list.tsx": "d8739c14fe0cf0a89a7004657206244cd84bf365e16f27f4c491080d9e42c1b1",
+        "apps/web/scripts/generate-api.mjs": "60a74625facefe252433fcecc0314d6be33c39fd356cba7f824a4a0675cd7115",
+        "apps/web/src/components/subscription-profiles/profile-list.test.tsx": "b26276a967972dcd6090770ab1e9e34a402b33800971ff71491c816d3a24ab5f"
+      },
+      "browser_command": "node tests/acceptance/task_usage_monitoring_browser.mjs http://127.0.0.1:57206 .llm-output/usage-final/integration/profile-browser-final/receipt.json .llm-output/usage-final/integration/profile-browser-final/scenario.json",
+      "fixture_command": ".venv/Scripts/python.exe -u -m tests.acceptance.task_usage_monitoring_browser_fixture",
+      "fixture_environment": {
+        "FORGE_BROWSER_SCENARIO_OUTPUT": ".llm-output/usage-final/integration/profile-browser-final/scenario.json"
+      },
+      "postgresql_database": "forge_test_22c9e1b5d6fd4652b457da84c20a2c15",
+      "source_origin_context": "Same active worktree .venv and source origin as prior process receipts; parent capture reconfirms forge.__file__. Final fixture did not print a new import line.",
+      "counts_overlap": true
+    },
+    "C1_fixture_style": {
+      "command": "rtk proxy .venv/Scripts/python.exe -m ruff check tests/acceptance/task_usage_monitoring_browser_fixture.py",
+      "exit_code": 0,
+      "raw_log": ".llm-output/usage-final/c1-fixture-ruff.log"
     }
   },
   "counts_overlap": true,
   "evidence_policy": "Historical broad runs retain actual failures and later scoped repairs; no final whole-backend pass is claimed. Raw logs and transcript summaries are labelled. Matching source/config evidence is reused; four test files only lost blank EOF lines after102 run. Final delta retains red numeric-wire and scripted-cancellation failures, followed by raw green receipts. A learned reference admission alone is not cited as complete successor acceptance.",
   "browser_summary": {
-    "observedAt": "2026-10-12T18:21:08.809Z",
+    "observedAt": "2026-10-12T18:55:22.462Z",
     "surfaces": [
       {
         "kind": "authoring",
-        "pathname": "/epics/ebd27a58-45fb-49e4-8f52-fe5f98286242",
+        "pathname": "/epics/7a80353d-222c-4ba9-9321-b570bc161b47",
         "rendered": true,
         "checkpoint": true,
         "measured": true,
@@ -532,7 +584,7 @@
       },
       {
         "kind": "run",
-        "pathname": "/runs/af83c555-1340-49aa-9fe6-c583e0ce4a94",
+        "pathname": "/runs/0ae5ef42-7b7b-4b3b-b900-35d068bf2405",
         "rendered": true,
         "checkpoint": true,
         "measured": true,
@@ -540,7 +592,7 @@
       },
       {
         "kind": "project",
-        "pathname": "/projects/df98b665-7c04-41bd-8cc4-6980d8bfbb20",
+        "pathname": "/projects/e3500314-edc5-4056-994a-99cd49831702",
         "rendered": true
       },
       {
@@ -550,7 +602,7 @@
       }
     ],
     "epicCaps": {
-      "epicId": "3146b080-c245-4280-8d4c-9457b0ff6586",
+      "epicId": "509957c5-03cc-4c7f-994e-d71624019ad6",
       "savedCaps": [
         "9007199254740991",
         "9007199254740992",
@@ -571,12 +623,12 @@
       "comparableCohorts": 1
     },
     "multiProjectHistory": {
-      "measuredProject": "ce396563-35a2-44d0-b24a-9478a2464cb0",
-      "unknownProject": "ee73e16d-8f01-4837-91a8-45ed59b8432e",
+      "measuredProject": "bb298b28-cdba-4e0c-bd6b-18ea872739cf",
+      "unknownProject": "1762773b-4c93-4ba1-810b-556477d24629",
       "projects": [
-        "ce396563-35a2-44d0-b24a-9478a2464cb0",
-        "df98b665-7c04-41bd-8cc4-6980d8bfbb20",
-        "ee73e16d-8f01-4837-91a8-45ed59b8432e"
+        "1762773b-4c93-4ba1-810b-556477d24629",
+        "bb298b28-cdba-4e0c-bd6b-18ea872739cf",
+        "e3500314-edc5-4056-994a-99cd49831702"
       ],
       "measuredSamples": 2,
       "excluded": 3,
@@ -610,6 +662,42 @@
       ],
       "windowCleared": true,
       "staleRebased": true
+    },
+    "profileCaps": {
+      "profileId": "e8fba53c-3b8a-4fdf-8602-a024e59c763e",
+      "versions": [
+        [
+          "e8fba53c-3b8a-4fdf-8602-a024e59c763e",
+          1,
+          "9007199254740991",
+          "9007199254740991"
+        ],
+        [
+          "e8fba53c-3b8a-4fdf-8602-a024e59c763e",
+          2,
+          "9007199254740992",
+          "9007199254740992"
+        ],
+        [
+          "e8fba53c-3b8a-4fdf-8602-a024e59c763e",
+          3,
+          "9007199254740993",
+          "9007199254740993"
+        ],
+        [
+          "e8fba53c-3b8a-4fdf-8602-a024e59c763e",
+          4,
+          "9223372036854775807",
+          "9223372036854775807"
+        ],
+        [
+          "e8fba53c-3b8a-4fdf-8602-a024e59c763e",
+          5,
+          null,
+          null
+        ]
+      ],
+      "numericPostBodies": 5
     }
   },
   "owner_controls": "Direct authenticated actions authorize their concrete effect; notes optional; cap/reference changes do not waive real settlement, quota/manual pause/cancel, tool/route or merge boundaries.",
@@ -625,7 +713,7 @@
       "quality",
       "efficiency"
     ],
-    "independent_review": "Full integrated fallback review completed all three dimensions with no further justified simplifications; final delta receives one named follow-up, not a restart of whole-change review."
+    "independent_review": "One full integrated review covered reuse, quality and efficiency. Named A1-A3 and C1/nonfinite-copy repair follow-ups reuse unchanged review evidence; no additional justified simplifications remained."
   },
   "remaining_limitations": [
     "Foreign-host identity/lease manipulation is a controlled local simulation; genuine execution on a second physical host is unrun.",
@@ -637,11 +725,21 @@
     "Context-triggered automatic pauses and progress-stall intervention remain separate follow-ups."
   ],
   "publication": {
-    "snapshot": "Local candidate before first push",
+    "snapshot": "Final local repair candidate before update push; latest-head hosted acceptance recorded subsequently on PR and privately.",
     "normal_automatic_pr_checks_and_codex": "Explicitly authorized; latest-head receipts will be recorded on the one published PR and retained locally.",
     "manual_full_hosted_ci_authorized": false,
     "runtime_live_provider_authorized": false,
-    "merge_authorized": false
+    "merge_authorized": false,
+    "pr": 112,
+    "url": "https://github.com/Clar17y/parallel-forge/pull/112",
+    "history": [
+      {
+        "head": "518fae8659d8f376c144978900f536a5662d0a7f",
+        "smoke": "passed",
+        "smoke_url": "https://github.com/Clar17y/parallel-forge/actions/runs/38291517929",
+        "codex": "completed with substantiated C1; one unresolved conversation before repair push"
+      }
+    ]
   },
   "independent_review": {
     "provider_attempt": "Pinned Claude Opus5.5 medium ended in provider_error from expired OAuth, before a completed step; not quota exhaustion.",
@@ -653,9 +751,27 @@
       "A2 completed learned successors and crossing",
       "A3 actual held check after provider-child settlement"
     ],
-    "followup": "Completed on the unchanged final code input; no material findings.",
+    "followup": "Original A1-A3 follow-up completed on b93bfb8e with no material findings. Codex subsequently found C1 on that published candidate; original review reports are preserved and are not proof of absence.",
     "code_input_sha256": "b93bfb8ee88009b29e7e424d016eaf103637b4ec189632eff0373e2a715216e4",
     "review_summary": ".llm-output/usage-final/integrated-review-summary.json",
-    "jev": "Attempted on exact saved integrated diff; partial advisory coverage remains visible. Final pre-push result retained locally."
+    "jev": "Attempted on exact saved integrated diff; partial advisory coverage remains visible. Final pre-push result retained locally.",
+    "C1_followup": {
+      "status": "completed; no material findings or remaining required acceptance gaps",
+      "question": "Numeric strict-API profile create/append, exact generated types, immutable version/retry behavior, and nonfinite values preserved until rejection before pending replay.",
+      "code_input_sha256": "300c8d1b89bb685d162e904e90ccc2be07f60ea97ed396eceb78a69d1bfdbec4",
+      "evidence": ".llm-output/usage-final/integration/profile-repair-receipts.json",
+      "full_review_reused_for_unchanged_paths": true
+    }
+  },
+  "post_publish_repair": {
+    "prior_head": "518fae8659d8f376c144978900f536a5662d0a7f",
+    "codex_finding": "https://github.com/Clar17y/parallel-forge/pull/112#discussion_r4251239629",
+    "adjudication": "Substantiated: ProfileList quoted exact cap strings, rejected by existing StrictInt API. Corrected before idempotency attempt state. Server numeric contract retained.",
+    "adjacent_case": "NaN and positive/negative Infinity became null during epic JSON cloning; structuredClone now preserves them for exact serializer rejection before pending/replay.",
+    "consolidation": "Second same raw-serializer caller defect prompted one remaining cap-writer audit and complete create/append/retry/stale/null/nonfinite repair batch with the existing integration owner.",
+    "prior_acceptance_limit": "Earlier profile page rendering and editor mocks did not prove exact-cap profile create/append. The new actual browser POST/API/SQL sequence supersedes that claim.",
+    "caller_audit": "Other JSON uses serve display, local storage/comparison keys or UUID/version/action-only writes. Monitoring/project actual mutation sends use the shared exact serializer.",
+    "receipt": ".llm-output/usage-final/integration/profile-repair-receipts.json",
+    "earlier_red_and_failed_browser_receipts_retained": true
   }
 }

@@ -266,7 +266,7 @@ class EpicMutationStore {
     if (scope.pending) throw new Error('A competing mutation is unresolved. Retry the original request first.');
     return this.runMutation<T>(storageKey, freeze({
       kind: options.kind, method, path,
-      body: JSON.parse(JSON.stringify(body)) as Record<string, unknown>,
+      body: structuredClone(body),
       idempotencyKey: options.idempotencyKey ?? crypto.randomUUID(), timestamp: Date.now(),
     }));
   }

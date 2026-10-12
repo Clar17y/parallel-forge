@@ -118,6 +118,18 @@ describe('useEpicMutations', () => {
     expect(sessionStorage.length).toBe(0);
   });
 
+  test.each([NaN, Infinity, -Infinity])('refuses nonfinite local cap %s before pending replay', async cap => {
+    const { result } = renderHook(() => useEpicMutations(epicId));
+    await act(async () => {
+      await expect(result.current.execute('PUT', `/epics/${epicId}/budget`, {
+        expected_version: 1, ceiling: { max_input_tokens: cap },
+      })).rejects.toThrow(/unsafe JavaScript integer/);
+    });
+    expect(api).not.toHaveBeenCalled();
+    expect(result.current.hasPendingRetry).toBe(false);
+    expect(sessionStorage.length).toBe(0);
+  });
+
   test('retains a failed create across remount and completes the original action once', async () => {
     const created = vi.fn();
     vi.mocked(api).mockRejectedValueOnce(new Error('response lost'));

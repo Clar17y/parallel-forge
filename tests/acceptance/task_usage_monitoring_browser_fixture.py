@@ -284,9 +284,24 @@ async def _storage_snapshot(database_url: str, scenario: dict[str, str]) -> dict
                 "FROM project_policy_versions WHERE project_id = :project "
                 "ORDER BY version DESC LIMIT 1"
             ), {"project": scenario["project_id"]})).one()
+            profile_versions = (await db.execute(text(
+                "SELECT profile_id, version, payload "
+                "FROM subscription_profile_versions ORDER BY profile_id, version"
+            ))).all()
             budget = decode_subscription_record(budget_row[1]) if budget_row else None
             if budget_row is not None and not isinstance(budget, TaskBudget):
                 raise TypeError("stored epic ceiling was not a task budget")
+            stored_profile_versions = []
+            for profile_id, version, payload in profile_versions:
+                profile = decode_subscription_record(payload)
+                role_budget = profile.preferences[0].token_budget
+                stored_profile_versions.append([
+                    str(profile_id), version,
+                    None if role_budget is None or role_budget.max_input_tokens is None
+                    else str(role_budget.max_input_tokens),
+                    None if role_budget is None or role_budget.max_output_tokens is None
+                    else str(role_budget.max_output_tokens),
+                ])
             return {
                 "project": [str(project[0]), str(project[1]) if project[1] else None, project[2]],
                 "policy": list(policy),
@@ -321,6 +336,7 @@ async def _storage_snapshot(database_url: str, scenario: dict[str, str]) -> dict
                     "max_input_tokens": project_policy[1],
                     "max_output_tokens": project_policy[2],
                 },
+                "profile_versions": stored_profile_versions,
             }
     finally:
         await engine.dispose()

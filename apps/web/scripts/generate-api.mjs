@@ -12,6 +12,7 @@ const exactFields = {
   MonitoringPolicyResponse: policyExactFields,
   MonitoringPolicyRevisionRequest: policyExactFields,
   TaskBudget: tokenCapFields,
+  TokenBudgetDefaultsInput: tokenCapFields,
   BaselineReference: ['checkpoint_threshold_tokens', 'warning_threshold_tokens',
     'reference_tokens', 'coverage_count', 'minimum_comparables', 'outcome_count',
     'policy_revision', 'sample_count', 'source_count', 'window_limit'],

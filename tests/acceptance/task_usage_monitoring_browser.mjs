@@ -17,6 +17,12 @@ const browser = await chromium.launch({ headless: true });
 try {
   const page = await browser.newPage();
   const receipt = { observedAt: new Date().toISOString(), surfaces: [] };
+  const profileOutbound = [];
+  page.on('request', request => {
+    if (request.method() === 'POST' && /\/api\/subscription-profiles(?:\/[^/]+\/versions)?$/.test(request.url())) {
+      profileOutbound.push({ url: request.url(), body: request.postData() });
+    }
+  });
   let rawProjectPolicy;
   let webOrigin;
   for (const [kind, path, label] of [
@@ -311,6 +317,62 @@ try {
       }
       receipt.monitoringPolicy = { exactFields: true, sqlRevision: rebasedPolicy.revision,
         savedPolicyCaps, windowCleared: true, staleRebased: true };
+    } else {
+      const caps = ['9007199254740991', '9007199254740992',
+        '9007199254740993', '9223372036854775807', null];
+      let createdProfileId;
+      const profileReads = [];
+      for (const [index, cap] of caps.entries()) {
+        if (index > 0) {
+          await page.locator('details.saved-profile-history').evaluate(element => { element.open = true; });
+          await page.locator('.profile-version-card').filter({ hasText: createdProfileId })
+            .getByRole('button', { name: `Append from latest version ${index}` }).click();
+        }
+        const editor = page.locator('form').filter({ has: page.getByRole('button', {
+          name: index === 0 ? 'Create profile version 1' : `Append version ${index + 1}`, exact: true,
+        }) });
+        await editor.getByText('Advanced', { exact: true }).first().click();
+        for (const field of ['Primary input token budget', 'Primary output token budget']) {
+          await editor.getByRole('textbox', { name: field }).fill(cap ?? '');
+        }
+        const responsePromise = page.waitForResponse(response => response.request().method() === 'POST'
+          && /\/api\/subscription-profiles(?:\/[^/]+\/versions)?$/.test(response.url()));
+        await editor.getByRole('button', { name: index === 0 ? 'Create profile version 1' : `Append version ${index + 1}` }).click();
+        const response = await responsePromise;
+        if (!response.ok()) throw new Error(`profile version ${index + 1} save returned ${response.status()}: ${(await response.text()).slice(0, 500)}`);
+        const raw = await response.text();
+        const profile = JSON.parse(raw);
+        createdProfileId ??= profile.profile_id;
+        if (profile.profile_id !== createdProfileId || profile.version !== index + 1) {
+          throw new Error(`profile version identity mismatch: ${raw.slice(0, 300)}`);
+        }
+        const readback = await page.request.get(`${webOrigin}/api/subscription-profiles/${createdProfileId}/versions/${index + 1}`);
+        if (!readback.ok()) throw new Error(`profile version ${index + 1} readback returned ${readback.status()}`);
+        const readbackRaw = await readback.text();
+        for (const field of ['max_input_tokens', 'max_output_tokens']) {
+          const pattern = cap === null ? new RegExp(`"${field}"\\s*:\\s*null`)
+            : new RegExp(`"${field}"\\s*:\\s*${cap}\\b`);
+          if (!pattern.test(raw)) throw new Error(`profile API rounded ${field} at version ${index + 1}`);
+          if (!pattern.test(readbackRaw)) throw new Error(`profile GET rounded ${field} at version ${index + 1}`);
+          const sent = profileOutbound.at(-1)?.body ?? '';
+          if (!pattern.test(sent)) throw new Error(`profile POST body quoted or changed ${field} at version ${index + 1}: ${sent.slice(0, 300)}`);
+        }
+        profileReads.push({ version: index + 1, cap, postResponse: raw, getReadback: readbackRaw });
+        if (index < caps.length - 1) {
+          await page.locator('details.saved-profile-history').evaluate(element => { element.open = true; });
+          await page.locator('.profile-version-card').filter({ hasText: createdProfileId })
+            .getByRole('button', { name: `Append from latest version ${index + 1}` }).waitFor({ timeout: 20000 });
+        }
+      }
+      const storedProfiles = (await (await page.request.get(`${controlOrigin}/snapshot`)).json()).profile_versions
+        .filter(row => row[0] === createdProfileId);
+      if (storedProfiles.length !== caps.length || storedProfiles.some((row, index) =>
+        row[1] !== index + 1 || row[2] !== caps[index] || row[3] !== caps[index])) {
+        throw new Error(`profile PostgreSQL version/cap mismatch: ${JSON.stringify(storedProfiles)}`);
+      }
+      receipt.profileCaps = { profileId: createdProfileId, versions: storedProfiles, numericPostBodies: profileOutbound.length };
+      await writeFile(join(dirname(outputPath), 'browser-profile-api.json'),
+        JSON.stringify(profileReads, null, 2), 'utf8');
     }
     receipt.surfaces.push({ kind, pathname: new URL(page.url()).pathname, rendered: true });
     await page.screenshot({ path: join(dirname(outputPath), `browser-${kind}.png`), fullPage: true });
@@ -318,6 +380,8 @@ try {
   const evidenceDir = dirname(outputPath);
   await writeFile(join(evidenceDir, 'browser-epic-outbound.json'),
     JSON.stringify(outboundBudgetBodies, null, 2), 'utf8');
+  await writeFile(join(evidenceDir, 'browser-profile-outbound.json'),
+    JSON.stringify(profileOutbound, null, 2), 'utf8');
   await writeFile(join(evidenceDir, 'browser-project-model-api.json'), rawProjectPolicy, 'utf8');
   await writeFile(join(evidenceDir, 'browser-report-api.json'), JSON.stringify(allReport, null, 2), 'utf8');
   await writeFile(join(evidenceDir, 'browser-policy-api.json'),

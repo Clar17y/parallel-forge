@@ -6626,9 +6626,9 @@ export interface components {
         /** TokenBudgetDefaultsInput */
         TokenBudgetDefaultsInput: {
             /** Max Input Tokens */
-            max_input_tokens?: number | null;
+            max_input_tokens?: (number | string) | null;
             /** Max Output Tokens */
-            max_output_tokens?: number | null;
+            max_output_tokens?: (number | string) | null;
         };
         /** TurnAppend */
         TurnAppend: {
