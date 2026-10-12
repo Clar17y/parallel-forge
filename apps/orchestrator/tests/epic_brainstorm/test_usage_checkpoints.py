@@ -755,8 +755,9 @@ async def test_worker_tick_replays_committed_authoring_crossing_after_sink_timeo
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("kind", ("brainstorm", "decomposition"))
+@pytest.mark.parametrize("retry_cause", (None, "timeout", "quota_exhausted"))
 async def test_live_poll_replays_committed_crossing_before_provider_settlement(
-    brainstorm_session_factory, monkeypatch, kind,
+    brainstorm_session_factory, monkeypatch, kind, retry_cause,
 ) -> None:
     project_id, epic_id, actor = await _setup_project(brainstorm_session_factory)
     route = RouteSpec(provider="google", client="antigravity_cli", model="gemini-2.5-pro")
@@ -854,6 +855,44 @@ async def test_live_poll_replays_committed_crossing_before_provider_settlement(
         ),
     )
     subject = SubjectKey(project_id=project_id, kind="authoring_job", subject_id=receipt.job_id)
+    first_checkpoint = None
+    if retry_cause is not None:
+        class FirstFailureGateway(ObservableGatewayStub):
+            async def execute_observed(self, *args, usage_sink, **kwargs):
+                class CatchSink:
+                    async def observe_usage(self, observation):
+                        try:
+                            await usage_sink.observe_usage(observation)
+                        except TimeoutError:
+                            pass
+                result = await super().execute_observed(*args, usage_sink=CatchSink(), **kwargs)
+                return replace(result, failure=retry_cause)
+
+        live_factory = worker.gateway_factory
+        worker.gateway_factory = lambda _: FirstFailureGateway(tokens_to_emit=1000)
+        assert await worker.run_once() == receipt.job_id
+        await worker.reconcile_committed_observations()
+        async with brainstorm_session_factory() as session:
+            first_checkpoint = await PostgresTaskUsageCheckpointRepository(session).latest_for_subject(subject)
+            assert first_checkpoint is not None and first_checkpoint.state is CheckpointState.RESOLVED
+            job = await session.get(BrainstormJobRow, receipt.job_id)
+            job_version = job.version
+        if retry_cause == "timeout":
+            retried = await service.retry(
+                epic_id=epic_id, project_id=project_id, job_id=receipt.job_id,
+                expected_job_version=job_version, actor=actor, key="live-retry-owner",
+                owner_override=True,
+            )
+            assert retried.state == "queued"
+        else:
+            assert await worker.run_once() is None
+            async with brainstorm_session_factory() as session, session.begin():
+                pool = await session.scalar(select(SubscriptionQuotaPool).with_for_update())
+                assert pool is not None and pool.blocked and pool.probe_attempt_id is None
+                pool.next_eligible_at = datetime.now(UTC) - timedelta(seconds=1)
+                job = await session.get(BrainstormJobRow, receipt.job_id, with_for_update=True)
+                job.next_eligible_at = datetime.now(UTC) - timedelta(seconds=1)
+        worker.gateway_factory = live_factory
     task = asyncio.create_task(worker.run_once())
     try:
         await asyncio.wait_for(observed.wait(), timeout=5)
@@ -872,6 +911,14 @@ async def test_live_poll_replays_committed_crossing_before_provider_settlement(
         assert active.state in {CheckpointState.REQUESTED, CheckpointState.PAUSING}
         assert not active.process_settled
         assert job.state == "running" and not attempt.process_settled
+        if first_checkpoint is not None:
+            assert active.generation == 2
+            assert active.binding.source.source_id == job.current_attempt_id
+            assert active.baseline_binding == first_checkpoint.baseline_binding
+            assert attempt.number == 2
+            await worker._evaluate_committed_observation(
+                first_checkpoint.binding.work_unit_id, first_checkpoint.trigger_event_id,
+            )
         await asyncio.wait_for(cancellation_seen.wait(), timeout=5)
         async with brainstorm_session_factory() as session:
             waiting = await PostgresTaskUsageCheckpointRepository(session).get(
@@ -1276,3 +1323,293 @@ async def test_owner_continuation_commands_without_repair_debit(brainstorm_sessi
         assert successor.monitoring_policy_revision == 2
         assert successor.policy_revision == 1
         assert successor.reference_digest == "e" * 64
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ("brainstorm", "decomposition"))
+@pytest.mark.parametrize("terminal_failure", ("timeout", "quota_exhausted"))
+@pytest.mark.parametrize("late_older_source", (False, True))
+@pytest.mark.parametrize("monitoring_override", ("none", "higher", "bypass"))
+async def test_retry_rearms_resolved_authoring_checkpoint(
+    brainstorm_session_factory, monkeypatch, kind, terminal_failure,
+    late_older_source, monitoring_override,
+) -> None:
+    project_id, epic_id, actor = await _setup_project(brainstorm_session_factory)
+    route = RouteSpec(provider="google", client="antigravity_cli", model="gemini-2.5-pro")
+    brief = BriefFixture(epic_id, project_id)
+    if kind == "decomposition":
+        brief.current = replace(
+            brief.current, accepted_revision_id=uuid4(), accepted_digest="b" * 64,
+            accepted_content=FrozenBriefContent(
+                problem="Accepted problem",
+                requirements=(FrozenRequirement(requirement_id=uuid4(), text="Requirement"),),
+            ),
+        )
+    authoring = EpicBrainstormService(
+        brainstorm_session_factory, lambda _: brief,
+        route=RouteBinding(requested=route, effective=route),
+        budget=TaskBudget(max_provider_attempts=2),
+    )
+    service = (
+        EpicDecompositionService(
+            lambda: PostgresEpicDecompositionUnitOfWork(brainstorm_session_factory),
+            authoring_service=authoring,
+        )
+        if kind == "decomposition" else authoring
+    )
+    conversation_id, version = await service.create(
+        epic_id=epic_id, project_id=project_id, actor=actor, key="retry-create", text="Start",
+    )
+    turns = await service.turns(
+        epic_id=epic_id, project_id=project_id, conversation_id=conversation_id,
+    )
+    receipt = await service.submit(
+        epic_id=epic_id, project_id=project_id, conversation_id=conversation_id,
+        prompt_turn_id=turns[0].turn_id, expected_epic_version=1,
+        expected_conversation_version=version, actor=actor, key="retry-submit",
+    )
+    observations = PostgresTaskUsageObservations(brainstorm_session_factory)
+    append = observations.append_observation
+
+    async def commit_without_evaluation(observation):
+        await append(observation)
+        raise TimeoutError("committed observation evaluation unavailable")
+
+    monkeypatch.setattr(observations, "append_observation", commit_without_evaluation)
+
+    class InterruptedSinkGateway(ObservableGatewayStub):
+        async def execute_observed(self, *args, usage_sink, **kwargs):
+            class CatchSink:
+                async def observe_usage(self, observation):
+                    try:
+                        await usage_sink.observe_usage(observation)
+                    except TimeoutError:
+                        pass
+            result = await super().execute_observed(*args, usage_sink=CatchSink(), **kwargs)
+            return replace(result, failure=terminal_failure)
+
+    gateway = InterruptedSinkGateway(tokens_to_emit=6000)
+    worker = EpicBrainstormWorker(
+        brainstorm_session_factory, owner="retry-worker", kinds=frozenset((kind,)),
+        gateway_factory=lambda _: gateway, reader_factory=lambda _: type("Reader", (), {})(),
+        task_usage=TaskUsageComposition(
+            observations=observations, totals=TaskUsageTotalsQuery(brainstorm_session_factory),
+            baselines=TaskUsageBaselineService(TaskUsageBaselineQuery(brainstorm_session_factory)),
+        ),
+    )
+    subject = SubjectKey(project_id=project_id, kind="authoring_job", subject_id=receipt.job_id)
+    assert await worker.run_once() == receipt.job_id
+    await worker.reconcile_committed_observations()
+    async with brainstorm_session_factory() as session:
+        repository = PostgresTaskUsageCheckpointRepository(session)
+        first = await repository.latest_for_subject(subject)
+        assert first is not None and first.state is CheckpointState.RESOLVED
+        job = await session.get(BrainstormJobRow, receipt.job_id)
+        assert job is not None and job.proposal is None
+        job_version = job.version
+        first_attempt_id = job.current_attempt_id
+        assert first.binding.source.source_id == first_attempt_id
+
+    if monitoring_override != "none":
+        from forge.persistence.models.task_usage import TaskUsageCheckpoint
+        async with brainstorm_session_factory() as session, session.begin():
+            await PostgresTaskUsagePolicyRepository(session).append_policy_revision(
+                MonitoringPolicy(
+                    project_id=project_id, revision=2, mode=MonitoringMode.CHECKPOINT,
+                    warning_multiplier=1.3, checkpoint_multiplier=2,
+                    history_limit=50, minimum_comparables=2, manual_estimate_tokens=100,
+                ),
+                expected_revision=1, actor_id=actor.actor_id,
+            )
+            stored = await session.get(TaskUsageCheckpoint, first.checkpoint_id)
+            stored.monitoring_policy_revision = 2
+            stored.next_checkpoint_threshold_tokens = (
+                None if monitoring_override == "bypass" else 10000
+            )
+            stored.usage_pauses_disabled = monitoring_override == "bypass"
+
+    if terminal_failure == "timeout":
+        retried = await service.retry(
+            epic_id=epic_id, project_id=project_id, job_id=receipt.job_id,
+            expected_job_version=job_version, actor=actor, key="retry-owner",
+            owner_override=True,
+        )
+        assert retried.state == "queued"
+    else:
+        # Ordinary quota eligibility is advanced; the block itself is retained.
+        assert await worker.run_once() is None
+        async with brainstorm_session_factory() as session, session.begin():
+            pool = await session.scalar(select(SubscriptionQuotaPool).with_for_update())
+            assert pool is not None and pool.blocked and pool.probe_attempt_id is None
+            pool.next_eligible_at = datetime.now(UTC) - timedelta(seconds=1)
+            job = await session.get(BrainstormJobRow, receipt.job_id, with_for_update=True)
+            assert job.state == "quota_wait"
+            job.next_eligible_at = datetime.now(UTC) - timedelta(seconds=1)
+
+    # Replaying the settled source before successor admission cannot re-arm it.
+    await worker.reconcile_committed_observations()
+    async with brainstorm_session_factory() as session:
+        assert len(await PostgresTaskUsageCheckpointRepository(session).list_for_subject(subject)) == 1
+
+    evaluate = worker._evaluate_committed_observation
+
+    async def miss_successor_evaluation(work_unit_id, event_id):
+        if work_unit_id == first.binding.work_unit_id:
+            await evaluate(work_unit_id, event_id)
+        else:
+            raise TimeoutError("successor evaluation unavailable until terminal replay")
+
+    monkeypatch.setattr(worker, "_evaluate_committed_observation", miss_successor_evaluation)
+    assert await worker.run_once() == receipt.job_id
+    monkeypatch.setattr(worker, "_evaluate_committed_observation", evaluate)
+    if late_older_source:
+        await append(Observation(
+            binding=first.binding, event_id="late-prior-attempt", sequence=999,
+            counter_kind=CounterKind.CUMULATIVE,
+            tokens=TokenCounts(input_tokens=9000, output_tokens=9000), final=False,
+        ))
+    await worker.reconcile_committed_observations()
+    async with brainstorm_session_factory() as session:
+        repository = PostgresTaskUsageCheckpointRepository(session)
+        records = await repository.list_for_subject(subject)
+        job = await session.get(BrainstormJobRow, receipt.job_id)
+        attempts = (await session.scalars(
+            select(BrainstormAttemptRow).where(BrainstormAttemptRow.job_id == receipt.job_id)
+            .order_by(BrainstormAttemptRow.number)
+        )).all()
+        assert [attempt.number for attempt in attempts] == [1, 2]
+        assert all(attempt.process_settled for attempt in attempts)
+        assert job.proposal is None and job.current_attempt_id != first_attempt_id
+        assert job.state == ("failed" if terminal_failure == "timeout" else "quota_wait")
+        if monitoring_override == "bypass":
+            assert len(records) == 1
+            assert records[0].usage_pauses_disabled
+        else:
+            assert len(records) == 2
+            successor = records[-1]
+            assert successor.generation == 2 and successor.state is CheckpointState.RESOLVED
+            assert successor.binding.source.source_id == job.current_attempt_id
+            assert successor.baseline_binding == first.baseline_binding
+            assert successor.policy_revision == first.policy_revision
+            assert successor.reference_digest == first.reference_digest
+            assert successor.monitoring_policy_revision == (2 if monitoring_override == "higher" else 1)
+            assert successor.next_checkpoint_threshold_tokens == (
+                10000 if monitoring_override == "higher" else None
+            )
+    # Multiple sweeps and explicit old-source delivery cannot create generation3.
+    await worker._evaluate_committed_observation(first.binding.work_unit_id, first.trigger_event_id)
+    await worker.reconcile_committed_observations()
+    await worker.reconcile_committed_observations()
+    async with brainstorm_session_factory() as session:
+        assert len(await PostgresTaskUsageCheckpointRepository(session).list_for_subject(subject)) == (
+            1 if monitoring_override == "bypass" else 2
+        )
+    totals = await TaskUsageTotalsQuery(brainstorm_session_factory).totals(subject)
+    expected_tokens = 12000 if late_older_source else 6000
+    assert totals.input_tokens == expected_tokens and totals.output_tokens == expected_tokens
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ("brainstorm", "decomposition"))
+@pytest.mark.parametrize("admitted_successor", (False, True))
+async def test_late_usage_after_owner_continue_keeps_checkpoint_actionable(
+    brainstorm_session_factory, kind, admitted_successor,
+) -> None:
+    project_id, epic_id, actor = await _setup_project(brainstorm_session_factory)
+    route = RouteSpec(provider="google", client="antigravity_cli", model="gemini-2.5-pro")
+    brief = BriefFixture(epic_id, project_id)
+    if kind == "decomposition":
+        brief.current = replace(
+            brief.current, accepted_revision_id=uuid4(), accepted_digest="b" * 64,
+            accepted_content=FrozenBriefContent(
+                problem="Accepted problem",
+                requirements=(FrozenRequirement(requirement_id=uuid4(), text="Requirement"),),
+            ),
+        )
+    authoring = EpicBrainstormService(
+        brainstorm_session_factory, lambda _: brief,
+        route=RouteBinding(requested=route, effective=route),
+        budget=TaskBudget(max_provider_attempts=2),
+    )
+    service = (
+        EpicDecompositionService(
+            lambda: PostgresEpicDecompositionUnitOfWork(brainstorm_session_factory),
+            authoring_service=authoring,
+        )
+        if kind == "decomposition" else authoring
+    )
+    conversation_id, version = await service.create(
+        epic_id=epic_id, project_id=project_id, actor=actor, key="late-create", text="Start",
+    )
+    turns = await service.turns(
+        epic_id=epic_id, project_id=project_id, conversation_id=conversation_id,
+    )
+    receipt = await service.submit(
+        epic_id=epic_id, project_id=project_id, conversation_id=conversation_id,
+        prompt_turn_id=turns[0].turn_id, expected_epic_version=1,
+        expected_conversation_version=version, actor=actor, key="late-submit",
+    )
+    observations = PostgresTaskUsageObservations(brainstorm_session_factory)
+    worker = EpicBrainstormWorker(
+        brainstorm_session_factory, owner="late-worker", kinds=frozenset((kind,)),
+        gateway_factory=lambda _: ObservableGatewayStub(
+            tokens_to_emit=1000, resume_event=asyncio.Event(),
+        ),
+        reader_factory=lambda _: type("Reader", (), {})(),
+        task_usage=TaskUsageComposition(
+            observations=observations, totals=TaskUsageTotalsQuery(brainstorm_session_factory),
+            baselines=TaskUsageBaselineService(TaskUsageBaselineQuery(brainstorm_session_factory)),
+        ),
+    )
+    subject = SubjectKey(project_id=project_id, kind="authoring_job", subject_id=receipt.job_id)
+    assert await worker.run_once() == receipt.job_id
+    async with brainstorm_session_factory() as session:
+        first = await PostgresTaskUsageCheckpointRepository(session).latest_for_subject(subject)
+        assert first is not None and first.state is CheckpointState.PAUSED
+    _, resumed = await service.apply_checkpoint_command(
+        epic_id=epic_id, project_id=project_id, job_id=receipt.job_id, actor=actor,
+        command=OwnerCommand(
+            command_id=uuid4(), checkpoint_id=first.checkpoint_id,
+            expected_version=first.version, idempotency_key="late-continue",
+            action="continue", actor_id=actor.actor_id, continue_mode="next_checkpoint",
+        ),
+    )
+    assert resumed.next_checkpoint_threshold_tokens is not None
+    if admitted_successor:
+        async with brainstorm_session_factory() as session, session.begin():
+            claimed = await PostgresBrainstormRepository(session).claim(
+                "late-worker", kinds=frozenset((kind,)),
+            )
+            assert claimed is not None and claimed[1].number == 2
+            next_attempt_id = claimed[1].id
+        await observations.bind(replace(
+            first.binding, work_unit_id=uuid4(),
+            source=SourceBinding(kind="authoring_attempt", source_id=next_attempt_id),
+        ))
+    await observations.append_observation(Observation(
+        binding=first.binding, event_id="late-after-continue", sequence=2,
+        counter_kind=CounterKind.CUMULATIVE,
+        tokens=TokenCounts(input_tokens=resumed.next_checkpoint_threshold_tokens + 1, output_tokens=500),
+        final=False,
+    ))
+    await worker.reconcile_committed_observations()
+    async with brainstorm_session_factory() as session:
+        checkpoint = await PostgresTaskUsageCheckpointRepository(session).latest_for_subject(subject)
+        job = await session.get(BrainstormJobRow, receipt.job_id)
+        attempts = (await session.scalars(
+            select(BrainstormAttemptRow).where(BrainstormAttemptRow.job_id == receipt.job_id)
+        )).all()
+        assert checkpoint is not None and checkpoint.generation == 2
+        assert checkpoint.next_checkpoint_threshold_tokens == resumed.next_checkpoint_threshold_tokens
+        assert checkpoint.reference_digest == first.reference_digest
+        assert checkpoint.baseline_binding == first.baseline_binding
+        if admitted_successor:
+            assert checkpoint.state is CheckpointState.REQUESTED
+            assert not checkpoint.process_settled and job.state == "running"
+            assert len(attempts) == 2 and not next(a for a in attempts if a.number == 2).process_settled
+        else:
+            assert checkpoint.state is CheckpointState.PAUSED and checkpoint.process_settled
+            assert job.state == "paused" and len(attempts) == 1
+            assert job.retry_authorized_until is None
+            assert all(attempt.process_settled for attempt in attempts)
+            assert await PostgresBrainstormRepository(session).claim(
+                "late-worker", kinds=frozenset((kind,)),
+            ) is None

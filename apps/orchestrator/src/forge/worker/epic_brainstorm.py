@@ -304,10 +304,17 @@ class EpicBrainstormWorker:
             query = (
                 select(TaskUsageObservation, TaskUsageWorkUnit.subject_id)
                 .join(TaskUsageWorkUnit, TaskUsageWorkUnit.id == TaskUsageObservation.work_unit_id)
+                .join(
+                    BrainstormJobRow,
+                    BrainstormJobRow.id == TaskUsageWorkUnit.subject_id,
+                )
                 .where(TaskUsageWorkUnit.subject_kind == "authoring_job")
                 .distinct(TaskUsageWorkUnit.subject_id)
                 .order_by(
                     TaskUsageWorkUnit.subject_id,
+                    (TaskUsageWorkUnit.authoring_attempt_id == BrainstormJobRow.current_attempt_id)
+                    .desc()
+                    .nulls_last(),
                     TaskUsageObservation.observed_at.desc(),
                     TaskUsageObservation.sequence.desc(),
                     TaskUsageObservation.id.desc(),
@@ -367,19 +374,19 @@ class EpicBrainstormWorker:
         totals = await self.task_usage.totals.totals(subject)
         async with self.sessions() as session, session.begin():
             job = await session.get(BrainstormJobRow, subject.subject_id, with_for_update=True)
-            if job is None:
+            if job is None or unit.authoring_attempt_id is None:
                 return
             checkpoints = PostgresTaskUsageCheckpointRepository(session)
             active = await checkpoints.active_for_subject(subject)
             terminal = job.state in {"proposed", "failed", "cancelled", "quota_wait"}
             attempt = (
                 await session.get(BrainstormAttemptRow, job.current_attempt_id)
-                if terminal and job.current_attempt_id is not None
+                if (terminal or job.state == "queued") and job.current_attempt_id is not None
                 else None
             )
             settled = attempt is not None and attempt.process_settled
             if active is not None:
-                if terminal and settled:
+                if (terminal or job.state == "queued") and settled:
                     if active.state is CheckpointState.REQUESTED:
                         active = await checkpoints.transition(
                             active.checkpoint_id,
@@ -387,15 +394,26 @@ class EpicBrainstormWorker:
                             state=CheckpointState.PAUSING,
                             process_settled=False,
                         )
+                    queued = job.state == "queued"
+                    if queued:
+                        job.state, job.failure = "paused", None
+                        job.version += 1
                     await checkpoints.transition(
                         active.checkpoint_id,
                         expected_version=active.version,
-                        state=CheckpointState.RESOLVED,
+                        state=CheckpointState.PAUSED if queued else CheckpointState.RESOLVED,
                         process_settled=True,
                     )
                 return
             latest = await checkpoints.latest_for_subject(subject)
-            if latest is not None and latest.state is CheckpointState.RESOLVED:
+            if (
+                latest is not None
+                and latest.state is CheckpointState.RESOLVED
+                and (
+                    latest.binding.source.source_id == job.current_attempt_id
+                    or latest.binding.work_unit_id == work_unit_id
+                )
+            ):
                 return
             baseline_row = await session.scalar(
                 select(TaskUsageBaseline).where(
@@ -444,17 +462,23 @@ class EpicBrainstormWorker:
                     monitoring_policy_revision=revision,
                 )
             )
-            if terminal and settled:
+            if checkpoint.state is not CheckpointState.REQUESTED:
+                return
+            if (terminal or job.state == "queued") and settled:
                 checkpoint = await checkpoints.transition(
                     checkpoint.checkpoint_id,
                     expected_version=checkpoint.version,
                     state=CheckpointState.PAUSING,
                     process_settled=False,
                 )
+                queued = job.state == "queued"
+                if queued:
+                    job.state, job.failure = "paused", None
+                    job.version += 1
                 await checkpoints.transition(
                     checkpoint.checkpoint_id,
                     expected_version=checkpoint.version,
-                    state=CheckpointState.RESOLVED,
+                    state=CheckpointState.PAUSED if queued else CheckpointState.RESOLVED,
                     process_settled=True,
                 )
 

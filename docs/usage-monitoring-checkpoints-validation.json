@@ -8,15 +8,15 @@
     104,
     106
   ],
-  "status": "Final repaired candidate passed focused accounting, policy/lifecycle, actual separate-process acceptance and static/web checks. One integrated independent review and full simplify completed; all five substantiated findings repaired and checked. Publication and latest automatic hosted receipts follow on the PR.",
+  "status": "The PR110-C1 authoring retry defect and the five integrated-review findings are repaired with candidate-specific local evidence. One integrated independent review/full simplify is retained; final head-specific automatic checks and Codex findings are recorded on PR110. Complete assembly remains open.",
   "feature_complete": false,
   "source": {
     "base": "558645377ce919a7c6e79cbd144a8c3dff9ffba6",
     "branch": "codex/usage-checkpoint-continuation",
     "managed_worktree": "C:/Users/sdyer/.codex/worktrees/usage-checkpoint-continuation/parallel-forge",
     "candidate": "Base HEAD plus the complete scoped source/test snapshot identified by code_input_sha256; complete staged diff and review receipts are retained locally. Published head-specific receipts belong to the PR and issue updates.",
-    "code_input_sha256": "a66034ab6e4d1ab33cb1a45abb5f66427eaaa12a1c66958adae00ec7c610f149",
-    "input_manifest": ".llm-output/usage-checkpoints/candidate-final-inputs.json"
+    "code_input_sha256": "31000aa957148682318e3bace1623fddb94af856b8176877de2ae877bdc22fd7",
+    "input_manifest": ".llm-output/usage-checkpoints/pr110-repair-inputs.json"
   },
   "prior_deliveries": {
     "108": {
@@ -432,6 +432,27 @@
         ".llm-output/usage-checkpoints/repair-live-process-authoring.log: final production separate-process authoring checkpoint/continuation,1 passed; original run/delegated process inputs unchanged.",
         ".llm-output/usage-checkpoints/native-repair-command-receipts.json: original missing-checkpoint red and intermediate requested/pausing ordering failure recovered with actual exit1; final greens have actual numeric exit0."
       ]
+    },
+    {
+      "invariant": "Authoring retries re-arm monitoring without replay generations or fabricated process settlement",
+      "cases": [
+        "Both kinds failed -> actor-bound retry -> current successor crossing",
+        "Both kinds quota block -> actual eligibility/probe claim -> successor crossing",
+        "Committed successor evaluation failure plus later prior-source telemetry",
+        "Persisted effective revision/higher threshold/bypass survives resolved generation",
+        "Live generation2 requested/pausing stays unsettled until lifecycle proof; old-source replay does not alter it",
+        "Actual owner continuation followed by late prior-source usage before successor telemetry: queued settled job pauses and running successor stays requested/unsettled"
+      ],
+      "check": "PR110-C1 focused red/green,24 retry/control/replay combinations,6 live tests and4 late-continuation cases within the final79-case affected suite; counts overlap",
+      "status": "proved",
+      "evidence": [
+        ".llm-output/usage-checkpoints/pr110-retry/authoring-complete.json",
+        ".llm-output/usage-checkpoints/pr110-retry/late-focused.json",
+        ".llm-output/usage-checkpoints/pr110-retry/process-final.json",
+        ".llm-output/usage-checkpoints/pr110-retry/final-checkpoint.json",
+        ".llm-output/usage-checkpoints/pr110-reused-evidence.json"
+      ],
+      "limits": "Scripted PostgreSQL production-worker fixtures for injected misses and held lifecycle proof. Prior effective controls are seeded durably in the24-case matrix; actual actor-bound controls remain separately covered. Quota eligibility timestamps are advanced without clearing the block. Normal separate OS-process authoring journey passed; no injected-fault OS/live-provider claim."
     }
   ],
   "checks": [
@@ -816,37 +837,37 @@
       "limits": "Passing pre-review input snapshot. Post-review repairs require affected checks on the new candidate; unchanged evidence remains reusable."
     },
     {
-      "scope": "Final repaired batch python-types",
+      "scope": "First published head: repaired batch python-types",
       "command": "C:\\Users\\sdyer\\AppData\\Local\\Microsoft\\WinGet\\Packages\\rtk-ai.rtk_Microsoft.Winget.Source_8wekyb3d8bbwe\\rtk.EXE proxy C:\\Users\\sdyer\\.codex\\worktrees\\usage-checkpoint-continuation\\parallel-forge\\.venv\\Scripts\\python.exe -m mypy",
       "result": {
         "exit_code": 0,
         "elapsed_seconds": 2.0444,
         "source_files_checked": 568
       },
-      "receipt": ".llm-output/usage-checkpoints/batch-final-python-types.log",
-      "candidate_inputs": ".llm-output/usage-checkpoints/batch-final-backend-receipt.json",
+      "receipt": ".llm-output/usage-checkpoints/first-published-head/batch-final-python-types.log",
+      "candidate_inputs": ".llm-output/usage-checkpoints/first-published-head/batch-final-backend-receipt.json",
       "limits": "Actual command receipt and complete relevant source inputs match the final candidate. Counts overlap."
     },
     {
-      "scope": "Final repaired batch python-style",
+      "scope": "First published head: repaired batch python-style",
       "command": "C:\\Users\\sdyer\\AppData\\Local\\Microsoft\\WinGet\\Packages\\rtk-ai.rtk_Microsoft.Winget.Source_8wekyb3d8bbwe\\rtk.EXE proxy C:\\Users\\sdyer\\.codex\\worktrees\\usage-checkpoint-continuation\\parallel-forge\\.venv\\Scripts\\python.exe -m ruff check apps/orchestrator/src apps/orchestrator/tests tests scripts",
       "result": {
         "exit_code": 0,
         "elapsed_seconds": 0.181528
       },
-      "receipt": ".llm-output/usage-checkpoints/batch-final-python-style.log",
-      "candidate_inputs": ".llm-output/usage-checkpoints/batch-final-backend-receipt.json",
+      "receipt": ".llm-output/usage-checkpoints/first-published-head/batch-final-python-style.log",
+      "candidate_inputs": ".llm-output/usage-checkpoints/first-published-head/batch-final-backend-receipt.json",
       "limits": "Actual command receipt and complete relevant source inputs match the final candidate. Counts overlap."
     },
     {
-      "scope": "Final repaired batch live-openapi",
+      "scope": "First published head: repaired batch live-openapi",
       "command": "C:\\Users\\sdyer\\AppData\\Local\\Microsoft\\WinGet\\Packages\\rtk-ai.rtk_Microsoft.Winget.Source_8wekyb3d8bbwe\\rtk.EXE proxy C:\\Users\\sdyer\\.codex\\worktrees\\usage-checkpoint-continuation\\parallel-forge\\.venv\\Scripts\\python.exe scripts/export-openapi.py",
       "result": {
         "exit_code": 0,
         "elapsed_seconds": 3.193504
       },
-      "receipt": ".llm-output/usage-checkpoints/batch-final-live-openapi.log",
-      "candidate_inputs": ".llm-output/usage-checkpoints/batch-final-backend-receipt.json",
+      "receipt": ".llm-output/usage-checkpoints/first-published-head/batch-final-live-openapi.log",
+      "candidate_inputs": ".llm-output/usage-checkpoints/first-published-head/batch-final-backend-receipt.json",
       "limits": "Actual command receipt and complete relevant source inputs match the final candidate. Counts overlap."
     },
     {
@@ -954,7 +975,7 @@
       "limits": "Actual post-terminal replay, both kinds, quota-blocked pool and continuation rejection. Does not prove live missed-evaluation recovery; that acceptance gap was explicitly returned to the same owner."
     },
     {
-      "scope": "Final both-kind live and terminal replay matrix",
+      "scope": "First published head: both-kind live and terminal replay matrix",
       "command": "python -m pytest apps/orchestrator/tests/epic_brainstorm/test_usage_checkpoints.py -q -k 'live_poll_replays_committed_crossing_before_provider_settlement or worker_tick_replays_committed_authoring_crossing_after_sink_timeout'",
       "result": {
         "exit_code": 0,
@@ -967,7 +988,7 @@
       "limits": "Both kinds; live commit/evaluation failure with held process proof, late final-only terminal outcomes and retained successful proposal. Injected missed evaluation uses the PostgreSQL worker fixture, not a separate OS process."
     },
     {
-      "scope": "Final affected authoring lifecycle suite",
+      "scope": "First published head: affected authoring lifecycle suite",
       "command": "python -m pytest apps/orchestrator/tests/epic_brainstorm/test_usage_checkpoints.py apps/orchestrator/tests/epic_decomposition/test_usage_checkpoints.py -q",
       "result": {
         "exit_code": 0,
@@ -980,7 +1001,7 @@
       "limits": "Final source and test hashes match. Includes quota pool and owner rejection, independent causes, policy override, settlement and successful result races."
     },
     {
-      "scope": "Final separate-process supervised authoring continuation",
+      "scope": "First published head: separate-process supervised authoring continuation",
       "command": "python -m pytest tests/acceptance/test_task_usage_monitoring_process.py -q -k supervised_authoring_observation_requests_checkpoint_across_processes",
       "result": {
         "exit_code": 0,
@@ -991,6 +1012,69 @@
       "exit_evidence": ".llm-output/usage-checkpoints/repair-live-process-authoring-tool-result.json",
       "candidate_inputs": ".llm-output/usage-checkpoints/lifecycle-final-accepted-hashes.json",
       "limits": "Actual separate API/worker and supervised provider processes. Normal synchronous observation; injected missed-evaluation window proved separately in PostgreSQL worker tests. Two unchanged run/delegated process cases reuse prior3-case repair-lifecycle-process.log; quota recovery is not a scenario in that process receipt."
+    },
+    {
+      "scope": "PR110-C1 authoring-complete",
+      "command": "C:\\Users\\sdyer\\AppData\\Local\\Microsoft\\WinGet\\Packages\\rtk-ai.rtk_Microsoft.Winget.Source_8wekyb3d8bbwe\\rtk.EXE proxy C:\\Users\\sdyer\\.codex\\worktrees\\usage-checkpoint-continuation\\parallel-forge\\.venv\\Scripts\\python.exe -m pytest apps/orchestrator/tests/epic_brainstorm/test_usage_checkpoints.py apps/orchestrator/tests/epic_decomposition/test_usage_checkpoints.py -q",
+      "result": {
+        "exit_code": 0,
+        "elapsed_seconds": 336.600462,
+        "tests_passed": 79
+      },
+      "receipt": ".llm-output/usage-checkpoints/pr110-retry/authoring-complete.log",
+      "exit_evidence": ".llm-output/usage-checkpoints/pr110-retry/authoring-complete.exit",
+      "candidate_inputs": ".llm-output/usage-checkpoints/pr110-retry/final-inputs.json"
+    },
+    {
+      "scope": "PR110-C1 late-focused",
+      "command": "C:\\Users\\sdyer\\AppData\\Local\\Microsoft\\WinGet\\Packages\\rtk-ai.rtk_Microsoft.Winget.Source_8wekyb3d8bbwe\\rtk.EXE proxy C:\\Users\\sdyer\\.codex\\worktrees\\usage-checkpoint-continuation\\parallel-forge\\.venv\\Scripts\\python.exe -m pytest apps/orchestrator/tests/epic_brainstorm/test_usage_checkpoints.py -q -k late_usage_after_owner_continue_keeps_checkpoint_actionable",
+      "result": {
+        "exit_code": 0,
+        "elapsed_seconds": 22.49376,
+        "tests_passed": 4
+      },
+      "receipt": ".llm-output/usage-checkpoints/pr110-retry/late-focused.log",
+      "exit_evidence": ".llm-output/usage-checkpoints/pr110-retry/late-focused.exit",
+      "candidate_inputs": ".llm-output/usage-checkpoints/pr110-retry/final-inputs.json"
+    },
+    {
+      "scope": "PR110-C1 process-final",
+      "command": "C:\\Users\\sdyer\\AppData\\Local\\Microsoft\\WinGet\\Packages\\rtk-ai.rtk_Microsoft.Winget.Source_8wekyb3d8bbwe\\rtk.EXE proxy C:\\Users\\sdyer\\.codex\\worktrees\\usage-checkpoint-continuation\\parallel-forge\\.venv\\Scripts\\python.exe -m pytest tests/acceptance/test_task_usage_monitoring_process.py -q -k supervised_authoring_observation",
+      "result": {
+        "exit_code": 0,
+        "elapsed_seconds": 15.563475,
+        "tests_passed": 1
+      },
+      "receipt": ".llm-output/usage-checkpoints/pr110-retry/process-final.log",
+      "exit_evidence": ".llm-output/usage-checkpoints/pr110-retry/process-final.exit",
+      "candidate_inputs": ".llm-output/usage-checkpoints/pr110-retry/final-inputs.json"
+    },
+    {
+      "scope": "PR110 repaired candidate python-types",
+      "command": "C:\\Users\\sdyer\\AppData\\Local\\Microsoft\\WinGet\\Packages\\rtk-ai.rtk_Microsoft.Winget.Source_8wekyb3d8bbwe\\rtk.EXE proxy C:\\Users\\sdyer\\.codex\\worktrees\\usage-checkpoint-continuation\\parallel-forge\\.venv\\Scripts\\python.exe -m mypy",
+      "result": {
+        "exit_code": 0
+      },
+      "receipt": ".llm-output/usage-checkpoints/batch-final-python-types.log",
+      "candidate_inputs": ".llm-output/usage-checkpoints/batch-final-backend-receipt.json"
+    },
+    {
+      "scope": "PR110 repaired candidate python-style",
+      "command": "C:\\Users\\sdyer\\AppData\\Local\\Microsoft\\WinGet\\Packages\\rtk-ai.rtk_Microsoft.Winget.Source_8wekyb3d8bbwe\\rtk.EXE proxy C:\\Users\\sdyer\\.codex\\worktrees\\usage-checkpoint-continuation\\parallel-forge\\.venv\\Scripts\\python.exe -m ruff check apps/orchestrator/src apps/orchestrator/tests tests scripts",
+      "result": {
+        "exit_code": 0
+      },
+      "receipt": ".llm-output/usage-checkpoints/batch-final-python-style.log",
+      "candidate_inputs": ".llm-output/usage-checkpoints/batch-final-backend-receipt.json"
+    },
+    {
+      "scope": "PR110 repaired candidate live-openapi",
+      "command": "C:\\Users\\sdyer\\AppData\\Local\\Microsoft\\WinGet\\Packages\\rtk-ai.rtk_Microsoft.Winget.Source_8wekyb3d8bbwe\\rtk.EXE proxy C:\\Users\\sdyer\\.codex\\worktrees\\usage-checkpoint-continuation\\parallel-forge\\.venv\\Scripts\\python.exe scripts/export-openapi.py",
+      "result": {
+        "exit_code": 0
+      },
+      "receipt": ".llm-output/usage-checkpoints/batch-final-live-openapi.log",
+      "candidate_inputs": ".llm-output/usage-checkpoints/batch-final-backend-receipt.json"
     }
   ],
   "remaining_limitations": [
@@ -1116,7 +1200,7 @@
           "files": 3,
           "red_failures": 5,
           "hashes": ".llm-output/usage-checkpoints/ui-policy-repair/candidate-hashes.json",
-          "final_static": "Root final web gates running; numeric static exit receipts/full input manifest were missing from the provider handoff. Parent workspace/build checks also require current panel inputs."
+          "final_static": "Primary's127 affected web tests, API parity, web typing/style and production build passed; all220 web/API manifest inputs still match for PR110 repair."
         },
         "backend_status": "pg_service_cas_and_authenticated_route_409_verified"
       },
@@ -1157,14 +1241,49 @@
     },
     "final_push_jev": {
       "status": "required_attempt_on_final_diff",
-      "result": ".llm-output/usage-checkpoints/jev-review.json",
-      "candidate_identity": ".llm-output/usage-checkpoints/candidate-review-identity.json",
+      "result": ".llm-output/usage-checkpoints/pr110-repair-jev-review.json",
+      "candidate_identity": ".llm-output/usage-checkpoints/pr110-repair-identity.json",
       "limits": "Exact diff binding and actual completion/partial/unavailable status are retained locally and reconciled on the PR; advisory scores are not absence, tests or merge proof."
+    },
+    "hosted": {
+      "pr": "https://github.com/Clar17y/parallel-forge/pull/110",
+      "first_head": "fe46ddf92769583cf02f06303324f39aa5970771",
+      "first_review": "completed",
+      "first_smoke": "success",
+      "first_receipt": ".llm-output/usage-checkpoints/pr110-first-codex-review.json",
+      "findings": [
+        {
+          "id": "PR110-C1",
+          "priority": 1,
+          "issue": "Resolved authoring checkpoint prevents monitoring after failed/quota retry",
+          "status": "repaired_and_local_evidence_verified",
+          "thread": "https://github.com/Clar17y/parallel-forge/pull/110#discussion_r4244196326",
+          "contract": ".llm-output/usage-checkpoints/pr110-retry-task.json",
+          "search": ".llm-output/usage-checkpoints/pr110-retry-jev.json",
+          "search_coverage": "partial; actual service retry and quota claim inspected",
+          "owner": "root",
+          "repair": "Resolved checkpoints suppress their own source replay while distinct admitted successor attempts re-arm monitoring. The bounded sweep prefers current telemetry and retains valid prior-source fallback after owner continuation. Queued crossings atomically pause the job using actual current-attempt settlement; live successors remain unsettled. Idempotent stored triggers are not transitioned again.",
+          "evidence": ".llm-output/usage-checkpoints/pr110-retry/final-inputs.json",
+          "red": ".llm-output/usage-checkpoints/pr110-retry/red.json",
+          "late_red": ".llm-output/usage-checkpoints/pr110-retry/late-red.json",
+          "affected": ".llm-output/usage-checkpoints/pr110-retry/authoring-complete.json",
+          "live": "Six coupled live cases included in the final79-case affected suite; interim independent receipt pr110-retry/live-retry.json retained.",
+          "late": ".llm-output/usage-checkpoints/pr110-retry/late-focused.json",
+          "process": ".llm-output/usage-checkpoints/pr110-retry/process-final.json",
+          "retained_failure": ".llm-output/usage-checkpoints/pr110-retry/authoring.json",
+          "fixture_triage": ".llm-output/usage-checkpoints/pr110-retry/fixture-triage.json",
+          "ownership_recovery": ".llm-output/usage-checkpoints/pr110-retry-recovery-task.json"
+        }
+      ],
+      "latest_head_acceptance": "Head-specific automatic smoke, Codex completion, replies and resolution receipts are reconciled on PR110 after the repair push."
     }
   },
   "publication": {
-    "status": "Local candidate accepted; one PR and its authorized normal automatic checks/Codex review pending.",
+    "status": "One open, unmerged PR110. Repair locally accepted; actual latest-head automatic smoke/Codex completion and finding resolutions belong to the PR and retained hosted receipts.",
+    "url": "https://github.com/Clar17y/parallel-forge/pull/110",
+    "first_head": "fe46ddf92769583cf02f06303324f39aa5970771",
     "merged": false,
     "manually_dispatched_full_hosted_ci": false
-  }
+  },
+  "hosted_repair_evidence": ".llm-output/usage-checkpoints/pr110-first-codex-review.json and pr110-retry/ retain the actual first-head finding, red failures, all failed receipts and fixture corrections. The interim75-case current-only candidate is retained separately; four late-continuation regressions prompted the final source adjustment and a fresh79-case suite, backend static checks and actual separate-process authoring acceptance. Unchanged web/ADK evidence is reused with matching inputs."
 }
