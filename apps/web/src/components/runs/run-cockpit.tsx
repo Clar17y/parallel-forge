@@ -24,11 +24,28 @@ import { WorkflowProgress } from './workflow-progress';
 
 const SECTIONS = ['overview', 'plan', 'changes', 'checks', 'review', 'tasks', 'activity', 'usage', 'security'] as const;
 type Section = (typeof SECTIONS)[number];
+export type RunSection = Section;
+
+/** Only known sections may be deep-linked; anything else opens the overview. */
+export function parseRunSection(value: string | null): Section {
+  return (SECTIONS as readonly string[]).includes(value ?? '') ? (value as Section) : 'overview';
+}
 
 type Projection = components['schemas']['RunProjection'];
-export function RunCockpit({ initial, tasks }: { initial: Projection; tasks?: ReactNode }) {
+export function RunCockpit({ initial, tasks, section: controlledSection, onSectionChange }: {
+  initial: Projection;
+  tasks?: ReactNode;
+  section?: Section;
+  onSectionChange?: (section: Section) => void;
+}) {
   const [value, setValue] = useState(initial);
-  const [section, setSection] = useState<Section>('overview');
+  const [internalSection, setInternalSection] = useState<Section>('overview');
+  const onSectionChangeRef = useRef(onSectionChange);
+  useEffect(() => { onSectionChangeRef.current = onSectionChange; }, [onSectionChange]);
+  const setSection = useCallback((next: Section) => {
+    setInternalSection(next);
+    onSectionChangeRef.current?.(next);
+  }, []);
   const [failed, setFailed] = useState(false);
   const [reading, setReading] = useState(false);
   const [after] = useState(() => String(Math.max(0, ...initial.latest_events.map(event => event.sequence))));
@@ -66,15 +83,29 @@ export function RunCockpit({ initial, tasks }: { initial: Projection; tasks?: Re
   const connection = useRunEvents(runId, after, () => { void refresh().catch(() => {}); });
   const sectionNavigation = useRef<HTMLElement>(null);
   const hasTasks = Boolean(tasks);
+  const requestedSection = controlledSection ?? internalSection;
+  const section = requestedSection === 'tasks' && !hasTasks ? 'overview' : requestedSection;
   useEffect(() => {
     if (hasTasks && window.location.hash === '#subscription-tasks') setSection('tasks');
-  }, [hasTasks]);
+  }, [hasTasks, setSection]);
   const openSection = (next: 'checks' | 'activity' | 'tasks') => {
     setSection(next);
     sectionNavigation.current?.querySelector<HTMLButtonElement>(`[data-section="${next}"]`)?.focus();
   };
   const stale = failed || connection !== 'connected';
   const sections = hasTasks ? SECTIONS : SECTIONS.filter((item): item is Exclude<Section, 'tasks'> => item !== 'tasks');
+  // The PR outcome belongs to the overview; above the section navigation it
+  // repeated on every section and pushed the actual evidence down the page.
+  const prOutcome = value.pull_request ? <section className="panel run-pr-outcome" aria-label="PR / Merge"><h2>PR / Merge</h2>
+    {value.pull_request.merge_sha ? <><h3>Recorded merge commit</h3><code>{value.pull_request.merge_sha}</code></> : <>
+      {value.pull_request.queue_admission === 'accepted' && <p>Queue admission recorded. Forge has not recorded a completed merge. Admission does not confirm that the PR is still in the queue.</p>}
+      {value.pull_request.queue_admission === 'pending' && <p>Queue admission pending.</p>}
+      {value.pull_request.queue_admission === 'rejected' && <p>Queue admission was rejected. Review the activity and current GitHub protections before taking further action.</p>}
+      {value.pull_request.queue_admission === 'uncertain' && <p>Queue admission outcome is uncertain. Check the PR on GitHub and preserve the existing operation for reconciliation before attempting another merge.</p>}
+      {!value.pull_request.queue_admission && <p>No completed merge recorded.</p>}
+      {value.run.state === 'AWAITING_HUMAN_INTERVENTION' && <p>Manual attention required. Review the recorded reason and the PR on GitHub. This page does not authorize another merge or removal from the queue.</p>}
+    </>}
+  </section> : null;
   return <div className="run-page">
     <header className="run-heading">
       <div className="run-identity"><h1>{value.task.title}</h1>
@@ -99,16 +130,6 @@ export function RunCockpit({ initial, tasks }: { initial: Projection; tasks?: Re
     </section> : null}
     <p className="meta" role="status">Events: {connection}{connection !== 'connected' && ' · Live updates are unavailable. Actions stay disabled until the event connection is restored.'}</p>
     {value.security.runner_mode === 'trusted_host' && <p className="run-notice">Trusted host · unsandboxed execution. Commands are not isolated in Docker.</p>}
-    {value.pull_request && <section className="panel run-pr-outcome" aria-label="PR / Merge"><h2>PR / Merge</h2>
-      {value.pull_request.merge_sha ? <><h3>Recorded merge commit</h3><code>{value.pull_request.merge_sha}</code></> : <>
-        {value.pull_request.queue_admission === 'accepted' && <p>Queue admission recorded. Forge has not recorded a completed merge. Admission does not confirm that the PR is still in the queue.</p>}
-        {value.pull_request.queue_admission === 'pending' && <p>Queue admission pending.</p>}
-        {value.pull_request.queue_admission === 'rejected' && <p>Queue admission was rejected. Review the activity and current GitHub protections before taking further action.</p>}
-        {value.pull_request.queue_admission === 'uncertain' && <p>Queue admission outcome is uncertain. Check the PR on GitHub and preserve the existing operation for reconciliation before attempting another merge.</p>}
-        {!value.pull_request.queue_admission && <p>No completed merge recorded.</p>}
-        {value.run.state === 'AWAITING_HUMAN_INTERVENTION' && <p>Manual attention required. Review the recorded reason and the PR on GitHub. This page does not authorize another merge or removal from the queue.</p>}
-      </>}
-    </section>}
     <WorkflowProgress projection={value} stale={stale} />
     <nav ref={sectionNavigation} className="run-sections" aria-label="Run sections">
       {sections.map(item => <button key={item} type="button" data-section={item} aria-pressed={section === item} aria-controls={item === 'tasks' ? 'run-tasks-panel' : 'run-section-panel'}
@@ -116,7 +137,7 @@ export function RunCockpit({ initial, tasks }: { initial: Projection; tasks?: Re
     </nav>
     <div id="run-section-panel" className={section === 'overview' ? undefined : 'run-tab-content'} hidden={section === 'tasks'}>
       {section === 'plan' ? <PlanPanel projection={value} /> : section === 'checks' ? <ChecksPanel key={`${value.run.id}:${value.run.version}`} projection={value} /> : section === 'review' ? <ReviewPanel projection={value} /> : section === 'changes' ? <ChangesPanel projection={value} /> : section === 'security' ? <SecurityPanel key={`${value.run.id}:${value.latest_events.at(-1)?.sequence ?? 0}`} projection={value} /> : section === 'usage' ? <UsagePanel key={`${value.run.id}:${value.latest_events.at(-1)?.sequence ?? 0}`} runId={value.run.id} /> : section === 'activity' ? <ActivityPanel key={`${value.run.id}:${value.latest_events.at(-1)?.sequence ?? 0}`} runId={value.run.id} /> : section === 'overview' ? <div className="run-overview">
-        <div className="overview-main"><ChecksSummary projection={value} stale={stale} onInspect={() => openSection('checks')} />
+        <div className="overview-main">{prOutcome}<ChecksSummary projection={value} stale={stale} onInspect={() => openSection('checks')} />
           <PhaseTimeline events={value.latest_events} onInspect={() => openSection('activity')} />
         </div>
         <RunContext projection={value} onTasks={tasks ? () => openSection('tasks') : undefined} />
