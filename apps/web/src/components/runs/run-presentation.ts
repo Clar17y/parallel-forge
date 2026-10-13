@@ -44,6 +44,11 @@ const descriptions: Record<State, RunDescription> = {
   CANCELLED: { title: 'Run cancelled', description: 'Resources and evidence remain available until explicit teardown.', tone: 'neutral' },
 };
 
+/** Plain-language title for a raw run state, for lists without a full projection. */
+export function runStateTitle(state: string): string {
+  return (descriptions as Partial<Record<string, RunDescription>>)[state]?.title ?? readableLabel(state);
+}
+
 type EventItem = components['schemas']['EventItem'];
 
 export type RemediationOrigin = 'remote' | 'local' | 'unrecorded';

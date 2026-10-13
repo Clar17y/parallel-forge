@@ -1,42 +1,110 @@
 'use client';
 import { LoadingStatus } from '@/components/ui/loading-status';
-import { useState } from 'react';
+import { Suspense, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { useApi } from '@/hooks/use-api';
 import type { components } from '@/lib/api/schema';
 import { RunList } from '@/components/runs/run-list';
+import { RUN_BUCKETS, bucketById, bucketCounts } from '@/components/runs/run-buckets';
 
-const states: components['schemas']['RunState'][] = ['CREATED', 'PLANNING', 'AWAITING_PLAN_APPROVAL', 'PREPARING_WORKTREE', 'IMPLEMENTING', 'VALIDATING', 'REVIEWING', 'REMEDIATING', 'AWAITING_PR_APPROVAL', 'PUBLISHING_PR', 'MONITORING_PR', 'AWAITING_HUMAN_INTERVENTION', 'AWAITING_MERGE_APPROVAL', 'MERGING', 'PAUSED', 'COMPLETED', 'FAILED', 'CANCELLED'];
-export default function RunsPage() {
-  const [filters, setFilters] = useState({ state: '', project: '', attention: '', updated: '' });
-  const [offset, setOffset] = useState(0);
-  const [query, setQuery] = useState('');
+const UPDATED_OPTIONS = [
+  { id: 'any', label: 'Any time', days: null },
+  { id: '24h', label: 'Last 24 hours', days: 1 },
+  { id: '7d', label: 'Last 7 days', days: 7 },
+  { id: '30d', label: 'Last 30 days', days: 30 },
+] as const;
+
+function RunsPageContent() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const bucket = bucketById(searchParams.get('bucket'));
+  const projectId = searchParams.get('project_id') ?? '';
+  const queryText = searchParams.get('q') ?? '';
+  const updated = UPDATED_OPTIONS.find(option => option.id === searchParams.get('updated')) ?? UPDATED_OPTIONS[0];
+  const offsetParam = Number(searchParams.get('offset') ?? '0');
+  const offset = Number.isSafeInteger(offsetParam) && offsetParam > 0 ? offsetParam : 0;
+
+  const update = (patch: Record<string, string | null>) => {
+    const params = new URLSearchParams(searchParams.toString());
+    for (const [key, value] of Object.entries(patch)) {
+      if (value) params.set(key, value);
+      else params.delete(key);
+    }
+    const qs = params.toString();
+    router.replace(qs ? `/runs?${qs}` : '/runs', { scroll: false });
+  };
+
+  const [searchInput, setSearchInput] = useState(queryText);
+  // Keep the input following the URL (back/forward navigation) without an
+  // effect: adjust state during render when the param changes externally.
+  const [syncedQuery, setSyncedQuery] = useState(queryText);
+  if (queryText !== syncedQuery) {
+    setSyncedQuery(queryText);
+    setSearchInput(queryText);
+  }
+  useEffect(() => {
+    if (searchInput === queryText) return;
+    const timer = setTimeout(() => {
+      const params = new URLSearchParams(searchParams.toString());
+      if (searchInput) params.set('q', searchInput);
+      else params.delete('q');
+      params.delete('offset');
+      const qs = params.toString();
+      router.replace(qs ? `/runs?${qs}` : '/runs', { scroll: false });
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [searchInput, queryText, router, searchParams]);
+
+  // Anchor relative cutoffs at mount so re-renders keep a stable query.
+  const [now] = useState(() => Date.now());
+  const updatedSince = useMemo(
+    () => (updated.days === null ? null : new Date(now - updated.days * 86_400_000).toISOString()),
+    [now, updated],
+  );
+  const runsPath = useMemo(() => {
+    const params = new URLSearchParams({ offset: String(offset), limit: '25' });
+    for (const state of bucket.states) params.append('states', state);
+    if (projectId) params.set('project_id', projectId);
+    if (queryText) params.set('q', queryText);
+    if (updatedSince) params.set('updated_since', updatedSince);
+    return `/run-projections?${params}`;
+  }, [bucket, offset, projectId, queryText, updatedSince]);
+
   const projects = useApi<components['schemas']['ProjectResponse'][]>('/projects');
-  const runs = useApi<components['schemas']['RunListPage']>(`/run-projections?offset=${offset}&limit=25${query}`);
+  const summary = useApi<components['schemas']['DashboardSummary']>('/dashboard/summary');
+  const runs = useApi<components['schemas']['RunListPage']>(runsPath);
+  const counts = bucketCounts(summary.value);
+  // Summary counts cover every run. While a project or search narrows the
+  // list they would describe a different set, so hide them rather than imply
+  // they are counts of what is on screen.
+  const showCounts = Boolean(summary.value) && !projectId && !queryText;
+
   return <><h1>Runs</h1><p><Link href="/runs/new">New run</Link></p>
-    <form className="form-grid" onSubmit={event => {
-      event.preventDefault(); const params = new URLSearchParams();
-      if (filters.state) params.set('state', filters.state);
-      if (filters.project) params.set('project_id', filters.project);
-      if (filters.attention) params.set('attention', filters.attention);
-      if (filters.updated) params.set('updated_since', new Date(filters.updated).toISOString());
-      setOffset(0); setQuery(params.size ? `&${params}` : '');
-    }}>
-      <label>State<select value={filters.state} onChange={event => setFilters({ ...filters, state: event.target.value })}>
-        <option value="">All states</option>{states.map(state => <option key={state} value={state}>{state.replaceAll('_', ' ')}</option>)}</select></label>
-      <label>Project<select value={filters.project} onChange={event => setFilters({ ...filters, project: event.target.value })}>
+    <div role="group" aria-label="Run status">
+      {RUN_BUCKETS.map(candidate => <button key={candidate.id} type="button" aria-pressed={bucket.id === candidate.id}
+        onClick={() => update({ bucket: candidate.id === 'all' ? null : candidate.id, offset: null })}>
+        {candidate.label}{showCounts ? ` (${counts[candidate.id] ?? 0})` : ''}
+      </button>)}
+    </div>
+    <div className="form-grid">
+      <label>Search runs<input type="search" aria-label="Search runs" placeholder="Task title or project" value={searchInput}
+        onChange={event => setSearchInput(event.target.value)} /></label>
+      <label>Project<select value={projectId} onChange={event => update({ project_id: event.target.value || null, offset: null })}>
         <option value="">All projects</option>{projects.value?.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>
-      <label>Attention<select value={filters.attention} onChange={event => setFilters({ ...filters, attention: event.target.value })}>
-        <option value="">All runs</option><option value="true">Needs attention</option><option value="false">No attention required</option></select></label>
-      <label>Updated since (local time)<input type="datetime-local" value={filters.updated} onChange={event => setFilters({ ...filters, updated: event.target.value })} /></label>
-      <button type="submit">Apply filters</button>
-    </form>
+      <label>Updated<select value={updated.id} onChange={event => update({ updated: event.target.value === 'any' ? null : event.target.value, offset: null })}>
+        {UPDATED_OPTIONS.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}</select></label>
+    </div>
     {projects.failed && <p role="alert">Project filters unavailable. <button onClick={projects.refresh}>Retry projects</button></p>}
     <button disabled={runs.loading} onClick={runs.refresh}>Refresh runs</button>
     {runs.loading && <LoadingStatus>Loading runs…</LoadingStatus>}
     {runs.failed && <p role="alert">Runs unavailable. <button onClick={runs.refresh}>Retry</button></p>}
     {runs.value && <RunList items={runs.value.items} />}
-    <nav aria-label="Run pages"><button disabled={!offset || runs.loading} onClick={() => setOffset(Math.max(0, offset - 25))}>Previous</button>
-      <button disabled={!runs.value?.truncated || runs.loading} onClick={() => setOffset(offset + 25)}>Next</button></nav>
+    <nav aria-label="Run pages"><button disabled={!offset || runs.loading} onClick={() => update({ offset: offset <= 25 ? null : String(offset - 25) })}>Previous</button>
+      <button disabled={!runs.value?.truncated || runs.loading} onClick={() => update({ offset: String(offset + 25) })}>Next</button></nav>
   </>;
+}
+
+export default function RunsPage() {
+  return <Suspense fallback={<LoadingStatus>Loading runs…</LoadingStatus>}><RunsPageContent /></Suspense>;
 }

@@ -1,7 +1,7 @@
 """Authenticated paginated run list projection route."""
 
 from datetime import datetime
-from typing import cast
+from typing import Annotated, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -20,6 +20,8 @@ def router_for() -> APIRouter:
     async def run_projections(
         request: Request,
         state: RunState | None = Query(None),  # noqa: B008
+        states: Annotated[list[RunState] | None, Query()] = None,
+        q: str | None = Query(None, max_length=200),
         project_id: UUID | None = Query(None),  # noqa: B008
         attention: bool | None = Query(None),
         updated_since: datetime | None = Query(None),  # noqa: B008
@@ -30,8 +32,13 @@ def router_for() -> APIRouter:
         query = getattr(request.app.state, "run_list_query", None)
         if query is None:
             raise HTTPException(503, "projection unavailable")
+        combined: list[str] = []
+        for candidate in [state, *(states or [])]:
+            if candidate is not None and candidate.value not in combined:
+                combined.append(candidate.value)
         items, truncated = await cast(RunListQuery, query).list(
-            state=state,
+            states=combined or None,
+            q=q,
             project_id=project_id,
             attention=attention,
             updated_since=updated_since,
