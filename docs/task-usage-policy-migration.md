@@ -5,8 +5,16 @@ Parent: [#94](https://github.com/Clar17y/parallel-forge/issues/94) (Work package
 This document audits existing mandatory per-task token and context allowances across Parallel Forge, provides target policy guidance that replaces guesswork with advisory observed averages, and defines the migration path toward optional explicit hard caps.
 
 > [!IMPORTANT]
-> **Status: Planned contract and documentation guidance.**
-> Runtime monitoring, optional-cap creation, and usage checkpoint pause/resume are planned runtime capabilities delivered in subsequent work packages: backend schema and templates in [#100](https://github.com/Clar17y/parallel-forge/issues/100) (U6), UI editors and forms in [#103](https://github.com/Clar17y/parallel-forge/issues/103) (U9), and integrated runtime verification in [#106](https://github.com/Clar17y/parallel-forge/issues/106) (U12). Ordinary agent policy still inserts finite numeric defaults; subscription profiles already allow optional role caps. Current runtime enforces configured limits. This guide establishes migration expectations without claiming runtime monitoring is already active.
+> **Status: Delivered; this guide is the historical audit and migration contract.**
+> Runtime monitoring, optional-cap creation, and usage checkpoint pause/resume shipped in
+> [#107](https://github.com/Clar17y/parallel-forge/pull/107) to
+> [#112](https://github.com/Clar17y/parallel-forge/pull/112). The follow-up work packages
+> [#100](https://github.com/Clar17y/parallel-forge/issues/100) (U6),
+> [#103](https://github.com/Clar17y/parallel-forge/issues/103) (U9) and
+> [#106](https://github.com/Clar17y/parallel-forge/issues/106) (U12) are closed as completed. See
+> [task usage monitoring](task-usage-monitoring.md) for current behavior, rollout and rollback.
+> The audit below describes the code as it stood before that work; references to finite
+> defaults and planned changes are retained as the original record.
 
 ---
 
