@@ -42,16 +42,21 @@ function RunsPageContent() {
   const [searchInput, setSearchInput] = useState(queryText);
   // Keep the input following the URL (back/forward navigation) without an
   // effect: adjust state during render when the param changes externally.
+  // Self-issued navigations are tracked separately — when one of those lands
+  // late it must not clobber characters typed after it was dispatched.
   const [syncedQuery, setSyncedQuery] = useState(queryText);
+  const [issuedQuery, setIssuedQuery] = useState(queryText);
   if (queryText !== syncedQuery) {
     setSyncedQuery(queryText);
-    setSearchInput(queryText);
+    if (queryText !== issuedQuery) setSearchInput(queryText);
   }
   useEffect(() => {
     if (searchInput === queryText) return;
     const timer = setTimeout(() => {
+      const next = searchInput.slice(0, 200);
+      setIssuedQuery(next);
       const params = new URLSearchParams(searchParams.toString());
-      if (searchInput) params.set('q', searchInput.slice(0, 200));
+      if (next) params.set('q', next);
       else params.delete('q');
       params.delete('offset');
       const qs = params.toString();

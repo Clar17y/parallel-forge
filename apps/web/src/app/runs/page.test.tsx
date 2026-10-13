@@ -139,6 +139,22 @@ test('search text is bounded to the API limit instead of debouncing into a 422',
   expect(new URLSearchParams(url.split('?')[1]).get('q')).toHaveLength(200);
 });
 
+test('typing during a slow search navigation is not reverted when it lands', async () => {
+  mockRunsApi();
+  mockReplace.mockImplementation((url: string) => { window.history.replaceState(null, '', url); });
+  const { rerender } = render(<RunsPage />);
+  const user = userEvent.setup();
+  const input = await screen.findByRole('searchbox', { name: 'Search runs' });
+  await user.type(input, 'foo');
+  await waitFor(
+    () => expect(mockReplace).toHaveBeenCalledWith(expect.stringContaining('q=foo'), expect.anything()),
+    { timeout: 3000 },
+  );
+  await user.type(input, 'b'); // draft is now "foob"; the q=foo navigation has not committed yet
+  rerender(<RunsPage />); // slow navigation commits with the older q=foo
+  expect(input).toHaveValue('foob');
+});
+
 test('typing in search updates the URL query after a short debounce', async () => {
   mockRunsApi();
   render(<RunsPage />);

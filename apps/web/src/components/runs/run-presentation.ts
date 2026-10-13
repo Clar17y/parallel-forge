@@ -46,6 +46,10 @@ const descriptions: Record<State, RunDescription> = {
 
 /** Plain-language title for a raw run state, for lists without a full projection. */
 export function runStateTitle(state: string): string {
+  // The list projection carries no event window, so the origin of the
+  // current remediation transition is unknown here; use the same neutral
+  // wording the cockpit uses when its origin is unrecorded.
+  if (state === 'REMEDIATING') return 'Repairing recorded findings';
   return (descriptions as Partial<Record<string, RunDescription>>)[state]?.title ?? readableLabel(state);
 }
 
