@@ -69,6 +69,41 @@ async def test_run_list_passes_filters_and_returns_closed_page(route_context):
     assert response.json()["truncated"] is True
     assert route_context.app.state.run_list_query.kwargs["offset"] == 2
     assert route_context.app.state.run_list_query.kwargs["limit"] == 1
+    assert route_context.app.state.run_list_query.kwargs["states"] == ["CREATED"]
+
+
+@pytest.mark.asyncio
+async def test_run_list_accepts_repeated_states_and_text_search(route_context):
+    async with AsyncClient(
+        transport=ASGITransport(app=route_context.app), base_url="http://127.0.0.1:3000"
+    ) as client:
+        client.cookies.set("forge_session", route_context.auth.session_token)
+        response = await client.get(
+            "/api/run-projections?states=AWAITING_PLAN_APPROVAL"
+            "&states=AWAITING_MERGE_APPROVAL&q=csv+export",
+            headers={"Host": "127.0.0.1:3000"},
+        )
+        invalid_state = await client.get("/api/run-projections?states=NOT_A_STATE")
+    assert response.status_code == 200
+    kwargs = route_context.app.state.run_list_query.kwargs
+    assert kwargs["states"] == ["AWAITING_PLAN_APPROVAL", "AWAITING_MERGE_APPROVAL"]
+    assert kwargs["q"] == "csv export"
+    assert invalid_state.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_run_list_rejects_nul_bytes_in_search_text(route_context):
+    async with AsyncClient(
+        transport=ASGITransport(app=route_context.app), base_url="http://127.0.0.1:3000"
+    ) as client:
+        client.cookies.set("forge_session", route_context.auth.session_token)
+        nul_only = await client.get("/api/run-projections?q=%00")
+        nul_embedded = await client.get("/api/run-projections?q=csv%00export")
+    # PostgreSQL cannot bind NUL in a text value; the API must reject it as
+    # malformed input instead of surfacing a persistence failure.
+    assert nul_only.status_code == 422
+    assert nul_embedded.status_code == 422
+    assert not hasattr(route_context.app.state.run_list_query, "kwargs")
 
 
 @pytest.mark.asyncio

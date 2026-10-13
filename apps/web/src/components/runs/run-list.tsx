@@ -2,7 +2,7 @@ import Link from 'next/link';
 import { Activity } from 'lucide-react';
 import type { components } from '@/lib/api/schema';
 import { formatDate } from '@/lib/format';
-import { isActiveRunPhase } from './run-presentation';
+import { isActiveRunPhase, runStateTitle } from './run-presentation';
 
 export function RunList({ items }: { items: components['schemas']['RunListItem'][] }) {
   if (!items.length) return <p>No runs match these filters on this page.</p>;
@@ -16,7 +16,7 @@ export function RunList({ items }: { items: components['schemas']['RunListItem']
       <td>
         <span className="inline-flex items-center gap-1.5">
           {isActivePhase ? <Activity className="w-3.5 h-3.5 text-[var(--info)] flex-none" aria-hidden="true" /> : null}
-          {item.state.replaceAll('_', ' ')}
+          {runStateTitle(item.state)}
         </span>
       </td>
       <td>{item.next_gate ?? 'None'}</td>

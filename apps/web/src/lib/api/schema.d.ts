@@ -9496,6 +9496,8 @@ export interface operations {
         parameters: {
             query?: {
                 state?: components["schemas"]["RunState"] | null;
+                states?: components["schemas"]["RunState"][] | null;
+                q?: string | null;
                 project_id?: string | null;
                 attention?: boolean | null;
                 exclude_pending_gate?: boolean | null;

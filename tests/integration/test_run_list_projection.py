@@ -133,7 +133,7 @@ async def test_active_elapsed_advances_beyond_last_mutation(session_factory, per
 
 async def test_run_list_filters_state_and_project_and_truncates(session_factory, persisted_run):
     rows, truncated = await RunListQuery(session_factory).list(
-        state=RunState.CREATED, project_id=persisted_run.project_id, limit=1
+        states=[RunState.CREATED.value], project_id=persisted_run.project_id, limit=1
     )
     assert len(rows) == 1
     assert rows[0]["run_id"] == persisted_run.id
