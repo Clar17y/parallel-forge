@@ -1,10 +1,12 @@
 # Parallel Forge
 
-> **Status: v0.3 delivery candidate; local verification complete; hosted CI pending.**
-> See the [release evidence](docs/v0.3-release.md) for tested behavior,
-> upgrade coverage and remaining delivery gates. Local checks, hosted CI,
-> publication and merge are recorded separately. The
-> [v0.2 handoff](docs/v0.2-release.md) retains the earlier release evidence.
+> **Status: v0.3 epic delivery merged ([#88](https://github.com/Clar17y/parallel-forge/pull/88)); not yet tagged or published.**
+> Task usage monitoring ([#107](https://github.com/Clar17y/parallel-forge/pull/107)
+> to [#112](https://github.com/Clar17y/parallel-forge/pull/112)) and the Muse Code
+> subscription runtime ([#118](https://github.com/Clar17y/parallel-forge/pull/118))
+> have since merged to `main`. See the [v0.3 release evidence](docs/v0.3-release.md)
+> for tested behavior, the owner's accepted evidence and remaining publication
+> gates. The [v0.2 handoff](docs/v0.2-release.md) retains the earlier release evidence.
 
 Parallel Forge is a local-first control plane for durable, reviewable
 agent-assisted software delivery. It began as the engineering system for
@@ -20,11 +22,15 @@ building Parallel, but is designed to manage other repositories independently.
 - protected local secrets, isolated PostgreSQL resources, and environment staging
 - Docker-first and explicit trusted-host command execution bound to exact managed
   worktrees
-- subscription-backed local CLI orchestration, bounded specialist delegation,
-  shared-worktree ownership and independent-worktree concurrency
+- subscription-backed local CLI orchestration (Codex, Claude, Antigravity and
+  Muse Code), bounded specialist delegation, shared-worktree ownership and
+  independent-worktree concurrency
 - frozen routing profiles, durable quota/fallback state, per-task controls,
-  operator feedback and measured/unknown usage reporting (with planned
-  [task usage policy migration](docs/task-usage-policy-migration.md) toward advisory averages and optional hard caps)
+  operator feedback and measured/unknown usage reporting
+- task usage monitoring with frozen baselines, owner-editable `report_only`,
+  `warn` or `checkpoint` policies, optional hard caps, durable usage checkpoints
+  with owner continuation, and historical usage reports
+  ([task usage monitoring](docs/task-usage-monitoring.md))
 - saved brainstorming, revisioned requirements briefs and dependency-aware epic
   work items with frozen child-run context
 - verified prerequisite integration, shared epic budgets, owner controls and
@@ -85,8 +91,8 @@ cleanup under `.llm-output/local-verification/`. See
 
 The [v0.3 contract](docs/v0.3-design.md),
 [release evidence](docs/v0.3-release.md) and
-[stopped-upgrade procedure](docs/v0.3-upgrade.md) describe the epic delivery
-candidate. Sequential coordination must be enabled for each execution; accepting
+[stopped-upgrade procedure](docs/v0.3-upgrade.md) describe epic delivery, merged
+in [#88](https://github.com/Clar17y/parallel-forge/pull/88). Sequential coordination must be enabled for each execution; accepting
 a brief or graph does not approve a child's plan, PR publication or merge.
 
 The [v0.2 release handoff](docs/v0.2-release.md) combines the completed functional
@@ -94,9 +100,16 @@ work, current setup and stopped-upgrade guidance. The
 [v0.2 progress ledger](docs/v0.2-progress.md) distinguishes current outcomes from
 historical checkpoints. The [remaining issue queue](docs/v0.2-issue-backlog.md)
 tracks final publication and merge; one-run profile overrides are post-v0.2.
-Planned task usage monitoring and policy migration
-([task usage policy migration](docs/task-usage-policy-migration.md)) outlines the
-transition toward advisory observed averages and optional hard caps.
+Task usage monitoring shipped after v0.3 in
+[#107](https://github.com/Clar17y/parallel-forge/pull/107) to
+[#112](https://github.com/Clar17y/parallel-forge/pull/112). The
+[task usage monitoring](docs/task-usage-monitoring.md) guide covers checkpoints,
+owner controls, reporting, rollout to migration head `0041` and rollback. The
+[task usage policy migration](docs/task-usage-policy-migration.md) records the
+original audit and the move toward advisory observed averages and optional hard
+caps. The Muse Code subscription runtime
+([#118](https://github.com/Clar17y/parallel-forge/pull/118)) is configured through
+the [local CLI setup guide](docs/v0.2-profile-cli.md).
 
 ## Prerequisites and verification
 
@@ -118,6 +131,7 @@ Manual process startup, configuration, approvals and recovery are described in t
 ## Documentation
 
 - [Operator runbook](docs/operator-runbook.md)
+- [v0.3 release evidence](docs/v0.3-release.md)
 - [v0.2 release handoff](docs/v0.2-release.md)
 - [Local CLI profiles and readiness](docs/v0.2-profile-cli.md)
 - [Subscription task controls](docs/v0.2-task-inspector.md)
@@ -126,6 +140,7 @@ Manual process startup, configuration, approvals and recovery are described in t
 - [Historical v0.1 acceptance](docs/acceptance-v0.1.md)
 - [Architecture](docs/architecture.md)
 - [Threat model](docs/threat-model.md)
+- [Task usage monitoring](docs/task-usage-monitoring.md)
 - [Task usage policy migration](docs/task-usage-policy-migration.md)
 - [Full v0.1 design](docs/superpowers/specs/2026-08-21-forge-v0-1-design.md)
 - [Implementation roadmap](docs/superpowers/plans/2026-08-21-forge-v0-1.md)
