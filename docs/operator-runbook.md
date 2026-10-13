@@ -79,8 +79,11 @@ Subscription clients use the operator's existing official-client login and the
 closed installation manifest; see [installation setup](v0.2-upgrade.md#operator-subscription-installations).
 Keep `operator_trusted` / **Ready to attempt** distinct from optional verified
 admission. Antigravity's `approved_tools_unproved` warning means native tools may
-remain available. Actual callback, route, credential-filtering, ownership, budget,
-quota, process-settlement and human approval controls still apply.
+remain available. Muse Code (`muse_code`) requires interactive operator login via
+`muse` in your terminal prior to worker launch. Verified mode reports `provider_unsupported`
+for Muse Code. Actual callback, route, credential-filtering, ownership, budget,
+quota, process-settlement and human approval controls still apply. Always restart
+the worker after editing installation manifests.
 
 Existing `FORGE_SUBSCRIPTION_PRIMARY_BUDGET` JSON overrides copied from the old example
 retain `max_uncertain_attempts=1`. Operators may remove that override to inherit the new

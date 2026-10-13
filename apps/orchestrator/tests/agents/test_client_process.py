@@ -192,24 +192,28 @@ async def test_windows_client_has_os_metadata_for_sockets_without_ambient_values
         _spec(
             "import asyncio,json,os,socket; s=socket.socket(); s.close(); "
             "print(json.dumps({'socket': True, 'root': bool(os.environ.get('SystemRoot')), "
+            "'drive': os.environ.get('SystemDrive'), 'data': os.environ.get('ProgramData'), "
             "'private': 'FORGE_CLIENT_PRIVATE_TEST' in os.environ}))"
         ),
         {},
     )
-    assert result.frames == ({"socket": True, "root": True, "private": False},), result.stderr
+    assert result.frames[0]["socket"] and result.frames[0]["root"]
+    assert result.frames[0]["private"] is False
+    assert Path(result.frames[0]["drive"] + "\\").is_absolute()
+    assert Path(result.frames[0]["data"]).is_absolute()
+    assert "%" not in result.frames[0]["data"]
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows process environment")
 def test_windows_system_directory_cannot_be_overridden():
     from forge.agents.client_process import ClientLaunchSpec
 
-    with pytest.raises(ValueError, match="cannot override"):
-        ClientLaunchSpec(
-            argv=(sys.executable, "-V"),
-            cwd=".",
-            environment={"systemroot": "C:/untrusted"},
-            allowed_environment=frozenset({"systemroot"}),
-        )
+    for key in ("systemroot", "systemdrive", "programdata"):
+        with pytest.raises(ValueError, match="cannot override"):
+            ClientLaunchSpec(
+                argv=(sys.executable, "-V"), cwd=".",
+                environment={key: "C:/untrusted"}, allowed_environment=frozenset({key}),
+            )
 
 
 @pytest.mark.asyncio

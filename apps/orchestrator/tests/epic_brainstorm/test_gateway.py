@@ -52,6 +52,7 @@ from forge.domain.subscription_installations import (
     ClaudeInstallationSpec,
     CodexInstallationSpec,
     GeminiInstallationSpec,
+    MuseInstallationSpec,
 )
 from forge.domain.task_usage_contract import (
     Observation,
@@ -143,7 +144,7 @@ def _sleeping_codex_installation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("client", ["codex", "claude", "gemini", "antigravity"])
+@pytest.mark.parametrize("client", ["codex", "claude", "gemini", "antigravity", "muse"])
 async def test_authoring_launch_uses_current_executable_digest_under_operator_trust(
     tmp_path: Path, client: str
 ) -> None:
@@ -176,6 +177,9 @@ async def test_authoring_launch_uses_current_executable_digest_under_operator_tr
         ),
         "antigravity": lambda: AntigravityInstallationSpec(
             client="antigravity_cli", model="gemini-test", effort="low", **common
+        ),
+        "muse": lambda: MuseInstallationSpec(
+            client="muse_code", model="muse-wonder-1.0", effort="medium", **common
         ),
     }[client]()
     reader = BrainstormReadOnlyTools(RepositoryReader(root=str(tmp_path), secret_paths=()))

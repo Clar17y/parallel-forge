@@ -1046,3 +1046,42 @@ async def antigravity_exchange(
         await session.wait_closed()
         return proposal_from_output(payload.get("structured_output"), job)
     raise ProtocolError("Antigravity authoring ended before result")
+
+
+async def muse_exchange(
+    session: ClientProcessSession,
+    job: AuthoringJobSnapshot,
+    turns: tuple[BrainstormTurn, ...],
+    tools: AuthoringTools,
+    usage: AuthoringUsage,
+    *,
+    publisher: _ObservationPublisher | None = None,
+) -> BrainstormProposal | DecompositionProposal:
+    from forge.agents.muse_runtime import muse_output, muse_root_terminal
+
+    payload = await muse_root_terminal(lambda: tools.receive(session))
+    terminal_state = payload.get("terminal")
+    reason = payload.get("reason")
+
+    if terminal_state == "failed":
+        from forge.domain.provider_quota import classify_muse_error
+
+        failure_kind, quota_exc = classify_muse_error(reason if isinstance(reason, str) else None)
+        reset_str = quota_exc.reset_at.isoformat() if quota_exc and quota_exc.reset_at else None
+        fail_enum = {
+            "quota": "quota_exhausted",
+            "throttled": "throttled",
+            "authentication": "authentication",
+            "policy_denied": "unavailable",
+            "unsupported": "unavailable",
+            "outage": "unavailable",
+        }.get(failure_kind, "unavailable")
+        raise AuthoringProviderFailure(fail_enum, reset_str)
+
+    if terminal_state == "cancelled":
+        raise AuthoringProviderFailure("cancelled")
+
+    if terminal_state != "completed":
+        raise ProtocolError(f"Muse unknown terminal state: {terminal_state}")
+
+    return proposal_from_output(muse_output(payload), job)

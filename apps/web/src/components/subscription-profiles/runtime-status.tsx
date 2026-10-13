@@ -48,6 +48,9 @@ function loginGuidance(client: string) {
   if (client === 'antigravity_cli' || client === 'gemini_cli') {
     return <>Sign in with Google inside the official Antigravity client, then refresh. The separate approved-tool warning still applies.</>;
   }
+  if (client === 'muse_code') {
+    return <>Run <code>muse</code> in your terminal to complete sign-in with Meta, then refresh.</>;
+  }
   return <>Complete sign-in inside the configured official client, then refresh.</>;
 }
 

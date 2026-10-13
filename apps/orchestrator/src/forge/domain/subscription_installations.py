@@ -146,11 +146,25 @@ class AntigravityInstallationSpec(_InstallationSpec):
     client: Literal["antigravity_cli"]
 
 
+class MuseInstallationSpec(_InstallationSpec):
+    client: Literal["muse_code"]
+    max_model_steps: int = Field(default=100, strict=True, gt=0)
+
+    @model_validator(mode="after")
+    def require_bound_route(self) -> MuseInstallationSpec:
+        if self.model == "cli-default" or self.effort not in {
+            "none", "low", "medium", "high", "maximum"
+        }:
+            raise ValueError("Muse route requires an explicit model and representable effort")
+        return self
+
+
 SubscriptionInstallationSpec = Annotated[
     CodexInstallationSpec
     | ClaudeInstallationSpec
     | GeminiInstallationSpec
-    | AntigravityInstallationSpec,
+    | AntigravityInstallationSpec
+    | MuseInstallationSpec,
     Field(discriminator="client"),
 ]
 
@@ -203,6 +217,7 @@ def quota_route_for(item: SubscriptionInstallationSpec) -> QuotaRoutePool:
         "claude_code": "anthropic",
         "gemini_cli": "google",
         "antigravity_cli": "google",
+        "muse_code": "meta",
     }[item.client]
     return QuotaRoutePool(
         provider=provider,
@@ -271,6 +286,7 @@ __all__ = [
     "ClaudeInstallationSpec",
     "CodexInstallationSpec",
     "GeminiInstallationSpec",
+    "MuseInstallationSpec",
     "SubscriptionInstallationManifest",
     "SubscriptionInstallationSpec",
     "is_account_identity_digest",

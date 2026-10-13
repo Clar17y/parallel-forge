@@ -33,6 +33,7 @@ _PROVIDERS = {
     "claude_code": "anthropic",
     "gemini_cli": "google",
     "antigravity_cli": "google",
+    "muse_code": "meta",
 }
 _AGY_PREFIX = "Fetching available models..."
 

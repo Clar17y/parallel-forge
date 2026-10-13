@@ -28,6 +28,7 @@ from forge.domain.subscription_installations import (
     AntigravityInstallationSpec,
     ClaudeInstallationSpec,
     CodexInstallationSpec,
+    MuseInstallationSpec,
     SubscriptionInstallationSpec,
     load_subscription_installation_manifest,
     quota_route_for,
@@ -154,6 +155,7 @@ def load_subscription_installations_diagnostic(
                     "claude_code": "anthropic",
                     "gemini_cli": "google",
                     "antigravity_cli": "google",
+                    "muse_code": "meta",
                 }[item.client],
                 client=item.client,
                 model=item.model,
@@ -166,6 +168,9 @@ def load_subscription_installations_diagnostic(
             trust is LocalCliTrust.VERIFIED
             and item.client == "gemini_cli"
             and verifiers.gemini is None
+        ) or (
+            trust is LocalCliTrust.VERIFIED
+            and item.client == "muse_code"
         ):
             reason = ReadinessReason.PROVIDER_UNSUPPORTED
         elif actual_digest is None:
@@ -238,6 +243,23 @@ def _adapter_for(
         and not hmac.compare_digest(actual_digest, item.executable_digest)
     ):
         return None
+    if isinstance(item, MuseInstallationSpec):
+        if trust is not LocalCliTrust.OPERATOR:
+            return None
+        from forge.agents.muse_runtime import MuseInstallation, MuseRuntimeAdapter
+
+        return MuseRuntimeAdapter(
+            MuseInstallation(
+                executable=item.executable,
+                cwd=item.cwd,
+                home=item.home,
+                model=item.model,
+                effort=item.effort,
+                max_model_steps=item.max_model_steps,
+                executable_digest=actual_digest,
+                duration_seconds=duration_seconds,
+            )
+        )
     if isinstance(item, AntigravityInstallationSpec):
         if trust is not LocalCliTrust.OPERATOR:
             return None

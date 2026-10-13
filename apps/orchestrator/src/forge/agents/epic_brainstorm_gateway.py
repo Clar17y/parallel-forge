@@ -42,12 +42,19 @@ from forge.agents.epic_brainstorm_protocol import (
     AuthoringTools,
     AuthoringUsage,
     antigravity_exchange,
+    authoring_prompt,
     authoring_schema,
     claude_exchange,
     codex_exchange,
     gemini_exchange,
+    muse_exchange,
 )
 from forge.agents.gemini_configuration import GeminiLaunchDirectory
+from forge.agents.muse_runtime import (
+    MuseAuthoringHome,
+    MuseInstallation,
+    muse_launch_spec,
+)
 from forge.agents.subscription_protocol import (
     ProtocolError,
 )
@@ -67,6 +74,7 @@ from forge.domain.subscription_installations import (
     ClaudeInstallationSpec,
     CodexInstallationSpec,
     GeminiInstallationSpec,
+    MuseInstallationSpec,
     SubscriptionInstallationSpec,
     quota_route_for,
 )
@@ -227,10 +235,11 @@ class EpicBrainstormGateway:
         usage = AuthoringUsage()
         tools = AuthoringTools(reader, job.budget.max_tool_calls, usage)
         session = None
-        launch_files: GeminiLaunchDirectory | AntigravityAuthoringHome | None = None
+        launch_files: GeminiLaunchDirectory | AntigravityAuthoringHome | MuseAuthoringHome | None = None
         proposal: BrainstormProposal | DecompositionProposal | None = None
         failure: str | None = None
         quota_reset_at: str | None = None
+        muse_terminal_failed = False
         interrupted = False
         use_bridge = False
         try:
@@ -419,6 +428,43 @@ class EpicBrainstormGateway:
                     model=antigravity_model,
                     publisher=publisher,
                 )
+            elif isinstance(installation, MuseInstallationSpec):
+                use_bridge = True
+                muse_runtime = MuseInstallation(
+                    executable=installation.executable,
+                    cwd=installation.cwd,
+                    home=installation.home,
+                    model=installation.model,
+                    effort=installation.effort,
+                    max_model_steps=installation.max_model_steps,
+                    executable_digest=actual_digest,
+                    duration_seconds=duration,
+                )
+                launch_files = MuseAuthoringHome(muse_runtime, attempt_id)
+                await tools.start()
+                descriptor = tools.bridge.descriptor()
+                pairs = descriptor["env"]
+                assert isinstance(pairs, list)
+                muse_prompt = authoring_prompt(job, turns)
+                schema_dict = authoring_schema(job.kind)
+                launch_files.prepare(muse_prompt, schema_dict)
+                server = {
+                    "transport": "stdio", "command": descriptor["command"],
+                    "args": descriptor["args"],
+                    "env": {pair["name"]: pair["value"] for pair in pairs},
+                }
+                spec = muse_launch_spec(
+                    muse_runtime, launch_files, mcp_name="forge", mcp_server=server,
+                    tools=AUTHORING_TOOL_NAMES, duration=duration,
+                )
+                exchange = lambda session: muse_exchange(
+                    session,
+                    job,
+                    turns,
+                    tools,
+                    usage,
+                    publisher=publisher,
+                )
             else:
                 return BrainstormGatewayResult(proposal=None, telemetry=None, failure="unavailable")
 
@@ -437,6 +483,7 @@ class EpicBrainstormGateway:
         except AuthoringProviderFailure as error:
             failure = error.failure
             quota_reset_at = error.quota_reset_at
+            muse_terminal_failed = isinstance(installation, MuseInstallationSpec)
         except ProtocolError, ClientProcessError, ValueError, TypeError, KeyError:
             failure = "invalid_output"
         except Exception:  # noqa: BLE001 - provider and repository errors stay private
@@ -444,7 +491,7 @@ class EpicBrainstormGateway:
         finally:
 
             async def settle() -> None:
-                nonlocal failure
+                nonlocal failure, quota_reset_at
                 cleanup_failed = False
                 try:
                     await tools.revoke()
@@ -470,6 +517,9 @@ class EpicBrainstormGateway:
                             or receipt.outcome not in {"exited", "completed"}
                         ):
                             failure = "process_failed"
+                        elif muse_terminal_failed and receipt.return_code == 0:
+                            failure = "invalid_output"
+                            quota_reset_at = None
                     except asyncio.CancelledError, Exception:  # noqa: BLE001 - uncertain stop
                         cleanup_failed = True
                 if cleanup_failed:

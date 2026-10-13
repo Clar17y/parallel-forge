@@ -76,6 +76,7 @@ _LOCAL_CLIENTS = {
     ("google", "gemini_cli"),
     ("google", "antigravity_cli"),
     ("anthropic", "claude_code"),
+    ("meta", "muse_code"),
 }
 
 
