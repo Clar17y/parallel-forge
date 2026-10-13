@@ -33,13 +33,16 @@ export function MergeApprovalEvidence({ evidence, protection }: { evidence: Merg
     <dl><dt>Remote head</dt><dd><code>{evidence.head_sha}</code></dd>
       <dt>Observed base</dt><dd>{evidence.base_ref} · <code>{evidence.base_sha}</code></dd>
       <dt>Blocking findings</dt><dd>{evidence.unresolved_blocking_findings}</dd>
-      <dt>Validation digest</dt><dd><code>{evidence.validation_digest}</code></dd>
-      <PublicationDecisionEvidence evidence={evidence} />
       <dt>Runner</dt><dd>{evidence.runner_mode === 'trusted_host' ? 'Trusted host · unsandboxed' : 'Docker'}</dd>
-      <dt>Runner evidence digest</dt><dd><code>{evidence.runner_evidence_digest}</code></dd>
       <dt>GitHub protection source</dt><dd>{protection.evidence_source}</dd>
-      <dt>Protection digest</dt><dd><code>{evidence.protection_digest}</code></dd>
-    </dl><h4>Required checks</h4><ul>{Object.entries(evidence.required_checks).map(([name, result]) => <li key={name}>{name}: {result}</li>)}</ul>
+    </dl>
+    <details><summary>Technical details</summary>
+      <dl><dt>Validation digest</dt><dd><code>{evidence.validation_digest}</code></dd>
+        <PublicationDecisionEvidence evidence={evidence} />
+        <dt>Runner evidence digest</dt><dd><code>{evidence.runner_evidence_digest}</code></dd>
+        <dt>Protection digest</dt><dd><code>{evidence.protection_digest}</code></dd>
+      </dl>
+    </details><h4>Required checks</h4><ul>{Object.entries(evidence.required_checks).map(([name, result]) => <li key={name}>{name}: {result}</li>)}</ul>
     <p>{protection.strict_required_checks ? 'Strict required checks enabled. ' : ''}{protection.merge_queue_enabled ? 'Merge queue enabled. ' : ''}Approval actor cannot bypass protections.</p>
   </section>;
 }

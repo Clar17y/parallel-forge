@@ -27,12 +27,15 @@ export function PrPublicationEvidence({ evidence, body }: { evidence: PrEvidence
     <h3>{evidence.title}</h3><p>{evidence.repository} → {evidence.base_ref}</p>
     <dl><dt>Candidate commit</dt><dd><code>{evidence.candidate_commit}</code></dd>
       <dt>Base commit</dt><dd><code>{evidence.base_sha}</code></dd>
-      <dt>Diff digest</dt><dd><code>{evidence.diff_digest}</code></dd>
-      <dt>Validation digest</dt><dd><code>{evidence.validation_digest}</code></dd>
-      <PublicationDecisionEvidence evidence={evidence} />
       <dt>Runner</dt><dd>{evidence.runner_mode === 'trusted_host' ? 'Trusted host · unsandboxed' : 'Docker'}</dd>
-      <dt>Runner evidence digest</dt><dd><code>{evidence.runner_evidence_digest}</code></dd>
-      <dt>PR body digest</dt><dd><code>{evidence.body_digest}</code></dd>
-    </dl><h3>Exact PR body</h3><pre>{body}</pre>
+    </dl>
+    <details><summary>Technical details</summary>
+      <dl><dt>Diff digest</dt><dd><code>{evidence.diff_digest}</code></dd>
+        <dt>Validation digest</dt><dd><code>{evidence.validation_digest}</code></dd>
+        <PublicationDecisionEvidence evidence={evidence} />
+        <dt>Runner evidence digest</dt><dd><code>{evidence.runner_evidence_digest}</code></dd>
+        <dt>PR body digest</dt><dd><code>{evidence.body_digest}</code></dd>
+      </dl>
+    </details><h3>Exact PR body</h3><pre>{body}</pre>
   </section>;
 }
