@@ -5,12 +5,21 @@ from typing import Annotated, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import AfterValidator
 
 from forge.api.dependencies import require_operator
 from forge.api.schemas.run_list import RunListPage
 from forge.application.services.auth import AuthenticatedActor
 from forge.domain.run import RunState
 from forge.persistence.queries.run_list import RunListQuery
+
+
+def _reject_nul(value: str | None) -> str | None:
+    # PostgreSQL cannot accept a NUL byte in a text bind, so reject it at
+    # the API boundary instead of surfacing it as a persistence outage.
+    if value is not None and "\x00" in value:
+        raise ValueError("search text must not contain NUL bytes")
+    return value
 
 
 def router_for() -> APIRouter:
@@ -21,7 +30,7 @@ def router_for() -> APIRouter:
         request: Request,
         state: RunState | None = Query(None),  # noqa: B008
         states: Annotated[list[RunState] | None, Query()] = None,
-        q: str | None = Query(None, max_length=200),
+        q: Annotated[str | None, Query(max_length=200), AfterValidator(_reject_nul)] = None,
         project_id: UUID | None = Query(None),  # noqa: B008
         attention: bool | None = Query(None),
         updated_since: datetime | None = Query(None),  # noqa: B008

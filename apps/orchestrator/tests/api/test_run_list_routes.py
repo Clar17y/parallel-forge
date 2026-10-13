@@ -92,6 +92,21 @@ async def test_run_list_accepts_repeated_states_and_text_search(route_context):
 
 
 @pytest.mark.asyncio
+async def test_run_list_rejects_nul_bytes_in_search_text(route_context):
+    async with AsyncClient(
+        transport=ASGITransport(app=route_context.app), base_url="http://127.0.0.1:3000"
+    ) as client:
+        client.cookies.set("forge_session", route_context.auth.session_token)
+        nul_only = await client.get("/api/run-projections?q=%00")
+        nul_embedded = await client.get("/api/run-projections?q=csv%00export")
+    # PostgreSQL cannot bind NUL in a text value; the API must reject it as
+    # malformed input instead of surfacing a persistence failure.
+    assert nul_only.status_code == 422
+    assert nul_embedded.status_code == 422
+    assert not hasattr(route_context.app.state.run_list_query, "kwargs")
+
+
+@pytest.mark.asyncio
 async def test_run_list_requires_operator_and_rejects_bad_bounds(route_context):
     async with AsyncClient(
         transport=ASGITransport(app=route_context.app), base_url="http://127.0.0.1:3000"
