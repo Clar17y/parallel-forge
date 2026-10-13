@@ -138,14 +138,14 @@ function RunsPageContent() {
   const showCounts = Boolean(summary.value) && !projectId && !queryText
     && attention === null && updated.id === 'any';
 
-  return <><h1>Runs</h1><p><Link href="/runs/new">New run</Link></p>
-    <div role="group" aria-label="Run status">
+  return <><div className="page-title-row"><h1>Runs</h1><Link className="button" data-variant="primary" href="/runs/new">New run</Link></div>
+    <div role="group" aria-label="Run status" className="filter-chips">
       {RUN_BUCKETS.map(candidate => <button key={candidate.id} type="button" aria-pressed={bucket.id === candidate.id}
         onClick={() => update({ bucket: candidate.id === 'all' ? null : candidate.id, offset: null })}>
         {candidate.label}{showCounts ? ` (${counts[candidate.id] ?? 0})` : ''}
       </button>)}
     </div>
-    <div className="form-grid">
+    <div className="form-grid filter-bar">
       <label>Search runs<input type="search" aria-label="Search runs" placeholder="Task title or project" maxLength={200} value={searchInput}
         onChange={event => setSearchInput(event.target.value)} /></label>
       <label>Project<select value={projectId} onChange={event => update({ project_id: event.target.value || null, offset: null })}>
@@ -154,9 +154,9 @@ function RunsPageContent() {
         <option value="">Any attention</option><option value="true">Needs attention</option><option value="false">No attention required</option></select></label>
       <label>Updated<select value={updated.id} onChange={event => { setAnchor(Date.now()); update({ updated: event.target.value === 'any' ? null : event.target.value, offset: null }); }}>
         {UPDATED_OPTIONS.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}</select></label>
+      <button disabled={runs.loading} onClick={() => { setAnchor(Date.now()); runs.refresh(); summary.refresh(); }}>Refresh runs</button>
     </div>
     {projects.failed && <p role="alert">Project filters unavailable. <button onClick={projects.refresh}>Retry projects</button></p>}
-    <button disabled={runs.loading} onClick={() => { setAnchor(Date.now()); runs.refresh(); summary.refresh(); }}>Refresh runs</button>
     {runs.loading && <LoadingStatus>Loading runs…</LoadingStatus>}
     {runs.failed && <p role="alert">Runs unavailable. <button onClick={runs.refresh}>Retry</button></p>}
     {runs.value && <RunList items={runs.value.items} />}

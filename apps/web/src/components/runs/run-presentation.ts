@@ -44,6 +44,12 @@ const descriptions: Record<State, RunDescription> = {
   CANCELLED: { title: 'Run cancelled', description: 'Resources and evidence remain available until explicit teardown.', tone: 'neutral' },
 };
 
+/** Semantic tone for a raw run state, so lists can encode state in form as well as text. */
+export function runStateTone(state: string): Tone {
+  if (state === 'REMEDIATING') return 'warning';
+  return (descriptions as Partial<Record<string, RunDescription>>)[state]?.tone ?? 'neutral';
+}
+
 /** Plain-language title for a raw run state, for lists without a full projection. */
 export function runStateTitle(state: string): string {
   // The list projection carries no event window, so the origin of the

@@ -2,20 +2,20 @@ import Link from 'next/link';
 import { Activity } from 'lucide-react';
 import type { components } from '@/lib/api/schema';
 import { formatDate } from '@/lib/format';
-import { isActiveRunPhase, runStateTitle } from './run-presentation';
+import { isActiveRunPhase, runStateTitle, runStateTone } from './run-presentation';
 
 export function RunList({ items }: { items: components['schemas']['RunListItem'][] }) {
   if (!items.length) return <p>No runs match these filters on this page.</p>;
-  return <div className="table-scroll"><table><thead><tr>
+  return <div className="table-scroll"><table className="data-table"><thead><tr>
     {['Task', 'Project', 'Phase', 'Next gate', 'Remediation', 'Elapsed', 'Estimated cost', 'Updated', 'PR'].map(label => <th key={label} scope="col">{label}</th>)}
   </tr></thead><tbody>{items.map(item => {
     const isActivePhase = isActiveRunPhase(item.state);
     return <tr key={item.run_id}>
-      <td><Link href={`/runs/${item.run_id}`}>{item.task_title}</Link>{item.attention_required && <p>Attention required</p>}</td>
+      <td className="run-task-cell"><Link href={`/runs/${item.run_id}`}>{item.task_title}</Link>{item.attention_required && <p className="attention-flag">Attention required</p>}</td>
       <td><Link href={`/projects/${item.project_id}`}>{item.project_name}</Link></td>
       <td>
-        <span className="inline-flex items-center gap-1.5">
-          {isActivePhase ? <Activity className="w-3.5 h-3.5 text-[var(--info)] flex-none" aria-hidden="true" /> : null}
+        <span className="state-pill" data-tone={runStateTone(item.state)}>
+          {isActivePhase ? <Activity className="w-3.5 h-3.5 flex-none" aria-hidden="true" /> : null}
           {runStateTitle(item.state)}
         </span>
       </td>
