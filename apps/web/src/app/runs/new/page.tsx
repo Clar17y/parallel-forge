@@ -1,7 +1,6 @@
 'use client';
 
 import { LoadingStatus } from '@/components/ui/loading-status';
-import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { NewRunForm } from '@/components/runs/new-run-form';
 import { useApi } from '@/hooks/use-api';
@@ -29,11 +28,6 @@ export default function NewRunPage() {
           projects={projects.value}
           onCreated={id => router.push(`/runs/${encodeURIComponent(id)}`)}
         />
-      )}
-      {projects.value?.length === 0 && (
-        <p>
-          <Link href="/projects/new">Register project</Link>
-        </p>
       )}
     </div>
   );

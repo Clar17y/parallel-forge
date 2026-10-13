@@ -25,6 +25,14 @@ async function fill() {
   return user;
 }
 
+test('with no projects it explains why and links to registration instead of a bare message', () => {
+  render(<NewRunForm projects={[]} onCreated={vi.fn()} />);
+  expect(screen.getByRole('heading', { name: 'Register a project first' })).toBeInTheDocument();
+  expect(screen.getByText(/Runs happen inside a project/)).toBeInTheDocument();
+  expect(screen.getByRole('link', { name: 'Register your first project' })).toHaveAttribute('href', '/projects/new');
+  expect(screen.getByRole('link', { name: 'Browse projects' })).toHaveAttribute('href', '/projects');
+});
+
 test('creates a plain task then a run and navigates only after the run exists', async () => {
   vi.mocked(mutate).mockReset().mockResolvedValueOnce({ id: 'task-1' }).mockResolvedValueOnce({ id: 'run-1' });
   const navigate = vi.fn();

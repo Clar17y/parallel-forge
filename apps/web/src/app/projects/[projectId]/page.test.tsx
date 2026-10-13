@@ -52,6 +52,7 @@ function installHttp({ initial = policy, latestPolicy = policy, firstPostConflic
     }
     if (url === '/api/subscription-profiles') return response([]);
     if (url === `/api/projects/${projectId}/subscription-profile`) return response(null);
+    if (url.startsWith('/api/run-projections?')) return response({ items: [], offset: 0, limit: 1, truncated: false });
     if (url.startsWith('/api/task-usage-report?')) return response(null);
     throw new Error(`Unexpected request ${url}`);
   });
@@ -149,4 +150,13 @@ test('retains monitoring draft while the outer project projection refreshes', as
   await waitFor(() => expect(http.requests.filter(r => r.url === `/api/projects/${projectId}`)).toHaveLength(2));
   expect(screen.getByRole('textbox', { name: 'Optional owner note' })).toHaveValue('Unsent owner draft');
   http.completeProjectRefresh(response({ id: projectId, name: 'Project', repository_path: 'C:/repo', github_repository: 'owner/repo', default_branch: 'main', policy_version: 0 }));
+});
+
+test('guides a freshly registered project through its remaining setup steps', async () => {
+  installHttp();
+  render(<ProjectPage />);
+  expect(await screen.findByRole('heading', { name: 'Get set up' })).toBeInTheDocument();
+  expect(screen.getByText(/Choose how agents run/)).toBeInTheDocument();
+  expect(screen.getByRole('link', { name: 'Manage profiles' })).toHaveAttribute('href', '/subscription-profiles');
+  expect(screen.getByRole('link', { name: 'Start a run' })).toHaveAttribute('href', '/runs/new');
 });

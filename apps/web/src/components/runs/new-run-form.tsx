@@ -1,6 +1,7 @@
 'use client';
 
 import { useRef, useState, type FormEvent } from 'react';
+import Link from 'next/link';
 import { ApiError, mutate } from '@/lib/api/client';
 import type { components } from '@/lib/api/schema';
 import { useApi } from '@/hooks/use-api';
@@ -99,7 +100,11 @@ export function NewRunForm({ projects, onCreated }: {
     }
   }
 
-  if (!projects.length) return <p>Register a project before creating a run.</p>;
+  if (!projects.length) return <section aria-label="No projects yet">
+    <h2>Register a project first</h2>
+    <p>Runs happen inside a project: it pins the repository, the commands agents may run, and the models they use. Registering takes a few minutes, and sensible defaults are pre-filled.</p>
+    <p><Link href="/projects/new">Register your first project</Link> · <Link href="/projects">Browse projects</Link></p>
+  </section>;
 
   return (
     <form onSubmit={submit} aria-label="New run" className="new-run-form">
