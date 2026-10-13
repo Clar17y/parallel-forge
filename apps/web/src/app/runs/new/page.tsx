@@ -1,14 +1,16 @@
 'use client';
 
+import { Suspense } from 'react';
 import { LoadingStatus } from '@/components/ui/loading-status';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { NewRunForm } from '@/components/runs/new-run-form';
 import { useApi } from '@/hooks/use-api';
 import type { components } from '@/lib/api/schema';
 import { Button } from '@/components/ui/button';
 
-export default function NewRunPage() {
+function NewRunPageContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const projects = useApi<components['schemas']['ProjectResponse'][]>('/projects');
   return (
     <div className="new-run-page">
@@ -26,9 +28,14 @@ export default function NewRunPage() {
       {projects.value && (
         <NewRunForm
           projects={projects.value}
+          initialProjectId={searchParams.get('project_id') ?? undefined}
           onCreated={id => router.push(`/runs/${encodeURIComponent(id)}`)}
         />
       )}
     </div>
   );
+}
+
+export default function NewRunPage() {
+  return <Suspense fallback={<LoadingStatus>Loading projects…</LoadingStatus>}><NewRunPageContent /></Suspense>;
 }

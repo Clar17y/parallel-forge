@@ -158,5 +158,5 @@ test('guides a freshly registered project through its remaining setup steps', as
   expect(await screen.findByRole('heading', { name: 'Get set up' })).toBeInTheDocument();
   expect(screen.getByText(/Choose how agents run/)).toBeInTheDocument();
   expect(screen.getByRole('link', { name: 'Manage profiles' })).toHaveAttribute('href', '/subscription-profiles');
-  expect(screen.getByRole('link', { name: 'Start a run' })).toHaveAttribute('href', '/runs/new');
+  expect(screen.getByRole('link', { name: 'Start a run' })).toHaveAttribute('href', `/runs/new?project_id=${projectId}`);
 });

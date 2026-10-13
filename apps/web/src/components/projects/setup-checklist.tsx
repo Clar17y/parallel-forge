@@ -6,7 +6,8 @@ import Link from 'next/link';
  * selected profile or by a run already having started, and the first run by
  * the run list. Unknown run history (`null`) never claims completion.
  */
-export function SetupChecklist({ profileSelected, hasRuns }: {
+export function SetupChecklist({ projectId, profileSelected, hasRuns }: {
+  projectId: string;
   profileSelected: boolean;
   hasRuns: boolean | null;
 }) {
@@ -27,7 +28,7 @@ export function SetupChecklist({ profileSelected, hasRuns }: {
         : <>Select a subscription profile below to choose CLI models and reasoning effort, or keep the API models in your project policy. <Link href="/subscription-profiles">Manage profiles</Link></>}</li>
       <li><strong>Start your first run</strong> — {status(firstRunDone, modelsChosen)}. {firstRunDone
         ? 'Runs have started in this project.'
-        : <>Describe a task and Forge will plan it for your approval. <Link href="/runs/new">Start a run</Link></>}</li>
+        : <>Describe a task and Forge will plan it for your approval. <Link href={`/runs/new?project_id=${encodeURIComponent(projectId)}`}>Start a run</Link></>}</li>
     </ol>
   </section>;
 }

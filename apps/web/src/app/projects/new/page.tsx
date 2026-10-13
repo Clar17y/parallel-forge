@@ -12,7 +12,7 @@ export default function NewProjectPage() {
     <>
       <h1>Register project</h1>
       <p className="meta">
-        Step 1 of getting started: tell Forge which repository to work in and what it may run. Defaults are pre-filled and advanced sections stay collapsed, so a name, a repository path, and one named command are enough to begin. Afterwards you will choose how agents run and start your first run — the project page tracks those steps.
+        Step 1 of getting started: tell Forge which repository to work in and what it may run. Defaults are pre-filled and advanced sections stay collapsed, so a name, a repository path, its GitHub repository (owner/repo), and one named command are enough to begin. Afterwards you will choose how agents run and start your first run — the project page tracks those steps.
       </p>
       <ProjectForm onSave={async request => {
         const body = JSON.stringify(request);

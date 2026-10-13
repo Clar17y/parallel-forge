@@ -25,6 +25,17 @@ async function fill() {
   return user;
 }
 
+test('an initial project from a deep link wins over the first project', () => {
+  const second: components['schemas']['ProjectResponse'] = { ...project, id: 'project-2', name: 'Second project' };
+  render(<NewRunForm projects={[project, second]} initialProjectId="project-2" onCreated={vi.fn()} />);
+  expect(screen.getByLabelText('Project')).toHaveValue('project-2');
+});
+
+test('an unknown initial project falls back to the first project', () => {
+  render(<NewRunForm projects={[project]} initialProjectId="missing-project" onCreated={vi.fn()} />);
+  expect(screen.getByLabelText('Project')).toHaveValue('project-1');
+});
+
 test('with no projects it explains why and links to registration instead of a bare message', () => {
   render(<NewRunForm projects={[]} onCreated={vi.fn()} />);
   expect(screen.getByRole('heading', { name: 'Register a project first' })).toBeInTheDocument();

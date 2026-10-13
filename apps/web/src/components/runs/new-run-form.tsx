@@ -14,11 +14,14 @@ type IssueInput = { project_id: string; issue_number: number };
 type Profile = components['schemas']['ProfileResponse'];
 type Attempt = { endpoint: '/tasks' | '/tasks/import-github'; payload: TaskInput | IssueInput; taskKey: string; runKey: string; taskId?: string; profileId?: string; profileVersion?: number; correctionAllowed?: boolean };
 
-export function NewRunForm({ projects, onCreated }: {
+export function NewRunForm({ projects, initialProjectId, onCreated }: {
   projects: Project[];
+  initialProjectId?: string;
   onCreated: (runId: string) => void;
 }) {
-  const [projectId, setProjectId] = useState(projects[0]?.id ?? '');
+  const [projectId, setProjectId] = useState(
+    projects.some(project => project.id === initialProjectId) ? initialProjectId! : projects[0]?.id ?? '',
+  );
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
   const [source, setSource] = useState<'text' | 'github'>('text');
