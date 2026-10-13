@@ -1,12 +1,13 @@
 'use client';
+import Link from 'next/link';
 import { LoadingStatus } from '@/components/ui/loading-status';
 import { useApi } from '@/hooks/use-api';
 import type { components } from '@/lib/api/schema';
 
 export default function ToolsPage() {
   const permissions = useApi<components['schemas']['ListPage_PermissionItem_']>('/tool-permissions?limit=100');
-  return <><h1>Tool permissions</h1><p>These capabilities are assigned by the Forge server. Project command and runner limits further constrain each invocation.</p>
-    <p>Docker isolates commands by default. Trusted-host projects execute without a sandbox. Change project settings through a new policy version.</p>
+  return <><h1>Tool permissions</h1><p>These capabilities are assigned by the Forge server through its own interface. Project command and runner limits further constrain each invocation. Local CLI providers are operator-trusted and may expose native tools beyond this list (Antigravity carries an approved-tools-unproved warning), so this page describes the Forge interface, not a guaranteed ceiling on what a CLI run can invoke.</p>
+    <p>Docker isolates commands by default. Trusted-host projects execute without a sandbox. Change project settings through a new policy version. Not sure where a control lives? Start from <Link href="/settings">Settings</Link>.</p>
     {permissions.loading && <LoadingStatus>Loading permissions…</LoadingStatus>}
     {permissions.failed && <p role="alert">Permissions unavailable. <button onClick={permissions.refresh}>Retry</button></p>}
     {permissions.value && <ul>{permissions.value.items.map(item => <li key={item.role}><h2>{item.role}</h2><ul>{item.tools.map(tool => <li key={tool}><code>{tool}</code></li>)}</ul></li>)}</ul>}
