@@ -1,8 +1,9 @@
-import { render } from "@testing-library/react";
+import { cleanup, render, within } from "@testing-library/react";
 import { screen } from "@testing-library/dom";
 import { Navigation } from "./navigation";
-import { expect, test, vi } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 vi.mock("next/navigation", () => ({ usePathname: () => "/runs" }));
+afterEach(cleanup);
 test("renders dashboard navigation with active route", () => {
   render(<Navigation />);
   expect(screen.getByRole("link", { name: "Runs" })).toHaveAttribute("aria-current", "page");
@@ -12,4 +13,12 @@ test("renders dashboard navigation with active route", () => {
   expect(screen.getByRole('link', { name: 'Settings' })).toHaveAttribute('href', '/settings');
   expect(screen.getByRole('link', { name: 'Tool permissions' })).toHaveAttribute('href', '/tools');
   expect(screen.getByRole('link', { name: 'Epics' })).toHaveAttribute('href', '/epics');
+});
+test("read-only evaluations sit under Inspect, not the action-oriented Configure group", () => {
+  render(<Navigation />);
+  const inspect = within(screen.getByRole('region', { name: 'Inspect' }));
+  expect(inspect.getByRole('link', { name: 'Evaluations' })).toHaveAttribute('href', '/evaluations');
+  const configure = within(screen.getByRole('region', { name: 'Configure' }));
+  expect(configure.queryByRole('link', { name: 'Evaluations' })).not.toBeInTheDocument();
+  expect(configure.getByRole('link', { name: 'Settings' })).toBeInTheDocument();
 });

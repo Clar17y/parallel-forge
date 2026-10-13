@@ -16,9 +16,9 @@ export const navigationGroups = [
     { label: 'Agents & models', href: '/agents', icon: Bot },
     { label: 'Tool permissions', href: '/tools', icon: KeyRound },
     { label: 'Subscription profiles', href: '/subscription-profiles', icon: Settings2 },
-    { label: 'Evaluations', href: '/evaluations', icon: FlaskConical },
   ] },
   { label: 'Inspect', links: [
+    { label: 'Evaluations', href: '/evaluations', icon: FlaskConical },
     { label: 'Audit log', href: '/audit', icon: History },
     { label: 'Usage', href: '/usage', icon: BarChart3 },
   ] },
