@@ -155,6 +155,26 @@ test('typing during a slow search navigation is not reverted when it lands', asy
   expect(input).toHaveValue('foob');
 });
 
+test('returning through history to a previously issued query still restores it', async () => {
+  mockRunsApi();
+  mockReplace.mockImplementation((url: string) => { window.history.replaceState(null, '', url); });
+  const { rerender } = render(<RunsPage />);
+  const user = userEvent.setup();
+  const input = await screen.findByRole('searchbox', { name: 'Search runs' });
+  await user.type(input, 'foo');
+  await waitFor(
+    () => expect(mockReplace).toHaveBeenCalledWith(expect.stringContaining('q=foo'), expect.anything()),
+    { timeout: 3000 },
+  );
+  rerender(<RunsPage />); // q=foo landing consumes the self-issued marker
+  window.history.replaceState(null, '', '/runs?q=bar');
+  rerender(<RunsPage />); // external navigation to bar
+  expect(input).toHaveValue('bar');
+  window.history.replaceState(null, '', '/runs?q=foo');
+  rerender(<RunsPage />); // history back to foo: external again, must restore
+  expect(input).toHaveValue('foo');
+});
+
 test('typing in search updates the URL query after a short debounce', async () => {
   mockRunsApi();
   render(<RunsPage />);
