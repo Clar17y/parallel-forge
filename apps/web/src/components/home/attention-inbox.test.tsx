@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, test, vi } from 'vitest';
 import { AttentionInbox } from './attention-inbox';
@@ -50,6 +50,26 @@ test('inbox shows who is waiting: approvals by task title, then other runs needi
   expect(screen.getAllByText('Add CSV export')).toHaveLength(1);
   // Machine identifiers stay available, but demoted behind a disclosure.
   expect(screen.getByText('d'.repeat(64)).closest('details')).not.toBeNull();
+});
+
+test('both inbox queues keep refreshing so the page cannot contradict the shell badge', async () => {
+  vi.useFakeTimers();
+  try {
+    const requested = mockInbox(
+      () => ({ items: [], offset: 0, limit: 10, truncated: false }),
+      () => ({ items: [], offset: 0, limit: 10, truncated: false }),
+    );
+    render(<AttentionInbox />);
+    await act(async () => {});
+    const calls = (prefix: string) => requested.filter(path => path.startsWith(prefix)).length;
+    expect(calls('/approvals?')).toBe(1);
+    expect(calls('/run-projections?')).toBe(1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(calls('/approvals?')).toBeGreaterThanOrEqual(2);
+    expect(calls('/run-projections?')).toBeGreaterThanOrEqual(2);
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 test('inbox says so plainly when nothing is waiting', async () => {

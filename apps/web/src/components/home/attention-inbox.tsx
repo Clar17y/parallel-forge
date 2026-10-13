@@ -15,8 +15,13 @@ type RunPage = components['schemas']['RunListPage'];
  * are never repeated there and can never starve its page.
  */
 export function AttentionInbox() {
-  const approvals = useApi<ApprovalPage>('/approvals?offset=0&limit=10');
-  const runs = useApi<RunPage>('/run-projections?offset=0&limit=10&attention=true&exclude_pending_gate=true');
+  // Poll both queues on the same cadence as the shell badge so a gate or a
+  // blocked run created by a worker appears without a reload and the page
+  // never contradicts the badge count.
+  const approvals = useApi<ApprovalPage>('/approvals?offset=0&limit=10',
+    { refreshIntervalMs: 30_000, keepPreviousOnRefresh: true });
+  const runs = useApi<RunPage>('/run-projections?offset=0&limit=10&attention=true&exclude_pending_gate=true',
+    { refreshIntervalMs: 30_000, keepPreviousOnRefresh: true });
   const blockedRuns = runs.value?.items ?? [];
   return <>
     <section aria-labelledby="inbox-approvals-heading">
