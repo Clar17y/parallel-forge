@@ -29,14 +29,28 @@ function RunsPageContent() {
   const offsetParam = Number(searchParams.get('offset') ?? '0');
   const offset = Number.isSafeInteger(offsetParam) && offsetParam > 0 ? offsetParam : 0;
 
+  // App Router navigations commit asynchronously, so consecutive patches
+  // must compose on the last issued query string rather than the last
+  // committed one — otherwise a second rapid patch drops the first.
+  const committedSearch = searchParams.toString();
+  const [pendingSearch, setPendingSearch] = useState<{ base: string; issued: string } | null>(null);
+  if (pendingSearch && committedSearch !== pendingSearch.base) setPendingSearch(null);
+  const effectiveSearch = pendingSearch && committedSearch === pendingSearch.base
+    ? pendingSearch.issued
+    : committedSearch;
+  const issueParams = (params: URLSearchParams) => {
+    const qs = params.toString();
+    setPendingSearch({ base: committedSearch, issued: qs });
+    router.replace(qs ? `/runs?${qs}` : '/runs', { scroll: false });
+  };
+
   const update = (patch: Record<string, string | null>) => {
-    const params = new URLSearchParams(searchParams.toString());
+    const params = new URLSearchParams(effectiveSearch);
     for (const [key, value] of Object.entries(patch)) {
       if (value) params.set(key, value);
       else params.delete(key);
     }
-    const qs = params.toString();
-    router.replace(qs ? `/runs?${qs}` : '/runs', { scroll: false });
+    issueParams(params);
   };
 
   const [searchInput, setSearchInput] = useState(queryText);
@@ -55,19 +69,21 @@ function RunsPageContent() {
     else setSearchInput(queryText);
   }
   useEffect(() => {
-    if (searchInput === queryText) return;
+    const next = searchInput.slice(0, 200);
+    const baseQuery = new URLSearchParams(effectiveSearch).get('q') ?? '';
+    if (next === baseQuery) return;
     const timer = setTimeout(() => {
-      const next = searchInput.slice(0, 200);
       setIssuedQueries(previous => [...previous.slice(-3), next]);
-      const params = new URLSearchParams(searchParams.toString());
+      const params = new URLSearchParams(effectiveSearch);
       if (next) params.set('q', next);
       else params.delete('q');
       params.delete('offset');
-      const qs = params.toString();
-      router.replace(qs ? `/runs?${qs}` : '/runs', { scroll: false });
+      issueParams(params);
     }, 300);
     return () => clearTimeout(timer);
-  }, [searchInput, queryText, router, searchParams]);
+    // issueParams reads this render's committed params by design.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchInput, queryText, effectiveSearch]);
 
   // Relative cutoffs anchor when the range is selected (or on manual
   // refresh) and then stay stable across re-renders and pagination, so

@@ -175,6 +175,17 @@ test('returning through history to a previously issued query still restores it',
   expect(input).toHaveValue('foo');
 });
 
+test('rapid filter changes compose instead of overwriting each other before navigation commits', async () => {
+  mockRunsApi(); // mockReplace never commits, so both patches race the same base
+  render(<RunsPage />);
+  fireEvent.change(await screen.findByLabelText('Project'), { target: { value: 'project-1' } });
+  fireEvent.click(screen.getByRole('button', { name: /Failed/ }));
+  const url = String(mockReplace.mock.calls.at(-1)?.[0]);
+  const params = new URLSearchParams(url.split('?')[1]);
+  expect(params.get('project_id')).toBe('project-1');
+  expect(params.get('bucket')).toBe('failed');
+});
+
 test('typing in search updates the URL query after a short debounce', async () => {
   mockRunsApi();
   render(<RunsPage />);
