@@ -25,6 +25,25 @@ async function fill() {
   return user;
 }
 
+test('an initial project from a deep link wins over the first project', () => {
+  const second: components['schemas']['ProjectResponse'] = { ...project, id: 'project-2', name: 'Second project' };
+  render(<NewRunForm projects={[project, second]} initialProjectId="project-2" onCreated={vi.fn()} />);
+  expect(screen.getByLabelText('Project')).toHaveValue('project-2');
+});
+
+test('an unknown initial project falls back to the first project', () => {
+  render(<NewRunForm projects={[project]} initialProjectId="missing-project" onCreated={vi.fn()} />);
+  expect(screen.getByLabelText('Project')).toHaveValue('project-1');
+});
+
+test('with no projects it explains why and links to registration instead of a bare message', () => {
+  render(<NewRunForm projects={[]} onCreated={vi.fn()} />);
+  expect(screen.getByRole('heading', { name: 'Register a project first' })).toBeInTheDocument();
+  expect(screen.getByText(/Runs happen inside a project/)).toBeInTheDocument();
+  expect(screen.getByRole('link', { name: 'Register your first project' })).toHaveAttribute('href', '/projects/new');
+  expect(screen.getByRole('link', { name: 'Browse projects' })).toHaveAttribute('href', '/projects');
+});
+
 test('creates a plain task then a run and navigates only after the run exists', async () => {
   vi.mocked(mutate).mockReset().mockResolvedValueOnce({ id: 'task-1' }).mockResolvedValueOnce({ id: 'run-1' });
   const navigate = vi.fn();
