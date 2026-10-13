@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, test, vi } from 'vitest';
 import RunsPage from './page';
@@ -70,6 +70,63 @@ test('URL filters drive the API query: bucket states and search text', async () 
   // Counts describe all runs, so they hide while a search narrows the list.
   expect(screen.getByRole('button', { name: 'Waiting on you' })).toBeInTheDocument();
   expect(screen.getByRole('searchbox', { name: 'Search runs' })).toHaveValue('csv');
+});
+
+test('the attention filter round-trips through the URL and the API', async () => {
+  window.history.replaceState(null, '', '/runs?attention=true');
+  const requested = mockRunsApi();
+  render(<RunsPage />);
+  expect(await screen.findByRole('link', { name: 'Add CSV export' })).toBeInTheDocument();
+  expect(screen.getByLabelText('Attention')).toHaveValue('true');
+  const projections = requested.filter(path => path.startsWith('/run-projections?'));
+  expect(projections.at(-1)).toContain('attention=true');
+  // Global summary counts do not describe this narrowed set either.
+  await act(async () => {});
+  expect(screen.queryByRole('button', { name: /All runs \(/ })).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'All runs' })).toBeInTheDocument();
+});
+
+test('an active updated range hides the all-time bucket counts', async () => {
+  window.history.replaceState(null, '', '/runs?updated=7d');
+  const requested = mockRunsApi();
+  render(<RunsPage />);
+  expect(await screen.findByRole('link', { name: 'Add CSV export' })).toBeInTheDocument();
+  await act(async () => {}); // let the dashboard summary settle too
+  expect(screen.queryByRole('button', { name: /All runs \(/ })).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'All runs' })).toBeInTheDocument();
+  const projections = requested.filter(path => path.startsWith('/run-projections?'));
+  expect(projections.at(-1)).toContain('updated_since=');
+});
+
+test('refreshing re-anchors the relative window to now', async () => {
+  vi.useFakeTimers();
+  try {
+    vi.setSystemTime(new Date('2026-10-13T12:00:00Z'));
+    window.history.replaceState(null, '', '/runs?updated=24h');
+    const requested = mockRunsApi();
+    render(<RunsPage />);
+    await act(async () => {});
+    const sinceOf = (path: string) => new URLSearchParams(path.split('?')[1]).get('updated_since');
+    const projections = () => requested.filter(path => path.startsWith('/run-projections?'));
+    expect(sinceOf(projections().at(-1)!)).toBe('2026-10-12T12:00:00.000Z');
+    vi.setSystemTime(new Date('2026-10-13T14:00:00Z'));
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh runs' }));
+    await act(async () => {});
+    expect(sinceOf(projections().at(-1)!)).toBe('2026-10-12T14:00:00.000Z');
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test('search text is bounded to the API limit instead of debouncing into a 422', async () => {
+  mockRunsApi();
+  render(<RunsPage />);
+  const input = await screen.findByRole('searchbox', { name: 'Search runs' });
+  expect(input).toHaveAttribute('maxlength', '200');
+  fireEvent.change(input, { target: { value: 'x'.repeat(210) } });
+  await waitFor(() => expect(mockReplace).toHaveBeenCalled(), { timeout: 3000 });
+  const url = String(mockReplace.mock.calls.at(-1)?.[0]);
+  expect(new URLSearchParams(url.split('?')[1]).get('q')).toHaveLength(200);
 });
 
 test('typing in search updates the URL query after a short debounce', async () => {
