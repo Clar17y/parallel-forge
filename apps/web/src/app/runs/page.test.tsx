@@ -118,6 +118,16 @@ test('refreshing re-anchors the relative window to now', async () => {
   }
 });
 
+test('refreshing runs also refreshes the bucket totals behind the chips', async () => {
+  const requested = mockRunsApi();
+  render(<RunsPage />);
+  expect(await screen.findByRole('button', { name: 'All runs (4)' })).toBeInTheDocument();
+  const summaries = () => requested.filter(path => path === '/dashboard/summary').length;
+  expect(summaries()).toBe(1);
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh runs' }));
+  await waitFor(() => expect(summaries()).toBe(2));
+});
+
 test('search text is bounded to the API limit instead of debouncing into a 422', async () => {
   mockRunsApi();
   render(<RunsPage />);

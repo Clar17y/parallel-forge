@@ -106,7 +106,7 @@ function RunsPageContent() {
         {UPDATED_OPTIONS.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}</select></label>
     </div>
     {projects.failed && <p role="alert">Project filters unavailable. <button onClick={projects.refresh}>Retry projects</button></p>}
-    <button disabled={runs.loading} onClick={() => { setAnchor(Date.now()); runs.refresh(); }}>Refresh runs</button>
+    <button disabled={runs.loading} onClick={() => { setAnchor(Date.now()); runs.refresh(); summary.refresh(); }}>Refresh runs</button>
     {runs.loading && <LoadingStatus>Loading runs…</LoadingStatus>}
     {runs.failed && <p role="alert">Runs unavailable. <button onClick={runs.refresh}>Retry</button></p>}
     {runs.value && <RunList items={runs.value.items} />}
