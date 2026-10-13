@@ -22,6 +22,7 @@ def router_for() -> APIRouter:
         state: RunState | None = Query(None),  # noqa: B008
         project_id: UUID | None = Query(None),  # noqa: B008
         attention: bool | None = Query(None),
+        exclude_pending_gate: bool | None = Query(None),
         updated_since: datetime | None = Query(None),  # noqa: B008
         offset: int = Query(0, ge=0),
         limit: int = Query(50, ge=1, le=100),
@@ -34,6 +35,7 @@ def router_for() -> APIRouter:
             state=state,
             project_id=project_id,
             attention=attention,
+            exclude_pending_gate=exclude_pending_gate,
             updated_since=updated_since,
             offset=offset,
             limit=limit,

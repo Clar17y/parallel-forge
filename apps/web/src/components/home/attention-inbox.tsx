@@ -11,13 +11,13 @@ type RunPage = components['schemas']['RunListPage'];
 /**
  * The operator's first question is "what needs me?". This inbox answers it
  * directly: decisions waiting on a human first, then runs that are blocked.
- * Runs already shown as pending approvals are not repeated in the second list.
+ * The server excludes pending-gate runs from the second list, so approvals
+ * are never repeated there and can never starve its page.
  */
 export function AttentionInbox() {
   const approvals = useApi<ApprovalPage>('/approvals?offset=0&limit=10');
-  const runs = useApi<RunPage>('/run-projections?offset=0&limit=10&attention=true');
-  const approvalRunIds = new Set(approvals.value?.items.map(item => item.run_id) ?? []);
-  const blockedRuns = runs.value?.items.filter(item => !approvalRunIds.has(item.run_id)) ?? [];
+  const runs = useApi<RunPage>('/run-projections?offset=0&limit=10&attention=true&exclude_pending_gate=true');
+  const blockedRuns = runs.value?.items ?? [];
   return <>
     <section aria-labelledby="inbox-approvals-heading">
       <h2 id="inbox-approvals-heading">Waiting for your approval</h2>

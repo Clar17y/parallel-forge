@@ -15,7 +15,10 @@ export function AppShell({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState(false);
   const path = usePathname();
   const context = navigationGroups.map(group => group.links.find(link => isActivePath(path, link.href))?.label).find(label => label !== undefined) ?? 'Workspace';
-  const approvals = useApi<components['schemas']['ListPage_ApprovalItem_']>('/approvals?offset=0&limit=25');
+  // The shell never remounts across client navigation, so poll: approvals
+  // recorded here or new gates created by a worker appear within 30 seconds.
+  const approvals = useApi<components['schemas']['ListPage_ApprovalItem_']>('/approvals?offset=0&limit=25',
+    { refreshIntervalMs: 30_000, keepPreviousOnRefresh: true });
   const pendingApprovals = !approvals.value || approvals.value.items.length === 0
     ? undefined
     : approvals.value.truncated ? '25+' : String(approvals.value.items.length);

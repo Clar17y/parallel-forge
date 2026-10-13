@@ -18339,6 +18339,22 @@
           },
           {
             "in": "query",
+            "name": "exclude_pending_gate",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Exclude Pending Gate"
+            }
+          },
+          {
+            "in": "query",
             "name": "updated_since",
             "required": false,
             "schema": {

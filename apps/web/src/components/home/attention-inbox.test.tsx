@@ -23,21 +23,26 @@ const attentionRun = {
 };
 
 function mockInbox(approvals: () => unknown, runs: () => unknown) {
+  const requested: string[] = [];
   vi.mocked(api).mockImplementation(async <T,>(path: string) => {
+    requested.push(path);
     if (path.startsWith('/approvals?')) return await approvals() as T;
     if (path.startsWith('/run-projections?')) return await runs() as T;
     throw new Error(`Unexpected API request: ${path}`);
   });
+  return requested;
 }
 
 test('inbox shows who is waiting: approvals by task title, then other runs needing attention', async () => {
-  mockInbox(
+  const requested = mockInbox(
     () => ({ items: [approval], offset: 0, limit: 10, truncated: false }),
-    // run-1 also needs attention (pending gate) but must not be listed twice.
-    () => ({ items: [{ ...attentionRun, run_id: 'run-1' }, attentionRun], offset: 0, limit: 10, truncated: false }),
+    // The server excludes pending-gate runs, so run-1 cannot be listed twice
+    // or starve this page, no matter how many approvals are newer.
+    () => ({ items: [attentionRun], offset: 0, limit: 10, truncated: false }),
   );
   render(<AttentionInbox />);
   expect(await screen.findByRole('heading', { name: 'Waiting for your approval' })).toBeInTheDocument();
+  expect(requested).toContain('/run-projections?offset=0&limit=10&attention=true&exclude_pending_gate=true');
   expect(screen.getByText('Add CSV export')).toBeInTheDocument();
   expect(screen.getByRole('link', { name: 'Review plan evidence' })).toHaveAttribute('href', '/runs/run-1');
   expect(await screen.findByRole('heading', { name: 'Runs needing attention' })).toBeInTheDocument();

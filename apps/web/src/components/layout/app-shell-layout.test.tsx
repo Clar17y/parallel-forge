@@ -1,4 +1,4 @@
-import { cleanup, render, screen, within } from '@testing-library/react';
+import { act, cleanup, render, screen, within } from '@testing-library/react';
 import { afterEach, expect, test, vi } from 'vitest';
 import { AppShell } from './app-shell';
 import { ThemeProvider } from '@/components/theme/theme-provider';
@@ -28,6 +28,21 @@ test('shell exposes grouped navigation, real links and a skip target', () => {
   expect(screen.getByRole('main')).toHaveAttribute('id', 'main-content');
   expect(screen.getByRole('combobox', { name: 'Appearance' })).toHaveValue('system');
   expect(screen.queryByText('Session active')).not.toBeInTheDocument();
+});
+
+test('shell keeps refreshing the pending count so the badge cannot go stale', async () => {
+  vi.useFakeTimers();
+  try {
+    mockPendingApprovals(1);
+    render(<ThemeProvider><AppShell><h1>Example run</h1></AppShell></ThemeProvider>);
+    const approvalCalls = () => vi.mocked(api).mock.calls.filter(([path]) => String(path).startsWith('/approvals?')).length;
+    await act(async () => {});
+    expect(approvalCalls()).toBe(1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(approvalCalls()).toBeGreaterThanOrEqual(2);
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 test('shell badges the approvals link with the live pending count', async () => {

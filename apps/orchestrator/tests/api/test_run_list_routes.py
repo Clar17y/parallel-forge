@@ -81,3 +81,17 @@ async def test_run_list_requires_operator_and_rejects_bad_bounds(route_context):
         invalid = await client.get("/api/run-projections?limit=101")
     assert unauthenticated.status_code == 401
     assert invalid.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_run_list_passes_exclude_pending_gate(route_context):
+    async with AsyncClient(
+        transport=ASGITransport(app=route_context.app), base_url="http://127.0.0.1:3000"
+    ) as client:
+        client.cookies.set("forge_session", route_context.auth.session_token)
+        response = await client.get(
+            "/api/run-projections?attention=true&exclude_pending_gate=true",
+            headers={"Host": "127.0.0.1:3000"},
+        )
+    assert response.status_code == 200
+    assert route_context.app.state.run_list_query.kwargs["exclude_pending_gate"] is True
