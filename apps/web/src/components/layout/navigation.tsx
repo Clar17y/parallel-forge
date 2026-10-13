@@ -1,16 +1,17 @@
 'use client';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Play, CheckSquare, Folder, Layers, Shield, Bot, KeyRound, FlaskConical, History, BarChart3, Settings2 } from 'lucide-react';
+import { Play, CheckSquare, Folder, Layers, SlidersHorizontal, Shield, Bot, KeyRound, FlaskConical, History, BarChart3, Settings2 } from 'lucide-react';
 
 export const navigationGroups = [
-  { label: 'Operate', links: [
+  { label: 'Work', links: [
     { label: 'Runs', href: '/runs', icon: Play },
     { label: 'Approvals', href: '/approvals', icon: CheckSquare },
     { label: 'Projects', href: '/projects', icon: Folder },
     { label: 'Epics', href: '/epics', icon: Layers },
   ] },
-  { label: 'Govern', links: [
+  { label: 'Configure', links: [
+    { label: 'Settings', href: '/settings', icon: SlidersHorizontal },
     { label: 'Policies', href: '/policies', icon: Shield },
     { label: 'Agents & models', href: '/agents', icon: Bot },
     { label: 'Tool permissions', href: '/tools', icon: KeyRound },

@@ -6,9 +6,10 @@ vi.mock("next/navigation", () => ({ usePathname: () => "/runs" }));
 test("renders dashboard navigation with active route", () => {
   render(<Navigation />);
   expect(screen.getByRole("link", { name: "Runs" })).toHaveAttribute("aria-current", "page");
-  for (const name of ['Approvals', 'Projects', 'Epics', 'Policies', 'Agents & models', 'Tool permissions', 'Evaluations', 'Audit log', 'Usage', 'Subscription profiles']) {
+  for (const name of ['Approvals', 'Projects', 'Epics', 'Settings', 'Policies', 'Agents & models', 'Tool permissions', 'Evaluations', 'Audit log', 'Usage', 'Subscription profiles']) {
     expect(screen.getByRole('link', { name })).toBeInTheDocument();
   }
+  expect(screen.getByRole('link', { name: 'Settings' })).toHaveAttribute('href', '/settings');
   expect(screen.getByRole('link', { name: 'Tool permissions' })).toHaveAttribute('href', '/tools');
   expect(screen.getByRole('link', { name: 'Epics' })).toHaveAttribute('href', '/epics');
 });
