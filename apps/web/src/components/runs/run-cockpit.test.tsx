@@ -1,7 +1,7 @@
 import { act, cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, test, vi } from 'vitest';
-import { RunCockpit } from './run-cockpit';
+import { RunCockpit, parseRunSection } from './run-cockpit';
 import { projection } from '@/test/projection';
 import { api } from '@/lib/api/client';
 
@@ -158,4 +158,35 @@ test('queued event reconciliation keeps the banner static through the follow-up 
   const latest = projection(); latest.run.state = 'IMPLEMENTING'; latest.run.version = 9;
   await act(async () => finishFollowUp(latest));
   expect(banner.querySelector('svg.animate-spin')).toBeInTheDocument();
+});
+
+test('parseRunSection only accepts known sections', () => {
+  expect(parseRunSection('checks')).toBe('checks');
+  expect(parseRunSection('security')).toBe('security');
+  expect(parseRunSection('bogus')).toBe('overview');
+  expect(parseRunSection(null)).toBe('overview');
+});
+
+test('cockpit can be controlled from the URL: section prop selects, clicks report back', async () => {
+  vi.mocked(api).mockResolvedValue({ items: [], truncated: false });
+  const onSectionChange = vi.fn();
+  render(<RunCockpit initial={projection()} section="checks" onSectionChange={onSectionChange} />);
+  expect(screen.getByRole('button', { name: 'Checks' })).toHaveAttribute('aria-pressed', 'true');
+  expect(screen.getByRole('region', { name: 'Check evidence' })).toBeInTheDocument();
+  await userEvent.click(screen.getByRole('button', { name: 'Review' }));
+  expect(onSectionChange).toHaveBeenCalledWith('review');
+});
+
+test('the PR outcome panel lives on the overview instead of stacking above every section', async () => {
+  vi.mocked(api).mockResolvedValue({ items: [], truncated: false });
+  const initial = projection();
+  initial.pull_request = { repository: 'owner/repo', number: 12, branch: 'feature',
+    base_ref: 'main', head_sha: 'a'.repeat(40), base_sha: 'b'.repeat(40),
+    state: 'open', merge_state: null, queue_admission: 'accepted', merge_sha: null };
+  render(<RunCockpit initial={initial} />);
+  expect(screen.getByRole('region', { name: 'PR / Merge' })).toBeInTheDocument();
+  await userEvent.click(screen.getByRole('button', { name: 'Checks' }));
+  expect(screen.queryByRole('region', { name: 'PR / Merge' })).not.toBeInTheDocument();
+  await userEvent.click(screen.getByRole('button', { name: 'Overview' }));
+  expect(screen.getByRole('region', { name: 'PR / Merge' })).toBeInTheDocument();
 });

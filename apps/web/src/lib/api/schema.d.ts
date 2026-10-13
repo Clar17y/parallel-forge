@@ -1950,6 +1950,13 @@ export interface components {
             /** Policy Version */
             policy_version: number;
             /**
+             * Project Id
+             * Format: uuid
+             */
+            project_id: string;
+            /** Project Name */
+            project_name: string;
+            /**
              * Run Id
              * Format: uuid
              */
@@ -1961,6 +1968,8 @@ export interface components {
              * Format: uuid
              */
             task_id: string;
+            /** Task Title */
+            task_title: string;
         };
         /** ApprovalRequest */
         ApprovalRequest: {
@@ -9487,8 +9496,11 @@ export interface operations {
         parameters: {
             query?: {
                 state?: components["schemas"]["RunState"] | null;
+                states?: components["schemas"]["RunState"][] | null;
+                q?: string | null;
                 project_id?: string | null;
                 attention?: boolean | null;
+                exclude_pending_gate?: boolean | null;
                 updated_since?: string | null;
                 offset?: number;
                 limit?: number;

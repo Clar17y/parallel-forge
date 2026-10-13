@@ -7,6 +7,7 @@ import { useApi } from '@/hooks/use-api';
 import { mutate } from '@/lib/api/client';
 import type { components } from '@/lib/api/schema';
 import { PolicyEditor } from '@/components/projects/policy-editor';
+import { SetupChecklist } from '@/components/projects/setup-checklist';
 import { ProfileSelector } from '@/components/subscription-profiles/profile-selector';
 import { MonitoringPolicySummary } from '@/components/projects/monitoring-policy-summary';
 import { MonitoringPolicyEditor } from '@/components/projects/monitoring-policy-editor';
@@ -29,6 +30,7 @@ export default function ProjectPage() {
   const policy = useApi<components['schemas']['ProjectPolicyResponse']>(value?.policy_version ? `/projects/${projectId}/policy-versions/${value.policy_version}` : null);
   const profiles = useApi<components['schemas']['ProfileResponse'][]>('/subscription-profiles');
   const selectedProfile = useApi<components['schemas']['ProfileResponse'] | null>(`/projects/${projectId}/subscription-profile`);
+  const runsProbe = useApi<components['schemas']['RunListPage']>(`/run-projections?project_id=${projectId}&offset=0&limit=1`);
 
   const monitoringPolicy = useApi<MonitoringPolicyResponse | null>(`/projects/${projectId}/monitoring-policy`, {
     keepPreviousOnRefresh: true,
@@ -41,7 +43,8 @@ export default function ProjectPage() {
     {project.failed && <p role="alert">Project unavailable. <button onClick={project.refresh}>Retry</button></p>}
     {value && <>
       <p>{value.repository_path} · {value.github_repository} · {value.default_branch}</p>
-      <p><Link href="/runs/new">New run</Link> · <Link href="/policies">Policy history</Link> · <Link href={`/epics?project_id=${projectId}`}>Epics</Link></p>
+      <p><Link href={`/runs/new?project_id=${projectId}`}>New run</Link> · <Link href="/policies">Policy history</Link> · <Link href={`/epics?project_id=${projectId}`}>Epics</Link></p>
+      <SetupChecklist projectId={projectId} profileSelected={Boolean(selectedProfile.value)} hasRuns={runsProbe.value ? runsProbe.value.items.length > 0 : null} />
       {policy.loading && <LoadingStatus>Loading policy…</LoadingStatus>}
       {policy.failed && <p role="alert">Policy unavailable. <button onClick={policy.refresh}>Retry</button></p>}
       {policy.value && <PolicyEditor policy={policy.value} onSave={async request => {

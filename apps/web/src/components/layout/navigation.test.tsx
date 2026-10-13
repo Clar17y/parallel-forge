@@ -7,9 +7,10 @@ afterEach(cleanup);
 test("renders dashboard navigation with active route", () => {
   render(<Navigation />);
   expect(screen.getByRole("link", { name: "Runs" })).toHaveAttribute("aria-current", "page");
-  for (const name of ['Approvals', 'Projects', 'Epics', 'Settings', 'Policies', 'Agents & models', 'Tool permissions', 'Evaluations', 'Audit log', 'Usage', 'Subscription profiles']) {
+  for (const name of ['Home', 'Approvals', 'Projects', 'Epics', 'Settings', 'Policies', 'Agents & models', 'Tool permissions', 'Evaluations', 'Audit log', 'Usage', 'Subscription profiles']) {
     expect(screen.getByRole('link', { name })).toBeInTheDocument();
   }
+  expect(screen.getByRole('link', { name: 'Home' })).toHaveAttribute('href', '/');
   expect(screen.getByRole('link', { name: 'Settings' })).toHaveAttribute('href', '/settings');
   expect(screen.getByRole('link', { name: 'Tool permissions' })).toHaveAttribute('href', '/tools');
   expect(screen.getByRole('link', { name: 'Epics' })).toHaveAttribute('href', '/epics');
@@ -28,4 +29,10 @@ test("read-only tool permissions also sit under Inspect", () => {
   expect(inspect.getByRole('link', { name: 'Tool permissions' })).toHaveAttribute('href', '/tools');
   const configure = within(screen.getByRole('region', { name: 'Configure' }));
   expect(configure.queryByRole('link', { name: 'Tool permissions' })).not.toBeInTheDocument();
+});
+test("badges the approvals link only when a pending count is supplied", () => {
+  const { rerender } = render(<Navigation pendingApprovals="3" />);
+  expect(screen.getByRole("link", { name: /Approvals 3/ })).toBeInTheDocument();
+  rerender(<Navigation />);
+  expect(screen.getByRole("link", { name: "Approvals" })).toBeInTheDocument();
 });

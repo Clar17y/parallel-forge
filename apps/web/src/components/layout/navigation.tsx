@@ -1,10 +1,11 @@
 'use client';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Play, CheckSquare, Folder, Layers, SlidersHorizontal, Shield, Bot, KeyRound, FlaskConical, History, BarChart3, Settings2 } from 'lucide-react';
+import { House, Play, CheckSquare, Folder, Layers, SlidersHorizontal, Shield, Bot, KeyRound, FlaskConical, History, BarChart3, Settings2 } from 'lucide-react';
 
 export const navigationGroups = [
   { label: 'Work', links: [
+    { label: 'Home', href: '/', icon: House },
     { label: 'Runs', href: '/runs', icon: Play },
     { label: 'Approvals', href: '/approvals', icon: CheckSquare },
     { label: 'Projects', href: '/projects', icon: Folder },
@@ -28,13 +29,14 @@ export function isActivePath(path: string, href: string): boolean {
   return path === href || path.startsWith(`${href}/`);
 }
 
-export function Navigation({ close }: { close?: () => void }) {
+export function Navigation({ close, pendingApprovals }: { close?: () => void; pendingApprovals?: string }) {
   const path = usePathname();
   return <nav aria-label="Primary" className="primary-navigation">
     {navigationGroups.map(group => <section key={group.label} className="nav-group" aria-label={group.label}>
       <h2>{group.label}</h2><ul>{group.links.map(({ label, href, icon: Icon }) => <li key={href}>
         <Link href={href} aria-current={isActivePath(path, href) ? 'page' : undefined} onClick={close}>
           <Icon aria-hidden="true" />{label}
+          {href === '/approvals' && pendingApprovals ? <span className="nav-badge" title="Pending approvals">{pendingApprovals}</span> : null}
         </Link>
       </li>)}</ul>
     </section>)}

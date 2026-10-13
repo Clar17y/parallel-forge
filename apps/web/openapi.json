@@ -619,6 +619,15 @@
             "title": "Policy Version",
             "type": "integer"
           },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "project_name": {
+            "title": "Project Name",
+            "type": "string"
+          },
           "run_id": {
             "format": "uuid",
             "title": "Run Id",
@@ -632,11 +641,18 @@
             "format": "uuid",
             "title": "Task Id",
             "type": "string"
+          },
+          "task_title": {
+            "title": "Task Title",
+            "type": "string"
           }
         },
         "required": [
           "run_id",
           "task_id",
+          "task_title",
+          "project_id",
+          "project_name",
           "gate",
           "evidence_digest",
           "run_version",
@@ -18290,6 +18306,42 @@
           },
           {
             "in": "query",
+            "name": "states",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "$ref": "#/components/schemas/RunState"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "States"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
             "name": "project_id",
             "required": false,
             "schema": {
@@ -18319,6 +18371,22 @@
                 }
               ],
               "title": "Attention"
+            }
+          },
+          {
+            "in": "query",
+            "name": "exclude_pending_gate",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Exclude Pending Gate"
             }
           },
           {

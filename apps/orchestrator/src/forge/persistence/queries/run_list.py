@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import cast
 from uuid import UUID
 
-from sqlalchemy import case, func, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -23,9 +23,11 @@ class RunListQuery:
     async def list(
         self,
         *,
-        state: str | None = None,
+        states: list[str] | None = None,
+        q: str | None = None,
         project_id: UUID | None = None,
         attention: bool | None = None,
+        exclude_pending_gate: bool | None = None,
         updated_since: datetime | None = None,
         offset: int = 0,
         limit: int = 50,
@@ -36,12 +38,26 @@ class RunListQuery:
             if not isinstance(observed_at, datetime):
                 raise TypeError("run projection timestamp unavailable")
             predicates = []
-            if state is not None:
-                predicates.append(Run.state == state)
+            if states:
+                predicates.append(Run.state.in_(states))
+            if q and q.strip():
+                # Escape LIKE wildcards so operator text is always a literal
+                # substring search over the task title and project name.
+                pattern = f"%{_escape_like(q.strip())}%"
+                predicates.append(
+                    or_(
+                        Task.title.ilike(pattern, escape="\\"),
+                        Project.name.ilike(pattern, escape="\\"),
+                    )
+                )
             if project_id is not None:
                 predicates.append(Run.project_id == project_id)
             if updated_since is not None:
                 predicates.append(Run.updated_at >= updated_since)
+            if exclude_pending_gate:
+                # Lets callers (the inbox) page blocked runs without pending
+                # approvals consuming the page before client-side filtering.
+                predicates.append(Run.pending_gate.is_(None))
             attention_expr = _attention_expression()
             if attention is not None:
                 predicates.append(attention_expr == attention)
@@ -97,6 +113,10 @@ class RunListQuery:
                     }
                 )
             return result, truncated
+
+
+def _escape_like(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def _attention_expression() -> ColumnElement[bool]:
