@@ -210,6 +210,47 @@ test('rapid filter changes compose instead of overwriting each other before navi
   expect(params.get('bucket')).toBe('failed');
 });
 
+test('a newer pending patch survives an older navigation committing first', async () => {
+  mockRunsApi();
+  mockReplace.mockImplementation(() => {}); // records issuances; commits are simulated by hand
+  const { rerender } = render(<RunsPage />);
+  fireEvent.change(await screen.findByLabelText('Project'), { target: { value: 'project-1' } });
+  const firstUrl = String(mockReplace.mock.calls.at(-1)?.[0]);
+  fireEvent.click(screen.getByRole('button', { name: /Failed/ })); // second patch composes on the first
+  window.history.replaceState(null, '', firstUrl);
+  rerender(<RunsPage />); // the earlier (project-only) navigation commits first
+  fireEvent.change(screen.getByLabelText('Attention'), { target: { value: 'true' } });
+  const url = String(mockReplace.mock.calls.at(-1)?.[0]);
+  const params = new URLSearchParams(url.split('?')[1]);
+  expect(params.get('project_id')).toBe('project-1');
+  expect(params.get('bucket')).toBe('failed'); // not dropped by the intermediate commit
+  expect(params.get('attention')).toBe('true');
+});
+
+test('a superseded search marker does not swallow a later history visit to its value', async () => {
+  mockRunsApi();
+  mockReplace.mockImplementation(() => {}); // records issuances; commits are simulated by hand
+  const { rerender } = render(<RunsPage />);
+  const user = userEvent.setup();
+  const input = await screen.findByRole('searchbox', { name: 'Search runs' });
+  await user.type(input, 'foo');
+  await waitFor(
+    () => expect(mockReplace).toHaveBeenCalledWith(expect.stringContaining('q=foo'), expect.anything()),
+    { timeout: 3000 },
+  );
+  await user.type(input, 'b'); // q=foob supersedes q=foo before foo ever commits
+  await waitFor(
+    () => expect(mockReplace).toHaveBeenCalledWith(expect.stringContaining('q=foob'), expect.anything()),
+    { timeout: 3000 },
+  );
+  window.history.replaceState(null, '', '/runs?q=foob');
+  rerender(<RunsPage />); // only the final q=foob navigation lands
+  expect(input).toHaveValue('foob');
+  window.history.replaceState(null, '', '/runs?q=foo');
+  rerender(<RunsPage />); // external visit to the superseded value must restore it
+  expect(input).toHaveValue('foo');
+});
+
 test('typing in search updates the URL query after a short debounce', async () => {
   mockRunsApi();
   render(<RunsPage />);

@@ -31,16 +31,24 @@ function RunsPageContent() {
 
   // App Router navigations commit asynchronously, so consecutive patches
   // must compose on the last issued query string rather than the last
-  // committed one — otherwise a second rapid patch drops the first.
+  // committed one — otherwise a second rapid patch drops the first. Every
+  // self-issued string stays in a chain: when one lands, it and every
+  // superseded entry before it retire while newer entries stay pending, so
+  // an intermediate commit never drops a newer patch; a committed URL this
+  // page never issued is external navigation and retires the whole chain.
   const committedSearch = searchParams.toString();
-  const [pendingSearch, setPendingSearch] = useState<{ base: string; issued: string } | null>(null);
-  if (pendingSearch && committedSearch !== pendingSearch.base) setPendingSearch(null);
-  const effectiveSearch = pendingSearch && committedSearch === pendingSearch.base
-    ? pendingSearch.issued
-    : committedSearch;
+  const [issuedSearches, setIssuedSearches] = useState<string[]>([]);
+  const [syncedSearch, setSyncedSearch] = useState(committedSearch);
+  if (committedSearch !== syncedSearch) {
+    setSyncedSearch(committedSearch);
+    const issuedAt = issuedSearches.indexOf(committedSearch);
+    if (issuedAt >= 0) setIssuedSearches(issuedSearches.slice(issuedAt + 1));
+    else if (issuedSearches.length) setIssuedSearches([]);
+  }
+  const effectiveSearch = issuedSearches.at(-1) ?? committedSearch;
   const issueParams = (params: URLSearchParams) => {
     const qs = params.toString();
-    setPendingSearch({ base: committedSearch, issued: qs });
+    setIssuedSearches(previous => [...previous, qs]);
     router.replace(qs ? `/runs?${qs}` : '/runs', { scroll: false });
   };
 
@@ -57,23 +65,28 @@ function RunsPageContent() {
   // Keep the input following the URL (back/forward navigation) without an
   // effect: adjust state during render when the param changes externally.
   // Self-issued navigations are tracked separately — when one of those lands
-  // late it must not clobber characters typed after it was dispatched. Each
-  // marker is consumed when its navigation lands, so returning through
-  // history to the same value later counts as external again.
+  // late it must not clobber characters typed after it was dispatched. A
+  // landing retires its marker and every superseded marker before it (their
+  // navigations never committed), and an external landing retires them all,
+  // so returning through history to any of those values later counts as
+  // external again.
   const [syncedQuery, setSyncedQuery] = useState(queryText);
   const [issuedQueries, setIssuedQueries] = useState<string[]>([]);
   if (queryText !== syncedQuery) {
     setSyncedQuery(queryText);
     const issuedAt = issuedQueries.indexOf(queryText);
-    if (issuedAt >= 0) setIssuedQueries(issuedQueries.filter((_, index) => index !== issuedAt));
-    else setSearchInput(queryText);
+    if (issuedAt >= 0) setIssuedQueries(issuedQueries.slice(issuedAt + 1));
+    else {
+      if (issuedQueries.length) setIssuedQueries([]);
+      setSearchInput(queryText);
+    }
   }
   useEffect(() => {
     const next = searchInput.slice(0, 200);
     const baseQuery = new URLSearchParams(effectiveSearch).get('q') ?? '';
     if (next === baseQuery) return;
     const timer = setTimeout(() => {
-      setIssuedQueries(previous => [...previous.slice(-3), next]);
+      setIssuedQueries(previous => [...previous, next]);
       const params = new URLSearchParams(effectiveSearch);
       if (next) params.set('q', next);
       else params.delete('q');
