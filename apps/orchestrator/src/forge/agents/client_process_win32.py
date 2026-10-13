@@ -196,7 +196,20 @@ def system_environment() -> dict[str, str]:
     buffer = ctypes.create_unicode_buffer(32768)
     count = _windows_directory(buffer, len(buffer))
     _check(count and count < len(buffer), "GetSystemWindowsDirectoryW")
-    return {"SystemRoot": buffer.value}
+    system_drive = Path(buffer.value).drive
+    program_data = ctypes.create_unicode_buffer(32768)
+    shell = ctypes.WinDLL("shell32", use_last_error=True)
+    folder = shell.SHGetFolderPathW
+    folder.argtypes = (P, ctypes.c_int, P, w.DWORD, w.LPWSTR)
+    folder.restype = w.LONG
+    _check(folder(None, 0x0023, None, 0, program_data) == 0, "SHGetFolderPathW")
+    if not system_drive or not Path(program_data.value).is_absolute():
+        raise OSError("invalid Windows system paths")
+    return {
+        "SystemRoot": buffer.value,
+        "SystemDrive": system_drive,
+        "ProgramData": program_data.value,
+    }
 
 
 def _check(ok: object, operation: str) -> None:

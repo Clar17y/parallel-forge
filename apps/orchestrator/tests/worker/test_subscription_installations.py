@@ -370,3 +370,165 @@ def _codex_manifest(tmp_path: Path) -> tuple[Path, dict[str, Any]]:
     path = tmp_path / "installations.json"
     path.write_text(json.dumps(deepcopy(payload)), encoding="utf-8")
     return path, payload
+
+
+# ---------------------------------------------------------------------------
+# PR118 F3: Muse readiness/admission bind the resolved native binary,
+# never the configured Windows shim.
+# ---------------------------------------------------------------------------
+
+
+def _muse_shim_layout(tmp_path: Path, *, marker: str | None = "1.4.7-R6101.1",
+                      native: bool = True) -> tuple[Path, Path]:
+    programs = tmp_path / "programs"
+    programs.mkdir()
+    shim = programs / "muse.cmd"
+    shim.write_text("@echo off\n", encoding="utf-8")
+    if marker is not None:
+        (programs / ".muse-version").write_text(marker + "\n", encoding="ascii")
+    native_exe = programs / "muse-bin-1.4.7-R6101.1.exe"
+    if native:
+        native_exe.write_bytes(b"native-muse-build")
+    return shim, native_exe
+
+
+def _muse_manifest(tmp_path: Path, executable: Path, digest: str) -> Path:
+    cwd, home = tmp_path / "cwd", tmp_path / "home"
+    cwd.mkdir(exist_ok=True)
+    home.mkdir(exist_ok=True)
+    manifest = tmp_path / "installations.json"
+    manifest.write_text(json.dumps({
+        "version": 2,
+        "installations": [{
+            "client": "muse_code",
+            "executable": str(executable.resolve()),
+            "cwd": str(cwd.resolve()),
+            "home": str(home.resolve()),
+            "model": "muse-wonder-1.0",
+            "effort": "medium",
+            "account": hashlib.sha256(b"account").hexdigest(),
+            "executable_digest": digest,
+            "client_version": "1.4.7",
+            "quota": {"account": "meta-sub", "pool": "allowance"},
+        }],
+    }), encoding="utf-8")
+    return manifest
+
+
+def _muse_settings(manifest: Path) -> Settings:
+    return Settings(
+        subscription_installations_path=manifest,
+        subscription_client_trust=LocalCliTrust.OPERATOR,
+        _env_file=None,
+    )
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows muse.cmd shim layout")
+@pytest.mark.parametrize("recorded", ["native", "shim"])
+def test_muse_loader_binds_native_binary_not_shim(tmp_path: Path, recorded: str) -> None:
+    from forge.agents.muse_runtime import MuseRuntimeAdapter
+
+    shim, native_exe = _muse_shim_layout(tmp_path)
+    native_digest = hashlib.sha256(native_exe.read_bytes()).hexdigest()
+    shim_digest = hashlib.sha256(shim.read_bytes()).hexdigest()
+    manifest = _muse_manifest(
+        tmp_path, shim, native_digest if recorded == "native" else shim_digest,
+    )
+    load = load_subscription_installations_diagnostic(
+        _muse_settings(manifest), SubscriptionVerifierDependencies(),
+    )
+    assert len(load.adapters) == 1
+    adapter = load.adapters[0]
+    assert isinstance(adapter, MuseRuntimeAdapter)
+    assert Path(adapter.installation.executable) == native_exe.resolve()
+    assert adapter.installation.executable_digest == native_digest
+    changed = ReadinessWarning.CLIENT_BUILD_CHANGED in load.readiness[0].warnings
+    assert changed is (recorded == "shim")
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows muse.cmd shim layout")
+@pytest.mark.parametrize("marker,native_present,expected", [
+    (None, True, ReadinessReason.CONFIGURATION_INVALID),
+    ("not-a-version", True, ReadinessReason.CONFIGURATION_INVALID),
+    ("1.4.7-R6101.1", False, ReadinessReason.CONFIGURATION_INVALID),
+])
+def test_muse_loader_rejects_broken_shim_layout(
+    tmp_path: Path, marker: str | None, native_present: bool, expected: ReadinessReason,
+) -> None:
+    shim, _native = _muse_shim_layout(tmp_path, marker=marker, native=native_present)
+    manifest = _muse_manifest(tmp_path, shim, "a" * 64)
+    load = load_subscription_installations_diagnostic(
+        _muse_settings(manifest), SubscriptionVerifierDependencies(),
+    )
+    assert load.adapters == ()
+    assert load.readiness[0].admitted is False
+    assert load.readiness[0].reason is expected
+
+
+def test_muse_loader_missing_shim_is_missing_executable(tmp_path: Path) -> None:
+    manifest = _muse_manifest(tmp_path, tmp_path / "no-muse.cmd", "a" * 64)
+    load = load_subscription_installations_diagnostic(
+        _muse_settings(manifest), SubscriptionVerifierDependencies(),
+    )
+    assert load.adapters == ()
+    assert load.readiness[0].reason is ReadinessReason.MISSING_EXECUTABLE
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows muse.cmd shim layout")
+def test_muse_adapter_for_direct_caller_resolves_native(tmp_path: Path) -> None:
+    from forge.domain.subscription_installations import MuseInstallationSpec
+
+    shim, native_exe = _muse_shim_layout(tmp_path)
+    cwd, home = tmp_path / "cwd", tmp_path / "home"
+    cwd.mkdir()
+    home.mkdir()
+    spec = MuseInstallationSpec.model_validate({
+        "client": "muse_code",
+        "executable": str(shim.resolve()),
+        "cwd": str(cwd.resolve()),
+        "home": str(home.resolve()),
+        "model": "muse-wonder-1.0",
+        "effort": "medium",
+        "account": hashlib.sha256(b"account").hexdigest(),
+        "executable_digest": hashlib.sha256(shim.read_bytes()).hexdigest(),
+        "client_version": "1.4.7",
+        "quota": {"account": "meta-sub", "pool": "allowance"},
+    })
+    adapter = installations._adapter_for(
+        spec, SubscriptionVerifierDependencies(), trust=LocalCliTrust.OPERATOR,
+    )
+    assert adapter is not None
+    assert Path(adapter.installation.executable) == native_exe.resolve()
+    assert adapter.installation.executable_digest == hashlib.sha256(
+        native_exe.read_bytes()
+    ).hexdigest()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows muse.cmd shim layout")
+def test_muse_adapter_tracks_native_update_after_loading(tmp_path: Path) -> None:
+    from uuid import uuid4
+
+    from forge.agents.muse_runtime import MuseAuthoringHome, muse_launch_spec
+
+    shim, native_exe = _muse_shim_layout(tmp_path)
+    manifest = _muse_manifest(tmp_path, shim, hashlib.sha256(native_exe.read_bytes()).hexdigest())
+    load = load_subscription_installations_diagnostic(
+        _muse_settings(manifest), SubscriptionVerifierDependencies(),
+    )
+    installation = load.adapters[0].installation
+    assert installation.configured_executable == str(shim.resolve())
+    (shim.parent / ".muse-version").write_text("1.4.8-R6102.1", encoding="ascii")
+    updated = shim.parent / "muse-bin-1.4.8-R6102.1.exe"
+    updated.write_bytes(b"updated native Muse")
+    home = MuseAuthoringHome(installation, uuid4())
+    home.prepare("prompt", {"type": "object"})
+    try:
+        launch = muse_launch_spec(
+            installation, home, mcp_name="forge",
+            mcp_server={"transport": "stdio", "command": "unused", "args": [], "env": {}},
+            tools=(), duration=1,
+        )
+        assert Path(launch.argv[0]) == updated.resolve()
+        assert launch.executable_digest == hashlib.sha256(updated.read_bytes()).hexdigest()
+    finally:
+        home.cleanup()

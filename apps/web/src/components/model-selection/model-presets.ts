@@ -19,6 +19,7 @@ function friendlyModel(id: string, label?: string) {
     'gpt-6-astra': 'Astra 6', 'claude-opus-5-5': 'Claude Opus 5.5',
     'gemini-3.8-flash': 'Google Gemini 3.8 Flash', 'gemini-3.5-flash': 'Google Gemini 3.5 Flash',
     'gemini-2.5-flash': 'Google Gemini 2.5 Flash', 'gemini-2.5-pro': 'Google Gemini 2.5 Pro',
+    'muse-wonder-1.0': 'Wonder', 'muse-wonder-full-1.0': 'Wonder Full',
   };
   if (known[id]) return known[id];
   return label && label !== id ? label : id.replace(/[-_]+/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
@@ -72,7 +73,7 @@ export function routePresets(catalogs: SubscriptionModelCatalogView[] = []): Rou
 }
 
 function friendlyProvider(provider: string) {
-  const names: Record<string, string> = { openai: 'OpenAI', google: 'Google', anthropic: 'Anthropic' };
+  const names: Record<string, string> = { openai: 'OpenAI', google: 'Google', anthropic: 'Anthropic', meta: 'Meta' };
   return names[provider.toLowerCase()] ?? provider.replace(/[-_]+/g, ' ');
 }
 

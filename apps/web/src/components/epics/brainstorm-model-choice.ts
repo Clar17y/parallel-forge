@@ -18,7 +18,8 @@ export function isLocalBrainstormRoute(value: unknown): value is BrainstormRoute
   const route = value as Record<string, unknown>;
   return ((route.provider === 'openai' && route.client === 'codex_app_server') ||
     (route.provider === 'google' && (route.client === 'gemini_cli' || route.client === 'antigravity_cli')) ||
-    (route.provider === 'anthropic' && route.client === 'claude_code')) &&
+    (route.provider === 'anthropic' && route.client === 'claude_code') ||
+    (route.provider === 'meta' && route.client === 'muse_code')) &&
     typeof route.model === 'string' && route.model.trim().length > 0 && route.model.length <= 255 &&
     typeof route.effort === 'string' && ['none', 'low', 'medium', 'high', 'maximum'].includes(route.effort) &&
     route.auth_mode === 'subscription' && route.billing_mode === 'allowance_only';

@@ -28,6 +28,7 @@ from forge.domain.subscription_installations import (
     AntigravityInstallationSpec,
     ClaudeInstallationSpec,
     CodexInstallationSpec,
+    MuseInstallationSpec,
     SubscriptionInstallationSpec,
     load_subscription_installation_manifest,
     quota_route_for,
@@ -154,6 +155,7 @@ def load_subscription_installations_diagnostic(
                     "claude_code": "anthropic",
                     "gemini_cli": "google",
                     "antigravity_cli": "google",
+                    "muse_code": "meta",
                 }[item.client],
                 client=item.client,
                 model=item.model,
@@ -161,13 +163,30 @@ def load_subscription_installations_diagnostic(
             )
         except TypeError, ValueError:
             continue
-        actual_digest = stable_executable_digest(item.executable)
+        muse_resolution_failed = False
+        if item.client == "muse_code":
+            # Readiness must bind the native binary launch actually runs,
+            # not the configured Windows shim.
+            from forge.agents.muse_runtime import resolve_muse_executable
+
+            try:
+                actual_digest = resolve_muse_executable(item.executable)[1]
+            except (OSError, ValueError):
+                actual_digest = None
+                muse_resolution_failed = stable_executable_digest(item.executable) is not None
+        else:
+            actual_digest = stable_executable_digest(item.executable)
         if (
             trust is LocalCliTrust.VERIFIED
             and item.client == "gemini_cli"
             and verifiers.gemini is None
+        ) or (
+            trust is LocalCliTrust.VERIFIED
+            and item.client == "muse_code"
         ):
             reason = ReadinessReason.PROVIDER_UNSUPPORTED
+        elif muse_resolution_failed:
+            reason = ReadinessReason.CONFIGURATION_INVALID
         elif actual_digest is None:
             reason = ReadinessReason.MISSING_EXECUTABLE
         elif trust is LocalCliTrust.VERIFIED and not hmac.compare_digest(
@@ -238,6 +257,32 @@ def _adapter_for(
         and not hmac.compare_digest(actual_digest, item.executable_digest)
     ):
         return None
+    if isinstance(item, MuseInstallationSpec):
+        if trust is not LocalCliTrust.OPERATOR:
+            return None
+        from forge.agents.muse_runtime import (
+            MuseInstallation,
+            MuseRuntimeAdapter,
+            resolve_muse_executable,
+        )
+
+        try:
+            native_executable, native_digest = resolve_muse_executable(item.executable)
+        except (OSError, ValueError):
+            return None
+        return MuseRuntimeAdapter(
+            MuseInstallation(
+                executable=native_executable,
+                configured_executable=item.executable,
+                cwd=item.cwd,
+                home=item.home,
+                model=item.model,
+                effort=item.effort,
+                max_model_steps=item.max_model_steps,
+                executable_digest=native_digest,
+                duration_seconds=duration_seconds,
+            )
+        )
     if isinstance(item, AntigravityInstallationSpec):
         if trust is not LocalCliTrust.OPERATOR:
             return None

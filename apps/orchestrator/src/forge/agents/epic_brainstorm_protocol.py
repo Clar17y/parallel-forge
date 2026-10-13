@@ -382,7 +382,10 @@ class AuthoringTools:
             self.metadata_calls += 1
             result = {
                 "tools": [
-                    {"name": name, "description": "Read repository context", "inputSchema": schema}
+                    {
+                        "name": name, "description": "Read repository context",
+                        "inputSchema": schema, "annotations": {"readOnlyHint": True},
+                    }
                     for name, schema in _SCHEMAS.items()
                 ]
             }
@@ -1154,3 +1157,39 @@ async def antigravity_exchange(
         await session.wait_closed()
         return proposal
     raise ProtocolError("Antigravity authoring ended before result")
+
+
+async def muse_exchange(
+    session: ClientProcessSession,
+    job: AuthoringJobSnapshot,
+    turns: tuple[BrainstormTurn, ...],
+    tools: AuthoringTools,
+    usage: AuthoringUsage,
+    *,
+    publisher: _ObservationPublisher | None = None,
+) -> BrainstormProposal | DecompositionProposal:
+    from forge.agents.muse_runtime import muse_output, muse_root_terminal
+
+    payload = await muse_root_terminal(lambda: tools.receive(session))
+    terminal_state = payload.get("terminal")
+    reason = payload.get("reason")
+
+    if terminal_state == "failed":
+        from forge.domain.provider_quota import classify_muse_error
+
+        failure_kind, quota_exc = classify_muse_error(reason if isinstance(reason, str) else None)
+        reset_str = quota_exc.reset_at.isoformat() if quota_exc and quota_exc.reset_at else None
+        # The durable authoring failure and diagnostic vocabularies have no
+        # authentication/throttled values; only canonical quota stays distinct.
+        fail_enum = "quota_exhausted" if failure_kind == "quota" else "unavailable"
+        raise AuthoringProviderFailure(fail_enum, reset_str)
+
+    if terminal_state == "cancelled":
+        raise AuthoringProviderFailure("cancelled")
+
+    if terminal_state != "completed":
+        raise ProtocolError(f"Muse unknown terminal state: {terminal_state}")
+
+    proposal = proposal_from_output(muse_output(payload), job)
+    await tools.record("proposal_received")
+    return proposal

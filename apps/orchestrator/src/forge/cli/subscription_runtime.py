@@ -143,6 +143,8 @@ def _guidance(route: SubscriptionRuntimeRouteView) -> str:
                 "Sign in with Google inside Antigravity, then refresh; "
                 "the approved-tool warning still applies."
             )
+        if route.client == "muse_code":
+            return "Run `muse` in your terminal to complete sign-in with Meta, then refresh."
         return "Complete sign-in inside the configured official client, then refresh."
     if reason == "isolation_unproved":
         return "Other required installation or transport isolation evidence is incomplete."

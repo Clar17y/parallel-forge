@@ -311,4 +311,44 @@ def classify_codex_error(
     return "protocol", None
 
 
-__all__ = ["QuotaExhaustion", "classify_claude_error", "classify_codex_error", "quota_evidence"]
+def classify_muse_error(
+    reason: str | None, *, now: datetime | None = None
+) -> tuple[str, QuotaExhaustion | None]:
+    observed = now or utc_now()
+    if not isinstance(reason, str):
+        return "protocol", None
+    text = reason.strip()
+    match = re.fullmatch(r"API error 403: (.+) \(quota_exhausted\)", text, re.IGNORECASE)
+    detail = match.group(1) if match else None
+    if detail is not None and re.fullmatch(
+        r"(?:daily|plan|monthly|weekly|session) "
+        r"(?:quota (?:exhausted|exceeded)|(?:usage )?limit (?:reached|exceeded|exhausted))"
+        r"(?:[.!]|[.!]?\s+resets?\s+[^\n]+)?",
+        detail, re.IGNORECASE,
+    ):
+        reset_time = _message_reset(detail, now=observed)
+        return "quota", quota_evidence(
+            reason="muse_account_usage_exhausted",
+            now=observed,
+            reset_at=reset_time,
+        )
+    if re.search(r"\b429\b", text):
+        return "throttled", None
+    if re.search(r"\b401\b|authentication required|verify your account|auth_error", text, re.IGNORECASE):
+        return "authentication", None
+    if re.search(r"\b403\b", text):
+        return "policy_denied", None
+    if re.search(r"invalid model|model not found|unsupported model", text, re.IGNORECASE):
+        return "unsupported", None
+    if re.search(r"temporarily unavailable|service unavailable|overloaded|timeout", text, re.IGNORECASE):
+        return "outage", None
+    return "protocol", None
+
+
+__all__ = [
+    "QuotaExhaustion",
+    "classify_claude_error",
+    "classify_codex_error",
+    "classify_muse_error",
+    "quota_evidence",
+]

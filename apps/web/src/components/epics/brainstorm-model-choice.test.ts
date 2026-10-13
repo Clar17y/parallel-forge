@@ -12,6 +12,18 @@ test('accepts the domain effort values and rejects provider-native values', () =
   }
 });
 
+test('accepts Muse Code as a valid local brainstorm route', () => {
+  const museRoute = {
+    provider: 'meta',
+    client: 'muse_code',
+    model: 'muse-wonder-1.0',
+    effort: 'medium',
+    auth_mode: 'subscription',
+    billing_mode: 'allowance_only',
+  };
+  expect(isLocalBrainstormRoute(museRoute)).toBe(true);
+});
+
 test('expires current worker routes from last report age and keeps a live duplicate', () => {
   const observedAt = Date.parse('2026-10-09T12:00:00Z');
   const available = {

@@ -1,4 +1,4 @@
-export type ProviderIdentity = 'anthropic' | 'google' | 'openai' | 'neutral';
+export type ProviderIdentity = 'anthropic' | 'google' | 'openai' | 'meta' | 'neutral';
 
 export interface ProviderCue {
   tone: ProviderIdentity;
@@ -23,6 +23,12 @@ export function getProviderCue(rawProvider?: string | null): ProviderCue {
     return {
       tone: 'openai',
       label: 'OpenAI',
+    };
+  }
+  if (['meta', 'muse'].includes(norm)) {
+    return {
+      tone: 'meta',
+      label: 'Meta',
     };
   }
   return {

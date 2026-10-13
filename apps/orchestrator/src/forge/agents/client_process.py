@@ -182,15 +182,14 @@ class ClientLaunchSpec:
 
             # An isolated Windows environment still needs its OS directory for
             # loader/Winsock initialization. Never inherit ambient credentials,
-            # PATH, or an operator-supplied replacement for this OS-owned value.
+            # PATH, or operator-supplied replacements for OS-owned paths.
             system = system_environment()
             for key, value in env.items():
-                if (
-                    key.upper() == "SYSTEMROOT"
-                    and value.casefold() != system["SystemRoot"].casefold()
-                ):
-                    raise ValueError("client cannot override the Windows system directory")
-            env = {key: value for key, value in env.items() if key.upper() != "SYSTEMROOT"} | system
+                expected = next((path for name, path in system.items() if name.upper() == key.upper()), None)
+                if expected is not None and value.casefold() != expected.casefold():
+                    raise ValueError("client cannot override Windows system paths")
+            system_names = {name.upper() for name in system}
+            env = {key: value for key, value in env.items() if key.upper() not in system_names} | system
             allowed |= frozenset(system)
         object.__setattr__(self, "argv", argv)
         object.__setattr__(self, "pinned_files", pins)

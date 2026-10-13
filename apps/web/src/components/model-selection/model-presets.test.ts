@@ -44,3 +44,14 @@ test('catalog effort declarations replace broader offline suggestion levels for 
   expect(suggestion.source).toBe('catalog');
   expect(suggestion.efforts).toEqual(['low']);
 });
+
+test('configured Muse Wonder and Wonder Full remain distinct with their declared efforts', () => {
+  const configured = catalog('meta', 'muse_code', ['medium']);
+  configured.models = [
+    { id: 'muse-wonder-1.0', label: 'muse-wonder-1.0', efforts: ['medium'] },
+    { id: 'muse-wonder-full-1.0', label: 'muse-wonder-full-1.0', efforts: ['medium', 'high'] },
+  ];
+  const choices = routePresets([configured]);
+  expect(choices.find(item => item.model === 'muse-wonder-1.0')).toMatchObject({ label: 'Wonder', efforts: ['medium'], source: 'catalog' });
+  expect(choices.find(item => item.model === 'muse-wonder-full-1.0')).toMatchObject({ label: 'Wonder Full', efforts: ['medium', 'high'], source: 'catalog' });
+});

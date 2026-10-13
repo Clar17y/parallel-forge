@@ -42,12 +42,20 @@ from forge.agents.epic_brainstorm_protocol import (
     AuthoringTools,
     AuthoringUsage,
     antigravity_exchange,
+    authoring_prompt,
     authoring_schema,
     claude_exchange,
     codex_exchange,
     gemini_exchange,
+    muse_exchange,
 )
 from forge.agents.gemini_configuration import GeminiLaunchDirectory
+from forge.agents.muse_runtime import (
+    MuseAuthoringHome,
+    MuseInstallation,
+    muse_launch_spec,
+    resolve_muse_executable,
+)
 from forge.agents.subscription_protocol import (
     ProtocolError,
 )
@@ -67,6 +75,7 @@ from forge.domain.subscription_installations import (
     ClaudeInstallationSpec,
     CodexInstallationSpec,
     GeminiInstallationSpec,
+    MuseInstallationSpec,
     SubscriptionInstallationSpec,
     quota_route_for,
 )
@@ -210,7 +219,22 @@ class EpicBrainstormGateway:
             return BrainstormGatewayResult(proposal=None, telemetry=None, failure="cancelled")
         installation = self.installation
         assert installation is not None
-        actual_digest = stable_executable_digest(installation.executable)
+        if isinstance(installation, MuseInstallationSpec) and self.trust is LocalCliTrust.VERIFIED:
+            # Verified mode admits no Muse task adapter; authoring must not
+            # launch one either (checked before any supervisor/MCP start).
+            return BrainstormGatewayResult(proposal=None, telemetry=None, failure="unavailable")
+        muse_native: tuple[str, str] | None = None
+        actual_digest: str | None
+        if isinstance(installation, MuseInstallationSpec):
+            try:
+                muse_native = resolve_muse_executable(installation.executable)
+            except (OSError, ValueError):
+                return BrainstormGatewayResult(
+                    proposal=None, telemetry=None, failure="unavailable"
+                )
+            actual_digest = muse_native[1]
+        else:
+            actual_digest = stable_executable_digest(installation.executable)
         if actual_digest is None or (
             self.trust is LocalCliTrust.VERIFIED
             and not hmac.compare_digest(actual_digest, installation.executable_digest)
@@ -228,10 +252,11 @@ class EpicBrainstormGateway:
         diagnostic = getattr(lifecycle, "diagnostic", None)
         tools = AuthoringTools(reader, job.budget.max_tool_calls, usage, diagnostic=diagnostic)
         session = None
-        launch_files: GeminiLaunchDirectory | AntigravityAuthoringHome | None = None
+        launch_files: GeminiLaunchDirectory | AntigravityAuthoringHome | MuseAuthoringHome | None = None
         proposal: BrainstormProposal | DecompositionProposal | None = None
         failure: str | None = None
         quota_reset_at: str | None = None
+        muse_terminal_failed = False
         quota_exhausted = False
         interrupted = False
         use_bridge = False
@@ -421,6 +446,45 @@ class EpicBrainstormGateway:
                     model=antigravity_model,
                     publisher=publisher,
                 )
+            elif isinstance(installation, MuseInstallationSpec):
+                use_bridge = True
+                assert muse_native is not None
+                muse_runtime = MuseInstallation(
+                    executable=muse_native[0],
+                    configured_executable=installation.executable,
+                    cwd=installation.cwd,
+                    home=installation.home,
+                    model=installation.model,
+                    effort=installation.effort,
+                    max_model_steps=installation.max_model_steps,
+                    executable_digest=actual_digest,
+                    duration_seconds=duration,
+                )
+                launch_files = MuseAuthoringHome(muse_runtime, attempt_id)
+                await tools.start()
+                descriptor = tools.bridge.descriptor()
+                pairs = descriptor["env"]
+                assert isinstance(pairs, list)
+                muse_prompt = authoring_prompt(job, turns)
+                schema_dict = authoring_schema(job.kind)
+                launch_files.prepare(muse_prompt, schema_dict)
+                server = {
+                    "transport": "stdio", "command": descriptor["command"],
+                    "args": descriptor["args"],
+                    "env": {pair["name"]: pair["value"] for pair in pairs},
+                }
+                spec = muse_launch_spec(
+                    muse_runtime, launch_files, mcp_name="forge", mcp_server=server,
+                    tools=AUTHORING_TOOL_NAMES, duration=duration,
+                )
+                exchange = lambda session: muse_exchange(
+                    session,
+                    job,
+                    turns,
+                    tools,
+                    usage,
+                    publisher=publisher,
+                )
             else:
                 return BrainstormGatewayResult(proposal=None, telemetry=None, failure="unavailable")
 
@@ -442,6 +506,7 @@ class EpicBrainstormGateway:
         except AuthoringProviderFailure as error:
             failure = error.failure
             quota_reset_at = error.quota_reset_at
+            muse_terminal_failed = isinstance(installation, MuseInstallationSpec)
             quota_exhausted = failure == "quota_exhausted"
             try:
                 await tools.record("provider_error", operation="provider_receive", failure=failure)
@@ -454,7 +519,7 @@ class EpicBrainstormGateway:
         finally:
 
             async def settle() -> None:
-                nonlocal failure
+                nonlocal failure, quota_reset_at, quota_exhausted
                 cleanup_failed = False
                 try:
                     await tools.revoke()
@@ -478,11 +543,18 @@ class EpicBrainstormGateway:
                         elif proposal is not None and (
                             (
                                 receipt.return_code != 0
-                                and not receipt.intentional_completed_stop
+                                and (
+                                    isinstance(installation, MuseInstallationSpec)
+                                    or not receipt.intentional_completed_stop
+                                )
                             )
                             or receipt.outcome not in {"exited", "completed"}
                         ):
                             failure = "process_failed"
+                        elif muse_terminal_failed and receipt.return_code == 0:
+                            failure = "invalid_output"
+                            quota_reset_at = None
+                            quota_exhausted = False
                     except asyncio.CancelledError, Exception:  # noqa: BLE001 - uncertain stop
                         cleanup_failed = True
                 if cleanup_failed:
