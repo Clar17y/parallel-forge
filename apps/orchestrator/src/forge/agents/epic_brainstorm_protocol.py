@@ -382,7 +382,10 @@ class AuthoringTools:
             self.metadata_calls += 1
             result = {
                 "tools": [
-                    {"name": name, "description": "Read repository context", "inputSchema": schema}
+                    {
+                        "name": name, "description": "Read repository context",
+                        "inputSchema": schema, "annotations": {"readOnlyHint": True},
+                    }
                     for name, schema in _SCHEMAS.items()
                 ]
             }
@@ -1176,14 +1179,9 @@ async def muse_exchange(
 
         failure_kind, quota_exc = classify_muse_error(reason if isinstance(reason, str) else None)
         reset_str = quota_exc.reset_at.isoformat() if quota_exc and quota_exc.reset_at else None
-        fail_enum = {
-            "quota": "quota_exhausted",
-            "throttled": "throttled",
-            "authentication": "authentication",
-            "policy_denied": "unavailable",
-            "unsupported": "unavailable",
-            "outage": "unavailable",
-        }.get(failure_kind, "unavailable")
+        # The durable authoring failure and diagnostic vocabularies have no
+        # authentication/throttled values; only canonical quota stays distinct.
+        fail_enum = "quota_exhausted" if failure_kind == "quota" else "unavailable"
         raise AuthoringProviderFailure(fail_enum, reset_str)
 
     if terminal_state == "cancelled":

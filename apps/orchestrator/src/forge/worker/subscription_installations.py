@@ -163,7 +163,19 @@ def load_subscription_installations_diagnostic(
             )
         except TypeError, ValueError:
             continue
-        actual_digest = stable_executable_digest(item.executable)
+        muse_resolution_failed = False
+        if item.client == "muse_code":
+            # Readiness must bind the native binary launch actually runs,
+            # not the configured Windows shim.
+            from forge.agents.muse_runtime import resolve_muse_executable
+
+            try:
+                actual_digest = resolve_muse_executable(item.executable)[1]
+            except (OSError, ValueError):
+                actual_digest = None
+                muse_resolution_failed = stable_executable_digest(item.executable) is not None
+        else:
+            actual_digest = stable_executable_digest(item.executable)
         if (
             trust is LocalCliTrust.VERIFIED
             and item.client == "gemini_cli"
@@ -173,6 +185,8 @@ def load_subscription_installations_diagnostic(
             and item.client == "muse_code"
         ):
             reason = ReadinessReason.PROVIDER_UNSUPPORTED
+        elif muse_resolution_failed:
+            reason = ReadinessReason.CONFIGURATION_INVALID
         elif actual_digest is None:
             reason = ReadinessReason.MISSING_EXECUTABLE
         elif trust is LocalCliTrust.VERIFIED and not hmac.compare_digest(
@@ -246,17 +260,26 @@ def _adapter_for(
     if isinstance(item, MuseInstallationSpec):
         if trust is not LocalCliTrust.OPERATOR:
             return None
-        from forge.agents.muse_runtime import MuseInstallation, MuseRuntimeAdapter
+        from forge.agents.muse_runtime import (
+            MuseInstallation,
+            MuseRuntimeAdapter,
+            resolve_muse_executable,
+        )
 
+        try:
+            native_executable, native_digest = resolve_muse_executable(item.executable)
+        except (OSError, ValueError):
+            return None
         return MuseRuntimeAdapter(
             MuseInstallation(
-                executable=item.executable,
+                executable=native_executable,
+                configured_executable=item.executable,
                 cwd=item.cwd,
                 home=item.home,
                 model=item.model,
                 effort=item.effort,
                 max_model_steps=item.max_model_steps,
-                executable_digest=actual_digest,
+                executable_digest=native_digest,
                 duration_seconds=duration_seconds,
             )
         )

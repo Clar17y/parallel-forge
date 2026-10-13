@@ -198,8 +198,28 @@ def test_muse_route_effort_is_exact_and_model_is_bound(tmp_path: Path) -> None:
         assert spec.argv[spec.argv.index("--reasoning-effort") + 1] == "max"
         assert spec.argv[spec.argv.index("--model") + 1] == "official-custom-model"
         assert "mcp__forge__read_file" in " ".join(spec.argv)
+        assert spec.argv[spec.argv.index("--approval-mode") + 1] == "on-request"
+        assert spec.argv[spec.argv.index("--approval-judge") + 1] == "off"
+        hooks = json.loads(next(value.removeprefix("hooks=") for value in spec.argv if value.startswith("hooks=")))
+        assert hooks["PermissionRequest"][0]["matcher"] == "^(?:mcp__forge__read_file)$"
+        policy = json.loads((home.path / "approval-policy.json").read_text(encoding="utf-8"))
+        assert policy["tools"] == ["mcp__forge__read_file"]
+        assert policy["cwd"] == str(spec.cwd) == str(home.path)
+        assert policy["cwd"] != installation.cwd
     finally:
         home.cleanup()
+    empty_home = MuseAuthoringHome(installation, uuid4())
+    empty_home.prepare("prompt", {"type": "object"})
+    try:
+        empty_spec = muse_launch_spec(
+            installation, empty_home, mcp_name="forge",
+            mcp_server={"transport": "stdio", "command": "test", "args": [], "env": {}},
+            tools=(), duration=1,
+        )
+        assert "hooks={}" in empty_spec.argv
+        assert not (empty_home.path / "approval-policy.json").exists()
+    finally:
+        empty_home.cleanup()
     with pytest.raises(ValueError, match="invalid Muse installation"):
         MuseInstallation(**{**common, "model": "cli-default"}, effort="medium")
     with pytest.raises(ValueError, match="invalid Muse installation"):
@@ -209,7 +229,13 @@ def test_muse_route_effort_is_exact_and_model_is_bound(tmp_path: Path) -> None:
 def test_manifest_loads_muse_under_operator_trust_and_unsupported_in_verified(tmp_path: Path) -> None:
     fake_exe = tmp_path / "muse.cmd"
     fake_exe.write_text("@echo off\n", encoding="utf-8")
-    actual_digest = hashlib.sha256(fake_exe.read_bytes()).hexdigest()
+    if os.name == "nt":
+        (tmp_path / ".muse-version").write_text("1.4.7-R6101.1", encoding="ascii")
+        native = tmp_path / "muse-bin-1.4.7-R6101.1.exe"
+        native.write_bytes(b"test native Muse")
+    else:
+        native = fake_exe
+    actual_digest = hashlib.sha256(native.read_bytes()).hexdigest()
     cwd = tmp_path / "cwd"
     cwd.mkdir()
     home = tmp_path / "home"
@@ -905,7 +931,7 @@ async def test_installed_native_muse_offline_echo_through_supervisor(tmp_path: P
         spec = muse_launch_spec(
             installation, home, mcp_name="forge",
             mcp_server={"transport": "stdio", "command": "unused", "args": [], "env": {}},
-            tools=(), duration=15,
+            tools=("read_file",), duration=15,
         )
         # Echo is an offline CLI test mode and does not accept model or schema.
         argv = list(spec.argv)
@@ -916,6 +942,8 @@ async def test_installed_native_muse_offline_echo_through_supervisor(tmp_path: P
             del argv[index:index + 2]
         mcp_config = next(index for index, value in enumerate(argv) if value.startswith("mcp_servers.forge="))
         del argv[mcp_config - 1:mcp_config + 1]
+        toolset = next(index for index, value in enumerate(argv) if value.startswith("run.toolset="))
+        argv[toolset] = "run.toolset=[]"
         argv[argv.index("exec") + 1:argv.index("exec") + 1] = ["--provider", "echo"]
         result = await ClientProcessSupervisor().run(replace(spec, argv=tuple(argv)), {})
         assert result.return_code == 0 and result.stop_confirmed, result.stderr
@@ -1059,4 +1087,195 @@ async def test_muse_authoring_rejects_malformed_proposal() -> None:
 
     with pytest.raises(ProtocolError):
         await muse_exchange(SimpleNamespace(), _make_snapshot(), (), FakeTools(), AuthoringUsage())
+
+
+# ---------------------------------------------------------------------------
+# PR118 repair batch: F1 annotations, F2 authoring failures, F5 cleanup
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", [
+    "API error 401: authentication required",
+    "API error 429: rate limit per minute",
+    "API error 403: permission denied",
+])
+async def test_muse_authoring_nonquota_failures_normalize_to_unavailable(reason: str) -> None:
+    from forge.agents.epic_brainstorm_protocol import (
+        AuthoringProviderFailure,
+        AuthoringUsage,
+        muse_exchange,
+    )
+
+    from apps.orchestrator.tests.epic_brainstorm.test_gateway import _make_snapshot
+
+    class FakeTools:
+        def __init__(self):
+            self.frames = [_linked(), _terminal(state="failed", reason=reason)]
+
+        async def receive(self, session):
+            return self.frames.pop(0) if self.frames else None
+
+    with pytest.raises(AuthoringProviderFailure) as caught:
+        await muse_exchange(SimpleNamespace(), _make_snapshot(), (), FakeTools(), AuthoringUsage())
+    # The durable authoring failure/diagnostic vocabularies have no
+    # authentication/throttled values; only canonical quota stays distinct.
+    assert caught.value.failure == "unavailable"
+    assert caught.value.quota_reset_at is None
+
+
+@pytest.mark.asyncio
+async def test_muse_authoring_quota_failure_stays_quota_exhausted() -> None:
+    from forge.agents.epic_brainstorm_protocol import (
+        AuthoringProviderFailure,
+        AuthoringUsage,
+        muse_exchange,
+    )
+
+    from apps.orchestrator.tests.epic_brainstorm.test_gateway import _make_snapshot
+
+    class FakeTools:
+        def __init__(self):
+            self.frames = [_linked(), _terminal(
+                state="failed",
+                reason="API error 403: Weekly usage limit reached. Resets in 1h. (quota_exhausted)",
+            )]
+
+        async def receive(self, session):
+            return self.frames.pop(0) if self.frames else None
+
+    with pytest.raises(AuthoringProviderFailure) as caught:
+        await muse_exchange(SimpleNamespace(), _make_snapshot(), (), FakeTools(), AuthoringUsage())
+    assert caught.value.failure == "quota_exhausted"
+    assert caught.value.quota_reset_at is not None
+
+
+@pytest.mark.asyncio
+async def test_authoring_tools_advertise_truthful_readonly_annotations() -> None:
+    from forge.agents.epic_brainstorm_protocol import AuthoringTools, AuthoringUsage
+    from forge.tools.epic_brainstorm import BrainstormReadOnlyTools
+    from forge.tools.repository import RepositoryReader
+
+    reader = BrainstormReadOnlyTools(RepositoryReader(root=str(Path.cwd().resolve()), secret_paths=()))
+    tools = AuthoringTools(reader, 4, AuthoringUsage())
+    await tools.mcp({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+    listed = await tools.mcp({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
+    assert listed is not None
+    entries = listed["result"]["tools"]
+    assert {entry["name"] for entry in entries} == {
+        "list_files", "read_file", "read_instructions", "search",
+    }
+    assert all(entry["annotations"] == {"readOnlyHint": True} for entry in entries)
+
+
+def _cleanup_installation(tmp_path: Path) -> MuseInstallation:
+    fake_exe = tmp_path / "fake.exe"
+    fake_exe.write_bytes(b"dummy")
+    return MuseInstallation(
+        executable=str(fake_exe.resolve()),
+        cwd=str(tmp_path.resolve()),
+        home=str(tmp_path.resolve()),
+        model="muse-wonder-1.0",
+        effort="medium",
+        executable_digest=hashlib.sha256(fake_exe.read_bytes()).hexdigest(),
+    )
+
+
+@pytest.mark.parametrize("kind", ["attempt", "authoring"])
+def test_muse_home_cleanup_failure_is_visible_and_retriable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str,
+) -> None:
+    import shutil
+
+    installation = _cleanup_installation(tmp_path)
+    if kind == "attempt":
+        home: MuseAttemptHome | MuseAuthoringHome = MuseAttemptHome.__new__(MuseAttemptHome)
+        home.installation = installation
+        home.path = tmp_path / "attempt-home"
+        home._identity = None
+        home.path.mkdir(mode=0o700)
+        info = home.path.lstat()
+        home._identity = (info.st_dev, info.st_ino)
+    else:
+        home = MuseAuthoringHome(installation, uuid4())
+        home.path = tmp_path / "authoring-home"
+        home.path.mkdir(mode=0o700)
+        info = home.path.lstat()
+        home._identity = (info.st_dev, info.st_ino)
+    (home.path / "prompt.txt").write_text("secret prompt", encoding="utf-8")
+
+    real_rmtree = shutil.rmtree
+
+    def locked(path, *args, **kwargs):
+        raise PermissionError("locked")
+
+    monkeypatch.setattr("forge.agents.muse_runtime.shutil.rmtree", locked)
+    with pytest.raises(OSError):
+        home.cleanup()
+    assert home._identity is not None
+    assert (home.path / "prompt.txt").exists()
+
+    monkeypatch.setattr("forge.agents.muse_runtime.shutil.rmtree", real_rmtree)
+    home.cleanup()
+    assert home._identity is None
+    assert not home.path.exists()
+    home.cleanup()  # settled cleanup stays an idempotent no-op
+
+
+def test_muse_home_cleanup_identity_mismatch_and_missing_path(tmp_path: Path) -> None:
+    import shutil
+
+    installation = _cleanup_installation(tmp_path)
+    home = MuseAuthoringHome(installation, uuid4())
+    home.path = tmp_path / "authoring-home"
+    home.path.mkdir(mode=0o700)
+    info = home.path.lstat()
+    home._identity = (info.st_dev, info.st_ino)
+
+    shutil.rmtree(home.path)
+    home.path.mkdir(mode=0o700)
+    (home.path / "foreign.txt").write_text("keep", encoding="utf-8")
+    with pytest.raises(OSError):
+        home.cleanup()
+    assert home._identity is not None
+    assert (home.path / "foreign.txt").exists()
+
+    shutil.rmtree(home.path)
+    home.cleanup()  # an already-removed home is a completed deletion
+    assert home._identity is None
+
+
+@pytest.mark.asyncio
+async def test_muse_runtime_cleanup_failure_retains_uncertainty_and_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sys
+
+    from forge.application.ports.subscription_gateway import SubscriptionFailure
+
+    peer = tmp_path / "success.py"
+    peer.write_text(
+        "import json\nfor frame in " + repr([_linked(), _terminal()])
+        + ":\n print(json.dumps(frame), flush=True)\n", encoding="utf-8",
+    )
+    executable = Path(sys.executable)
+    installation = MuseInstallation(
+        executable=str(executable), script=(str(peer),), cwd=str(tmp_path.resolve()),
+        home=str(tmp_path.resolve()), model="muse-wonder-1.0", effort="medium",
+        executable_digest=hashlib.sha256(executable.read_bytes()).hexdigest(),
+    )
+    original_cleanup = MuseAttemptHome.cleanup
+    prepared: list[MuseAttemptHome] = []
+
+    def locked(home: MuseAttemptHome) -> None:
+        prepared.append(home)
+        raise PermissionError("private home locked")
+
+    monkeypatch.setattr(MuseAttemptHome, "cleanup", locked)
+    result = await MuseGateway(installation, broker=_Broker(), lifecycle=_Lifecycle()).execute(_muse_request())
+    assert result.failure is SubscriptionFailure.UNCERTAIN
+    assert result.launch_proof is not None and result.launch_proof.stop_confirmed
+    assert prepared and prepared[0]._identity is not None and prepared[0].path.exists()
+    original_cleanup(prepared[0])
+    assert prepared[0]._identity is None
 

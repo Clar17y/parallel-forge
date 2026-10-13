@@ -1078,6 +1078,8 @@ class _ScriptedSession:
         ("quota_zero", "invalid_output", False),
         ("authentication_zero", "invalid_output", False),
         ("throttled_zero", "invalid_output", False),
+        ("authentication_nonzero", "unavailable", False),
+        ("throttled_nonzero", "unavailable", False),
         ("quota_nonzero", "quota_exhausted", True),
         ("quota_unconfirmed_zero", "process_unsettled", True),
         ("quota_unconfirmed_nonzero", "process_unsettled", True),
@@ -1089,6 +1091,7 @@ class _ScriptedSession:
         ("completed_zero", None, False),
         ("completed_nonzero", "process_failed", False),
         ("completed_intentional_nonzero", "process_failed", False),
+        ("completed_cleanup_failure", "process_unsettled", False),
         ("receive_cancel", "cancelled", False),
         ("receive_deadline", "timeout", False),
     ],
@@ -1106,16 +1109,20 @@ async def test_muse_authoring_terminal_settlement_and_diagnostics(
     executable = Path(sys.executable).resolve()
     prepared = False
     cleaned = False
+    prepared_home = None
     original_prepare = MuseAuthoringHome.prepare
     original_cleanup = MuseAuthoringHome.cleanup
 
     def prepare(_self, _prompt, _schema):
-        nonlocal prepared
+        nonlocal prepared, prepared_home
         original_prepare(_self, _prompt, _schema)
         prepared = True
+        prepared_home = _self
 
     def cleanup(_self):
         nonlocal cleaned
+        if case == "completed_cleanup_failure":
+            raise PermissionError("private home locked")
         original_cleanup(_self)
         cleaned = True
 
@@ -1126,7 +1133,9 @@ async def test_muse_authoring_terminal_settlement_and_diagnostics(
     completed = case.startswith("completed_")
     reason = {
         "authentication_zero": "API error 401: authentication required",
+        "authentication_nonzero": "API error 401: authentication required",
         "throttled_zero": "API error 429: rate limit per minute",
+        "throttled_nonzero": "API error 429: rate limit per minute",
     }.get(case, "API error 403: Weekly usage limit reached. Resets in 1h. (quota_exhausted)")
     root_id, session_id = str(uuid4()), str(uuid4())
     common = {
@@ -1227,14 +1236,17 @@ async def test_muse_authoring_terminal_settlement_and_diagnostics(
     assert (result.quota_reset_at is not None) is expected_quota
     assert session.settled
     assert cleaned is (expected_failure != "process_unsettled")
+    if case == "completed_cleanup_failure":
+        assert prepared_home is not None and prepared_home._identity is not None
+        original_cleanup(prepared_home)
     if "diagnostic_" not in case:
         assert ("settlement_started", {"operation": "process_settlement"}) in lifecycle.diagnostics
         if completed:
             assert ("proposal_received", {}) in lifecycle.diagnostics
         elif not case.startswith("receive_"):
-            failure = {"authentication_zero": "authentication", "throttled_zero": "throttled"}.get(
-                case, "quota_exhausted"
-            )
+            # Authoring diagnostics use the durable failure vocabulary:
+            # authentication/throttled normalize to unavailable (F2).
+            failure = "unavailable" if case.startswith(("authentication", "throttled")) else "quota_exhausted"
             assert ("provider_error", {"operation": "provider_receive", "failure": failure}) in lifecycle.diagnostics
 
 
@@ -2513,3 +2525,39 @@ async def test_authoring_tools_never_forward_reader_errors_or_dispatch_writes(
         await tools.call("two", "write_file", {"path": "README.md"})
     with pytest.raises(ProtocolError, match="budget"):
         await tools.call("two", "read_file", {"path": "README.md"})
+
+
+@pytest.mark.asyncio
+async def test_muse_authoring_refused_under_verified_trust_before_launch(
+    tmp_path: Path,
+) -> None:
+    """F4: verified mode refuses Muse task adapters, so authoring must refuse too."""
+    executable = Path(sys.executable).resolve()
+    installation = MuseInstallationSpec(
+        client="muse_code", account="dev-account", model="muse-wonder-1.0",
+        effort="medium", executable=str(executable),
+        executable_digest=hashlib.sha256(executable.read_bytes()).hexdigest(),
+        client_version="1.4.7", cwd=str(tmp_path), home=str(tmp_path),
+        quota={"account": "dev-account", "pool": "allowance"},
+    )
+    starts = 0
+
+    class Supervisor:
+        async def start(self, *_args, **_kwargs):
+            nonlocal starts
+            starts += 1
+            raise AssertionError("verified Muse authoring must not launch a process")
+
+    lifecycle = MockLifecycle()
+    gateway = EpicBrainstormGateway(
+        installation=installation, supervisor=Supervisor(), trust=LocalCliTrust.VERIFIED,
+    )
+    result = await gateway.execute(
+        _make_snapshot(), (),
+        BrainstormReadOnlyTools(RepositoryReader(root=str(tmp_path), secret_paths=())),
+        cancelled=lambda: asyncio.sleep(0, result=False), lifecycle=lifecycle,
+    )
+    assert result.failure == "unavailable"
+    assert result.proposal is None
+    assert starts == 0
+    assert lifecycle.results == []

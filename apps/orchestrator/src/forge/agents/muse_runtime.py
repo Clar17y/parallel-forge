@@ -28,6 +28,7 @@ from forge.agents.client_process import (
 )
 from forge.agents.codex_gateway import ToolBroker
 from forge.agents.local_cli_mcp import LocalCliMcp
+from forge.agents.muse_approval import permission_hook_settings
 from forge.agents.runtime_factory import RouteUnavailable
 from forge.agents.subscription_protocol import (
     ProtocolError,
@@ -132,7 +133,20 @@ def muse_launch_spec(
         environment[key] = value
         forwarded[key] = "${" + key + "}"
     server_config["env"] = forwarded
-    native, digest = resolve_muse_executable(installation.executable)
+    native, digest = resolve_muse_executable(
+        installation.configured_executable or installation.executable
+    )
+    hooks: dict[str, object] = {}
+    if tools:
+        info = home.path.lstat()
+        if (
+            home._identity != (info.st_dev, info.st_ino)
+            or home.path.resolve(strict=True) != home.path
+        ):
+            raise OSError("Muse private home changed before hook setup")
+        hooks = permission_hook_settings(
+            home.path / "approval-policy.json", home.path, mcp_name, tools,
+        )
     command = (
         native, *installation.script, "exec", "--json",
         "--prompt-file", str(home._prompt_file), "--output-schema", str(home._schema_file),
@@ -140,8 +154,9 @@ def muse_launch_spec(
         "--reasoning-effort", "max" if installation.effort == "maximum" else installation.effort,
         "--max-model-steps", str(installation.max_model_steps),
         "--disable-shell", "--disable-write", "--disable-web-tools",
+        "--approval-mode", "on-request", "--approval-judge", "off",
         "--no-foreign-personal-context", "--no-session-log", "--disable-reminders",
-        "-c", "hooks={}",
+        "-c", "hooks=" + json.dumps(hooks, separators=(",", ":")),
         "-c", "mcp_servers." + mcp_name + "=" + json.dumps(server_config, separators=(",", ":")),
         "-c", "run.toolset=" + json.dumps(["mcp__" + mcp_name + "__" + name for name in tools]),
     )
@@ -232,6 +247,7 @@ class MuseInstallation:
     script: tuple[str, ...] = ()
     duration_seconds: float = 300
     max_model_steps: int = 100
+    configured_executable: str | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -248,6 +264,8 @@ class MuseInstallation:
             or self.duration_seconds <= 0
             or type(self.max_model_steps) is not int
             or self.max_model_steps <= 0
+            or (self.configured_executable is not None
+                and not Path(self.configured_executable).is_absolute())
         ):
             raise ValueError("invalid Muse installation")
         object.__setattr__(self, "cwd", str(Path(self.cwd).resolve(strict=True)))
@@ -263,6 +281,21 @@ def _route(installation: MuseInstallation) -> RouteSpec:
         auth_mode=AuthMode.SUBSCRIPTION,
         billing_mode=BillingMode.ALLOWANCE_ONLY,
     )
+
+
+def _cleanup_home(path: Path, identity: tuple[int, int] | None, changed: str) -> None:
+    """Delete a prepared home visibly; raise (retaining retry) on any failure."""
+    if identity is None:
+        return
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return  # already removed: the deletion goal is met
+    if path.resolve(strict=True) != path or (info.st_dev, info.st_ino) != identity:
+        raise OSError(changed)
+    shutil.rmtree(path)
+    if path.exists():
+        raise OSError("Muse private home deletion incomplete")
 
 
 class MuseAttemptHome:
@@ -320,15 +353,7 @@ class MuseAttemptHome:
         return _muse_environment(self.installation)
 
     def cleanup(self) -> None:
-        if self._identity is None:
-            return
-        info = self.path.lstat()
-        if (
-            self.path.resolve(strict=True) != self.path
-            or (info.st_dev, info.st_ino) != self._identity
-        ):
-            raise OSError("Muse attempt directory changed")
-        shutil.rmtree(self.path, ignore_errors=True)
+        _cleanup_home(self.path, self._identity, "Muse attempt directory changed")
         self._identity = None
 
 
@@ -370,15 +395,7 @@ class MuseAuthoringHome:
         return _muse_environment(self.installation)
 
     def cleanup(self) -> None:
-        if self._identity is None:
-            return
-        info = self.path.lstat()
-        if (
-            self.path.resolve(strict=True) != self.path
-            or (info.st_dev, info.st_ino) != self._identity
-        ):
-            raise OSError("Muse authoring directory changed")
-        shutil.rmtree(self.path, ignore_errors=True)
+        _cleanup_home(self.path, self._identity, "Muse authoring directory changed")
         self._identity = None
 
 

@@ -54,6 +54,7 @@ from forge.agents.muse_runtime import (
     MuseAuthoringHome,
     MuseInstallation,
     muse_launch_spec,
+    resolve_muse_executable,
 )
 from forge.agents.subscription_protocol import (
     ProtocolError,
@@ -218,7 +219,22 @@ class EpicBrainstormGateway:
             return BrainstormGatewayResult(proposal=None, telemetry=None, failure="cancelled")
         installation = self.installation
         assert installation is not None
-        actual_digest = stable_executable_digest(installation.executable)
+        if isinstance(installation, MuseInstallationSpec) and self.trust is LocalCliTrust.VERIFIED:
+            # Verified mode admits no Muse task adapter; authoring must not
+            # launch one either (checked before any supervisor/MCP start).
+            return BrainstormGatewayResult(proposal=None, telemetry=None, failure="unavailable")
+        muse_native: tuple[str, str] | None = None
+        actual_digest: str | None
+        if isinstance(installation, MuseInstallationSpec):
+            try:
+                muse_native = resolve_muse_executable(installation.executable)
+            except (OSError, ValueError):
+                return BrainstormGatewayResult(
+                    proposal=None, telemetry=None, failure="unavailable"
+                )
+            actual_digest = muse_native[1]
+        else:
+            actual_digest = stable_executable_digest(installation.executable)
         if actual_digest is None or (
             self.trust is LocalCliTrust.VERIFIED
             and not hmac.compare_digest(actual_digest, installation.executable_digest)
@@ -432,8 +448,10 @@ class EpicBrainstormGateway:
                 )
             elif isinstance(installation, MuseInstallationSpec):
                 use_bridge = True
+                assert muse_native is not None
                 muse_runtime = MuseInstallation(
-                    executable=installation.executable,
+                    executable=muse_native[0],
+                    configured_executable=installation.executable,
                     cwd=installation.cwd,
                     home=installation.home,
                     model=installation.model,
