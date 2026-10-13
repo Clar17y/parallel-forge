@@ -251,6 +251,48 @@ test('a superseded search marker does not swallow a later history visit to its v
   expect(input).toHaveValue('foo');
 });
 
+test('issuing the same URL twice consumes the latest entry when it finally lands', async () => {
+  mockRunsApi();
+  mockReplace.mockImplementation(() => {}); // records issuances; commits are simulated by hand
+  const { rerender } = render(<RunsPage />);
+  fireEvent.click(await screen.findByRole('button', { name: /Failed/ })); // A: bucket only
+  fireEvent.change(screen.getByLabelText('Project'), { target: { value: 'project-1' } }); // B: bucket + project
+  const projectUrl = String(mockReplace.mock.calls.at(-1)?.[0]);
+  fireEvent.change(screen.getByLabelText('Project'), { target: { value: '' } }); // A again
+  window.history.replaceState(null, '', '/runs?bucket=failed');
+  rerender(<RunsPage />); // only the final A navigation ever lands
+  window.history.replaceState(null, '', projectUrl);
+  rerender(<RunsPage />); // external visit to B: not a stale self-issued entry
+  fireEvent.change(screen.getByLabelText('Attention'), { target: { value: 'true' } });
+  const url = String(mockReplace.mock.calls.at(-1)?.[0]);
+  const params = new URLSearchParams(url.split('?')[1]);
+  expect(params.get('bucket')).toBe('failed');
+  expect(params.get('project_id')).toBe('project-1'); // composes on B, not the retired A chain
+  expect(params.get('attention')).toBe('true');
+});
+
+test('returning to an earlier search value consumes its latest marker when it lands', async () => {
+  mockRunsApi();
+  mockReplace.mockImplementation(() => {}); // records issuances; commits are simulated by hand
+  const { rerender } = render(<RunsPage />);
+  const user = userEvent.setup();
+  const input = await screen.findByRole('searchbox', { name: 'Search runs' });
+  const issuedWith = (value: string) => mockReplace.mock.calls
+    .filter(call => new URLSearchParams(String(call[0]).split('?')[1]).get('q') === value).length;
+  await user.type(input, 'foo');
+  await waitFor(() => expect(issuedWith('foo')).toBe(1), { timeout: 3000 });
+  await user.type(input, 'b');
+  await waitFor(() => expect(issuedWith('foob')).toBe(1), { timeout: 3000 });
+  fireEvent.change(input, { target: { value: 'foo' } }); // back to the first value
+  await waitFor(() => expect(issuedWith('foo')).toBe(2), { timeout: 3000 });
+  window.history.replaceState(null, '', '/runs?q=foo');
+  rerender(<RunsPage />); // only the final foo navigation ever lands
+  expect(input).toHaveValue('foo');
+  window.history.replaceState(null, '', '/runs?q=foob');
+  rerender(<RunsPage />); // external visit to the superseded middle value must restore it
+  expect(input).toHaveValue('foob');
+});
+
 test('typing in search updates the URL query after a short debounce', async () => {
   mockRunsApi();
   render(<RunsPage />);

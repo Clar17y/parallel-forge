@@ -36,12 +36,15 @@ function RunsPageContent() {
   // superseded entry before it retire while newer entries stay pending, so
   // an intermediate commit never drops a newer patch; a committed URL this
   // page never issued is external navigation and retires the whole chain.
+  // A repeated string matches its latest issuance: any landing in between
+  // would have been observed (and retired entries) before it could be
+  // issued again, so an observed repeat is the final coalesced navigation.
   const committedSearch = searchParams.toString();
   const [issuedSearches, setIssuedSearches] = useState<string[]>([]);
   const [syncedSearch, setSyncedSearch] = useState(committedSearch);
   if (committedSearch !== syncedSearch) {
     setSyncedSearch(committedSearch);
-    const issuedAt = issuedSearches.indexOf(committedSearch);
+    const issuedAt = issuedSearches.lastIndexOf(committedSearch);
     if (issuedAt >= 0) setIssuedSearches(issuedSearches.slice(issuedAt + 1));
     else if (issuedSearches.length) setIssuedSearches([]);
   }
@@ -69,12 +72,13 @@ function RunsPageContent() {
   // landing retires its marker and every superseded marker before it (their
   // navigations never committed), and an external landing retires them all,
   // so returning through history to any of those values later counts as
-  // external again.
+  // external again. Repeated values match their latest marker, as with the
+  // issued-search chain above.
   const [syncedQuery, setSyncedQuery] = useState(queryText);
   const [issuedQueries, setIssuedQueries] = useState<string[]>([]);
   if (queryText !== syncedQuery) {
     setSyncedQuery(queryText);
-    const issuedAt = issuedQueries.indexOf(queryText);
+    const issuedAt = issuedQueries.lastIndexOf(queryText);
     if (issuedAt >= 0) setIssuedQueries(issuedQueries.slice(issuedAt + 1));
     else {
       if (issuedQueries.length) setIssuedQueries([]);
