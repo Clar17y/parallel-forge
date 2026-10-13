@@ -22,3 +22,10 @@ test("read-only evaluations sit under Inspect, not the action-oriented Configure
   expect(configure.queryByRole('link', { name: 'Evaluations' })).not.toBeInTheDocument();
   expect(configure.getByRole('link', { name: 'Settings' })).toBeInTheDocument();
 });
+test("read-only tool permissions also sit under Inspect", () => {
+  render(<Navigation />);
+  const inspect = within(screen.getByRole('region', { name: 'Inspect' }));
+  expect(inspect.getByRole('link', { name: 'Tool permissions' })).toHaveAttribute('href', '/tools');
+  const configure = within(screen.getByRole('region', { name: 'Configure' }));
+  expect(configure.queryByRole('link', { name: 'Tool permissions' })).not.toBeInTheDocument();
+});
