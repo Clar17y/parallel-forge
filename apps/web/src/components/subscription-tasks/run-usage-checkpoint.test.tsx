@@ -3,6 +3,7 @@ import { cleanup, render, screen, waitFor, within } from '@testing-library/react
 import userEvent from '@testing-library/user-event';
 import { RunUsageCheckpoint } from './run-usage-checkpoint';
 import type { components } from '@/lib/api/schema';
+import { parseExactJson, stringifyExactJson } from '@/lib/api/exact-integer';
 
 const binding = {
   subject: { project_id: 'project-1', kind: 'run', subject_id: 'run-1', schema_version: 1 },
@@ -30,6 +31,172 @@ const report: components['schemas']['UsageReport'] = {
 };
 const response: components['schemas']['TaskUsageCheckpointResponse'] = { checkpoint, report };
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+const exactOwnerJson = (value: unknown) => stringifyExactJson(value, new Set(['version', 'revision', 'result_version']));
+const hasExactToken = (body: string, field: string, digits: string) =>
+  expect(body).toMatch(new RegExp(`"${field}":${digits}(?=[,}])`));
+
+test('replays a high policy command after uncertain response and newer checkpoint without changing body or key', async () => {
+  const original = '9007199254740993';
+  const receiptVersion = '9007199254740994';
+  const currentVersion = '9007199254740995';
+  const policyRevision = '9007199254740992';
+  const requestedRevision = '9007199254740993';
+  const highPolicy = { ...retainedPolicy, revision: policyRevision,
+    hard_token_cap: '9223372036854775807', manual_estimate_tokens: '9007199254740992' };
+  let visible = { ...response, checkpoint: { ...checkpoint, version: original } };
+  const posts: { body: string; key: string | null }[] = [];
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    if (init?.method === 'POST') {
+      posts.push({ body: String(init.body), key: new Headers(init.headers).get('Idempotency-Key') });
+      if (posts.length === 1) throw new TypeError('response lost');
+      return new Response(exactOwnerJson({ receipt: { checkpoint_id: checkpoint.checkpoint_id,
+        action: 'set_policy', state: 'paused', result_version: receiptVersion, replayed: true },
+        checkpoint: { ...checkpoint, version: currentVersion }, report }), { status: 200 });
+    }
+    return new Response(exactOwnerJson(String(input).endsWith('/monitoring-policy') ? highPolicy : visible), { status: 200 });
+  });
+  const user = userEvent.setup();
+  render(<RunUsageCheckpoint runId="run-1" runAllowsExecution runIsTerminal={false} quotaBlocked={false} manualPause={false} />);
+  await user.click(await screen.findByRole('button', { name: 'Change monitoring settings' }));
+  await user.click(screen.getByRole('button', { name: 'Save monitoring revision' }));
+  await screen.findByRole('button', { name: 'Retry same request' });
+  visible = { ...visible, checkpoint: { ...checkpoint, version: currentVersion } };
+  await user.click(screen.getByRole('button', { name: 'Refresh monitoring' }));
+  await screen.findByText(/version 9,007,199,254,740,995/);
+  await user.click(screen.getByRole('button', { name: 'Retry same request' }));
+  expect(await screen.findByText(/Monitoring policy revision recorded/)).toBeVisible();
+  expect(screen.queryByRole('button', { name: 'Retry same request' })).toBeNull();
+  expect(posts).toHaveLength(2);
+  expect(posts[1]).toEqual(posts[0]);
+  expect(posts[0].key).toBe(JSON.parse(posts[0].body).idempotency_key);
+  hasExactToken(posts[0].body, 'expected_version', original);
+  hasExactToken(posts[0].body, 'revision', requestedRevision);
+  hasExactToken(posts[0].body, 'hard_token_cap', '9223372036854775807');
+  hasExactToken(posts[0].body, 'manual_estimate_tokens', '9007199254740992');
+});
+
+test('clears high-version 409 binding and submits a fresh exact request/key', async () => {
+  const first = '9007199254740992';
+  const current = '9007199254740993';
+  const resultVersion = '9007199254740994';
+  let visible = { ...response, checkpoint: { ...checkpoint, version: first } };
+  const posts: { body: string; key: string | null }[] = [];
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
+    if (init?.method === 'POST') {
+      posts.push({ body: String(init.body), key: new Headers(init.headers).get('Idempotency-Key') });
+      if (posts.length === 1) return new Response('{"detail":"stale-project-policy"}', { status: 409 });
+      return new Response(exactOwnerJson({ receipt: { checkpoint_id: checkpoint.checkpoint_id,
+        action: 'continue', state: 'resumed', result_version: resultVersion },
+        checkpoint: { ...checkpoint, state: 'resumed', version: resultVersion }, report }), { status: 200 });
+    }
+    return new Response(exactOwnerJson(visible), { status: 200 });
+  });
+  const user = userEvent.setup();
+  render(<RunUsageCheckpoint runId="run-1" runAllowsExecution runIsTerminal={false} quotaBlocked={false} manualPause={false} />);
+  await user.click(await screen.findByRole('button', { name: 'Continue without usage pauses' }));
+  expect(await screen.findByText(/checkpoint changed/i)).toBeVisible();
+  expect(screen.queryByRole('button', { name: 'Retry same request' })).toBeNull();
+  visible = { ...visible, checkpoint: { ...checkpoint, version: current } };
+  await user.click(screen.getByRole('button', { name: 'Refresh monitoring' }));
+  await screen.findByText(/version 9,007,199,254,740,993/);
+  await user.click(screen.getByRole('button', { name: 'Continue without usage pauses' }));
+  expect(await screen.findByText(/Continue recorded/)).toBeVisible();
+  expect(posts).toHaveLength(2);
+  expect(posts[0].key).not.toBe(posts[1].key);
+  hasExactToken(posts[0].body, 'expected_version', first);
+  hasExactToken(posts[1].body, 'expected_version', current);
+  expect(posts[1].key).toBe(JSON.parse(posts[1].body).idempotency_key);
+});
+
+test('sends high next-checkpoint mode and accepts exact result version', async () => {
+  const expected = '9007199254740992';
+  const resultVersion = '9007199254740993';
+  const posts: string[] = [];
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
+    if (init?.method === 'POST') {
+      posts.push(String(init.body));
+      return new Response(exactOwnerJson({ receipt: { checkpoint_id: checkpoint.checkpoint_id,
+        action: 'continue', state: 'resumed', result_version: resultVersion },
+        checkpoint: { ...checkpoint, state: 'resumed', version: resultVersion }, report }), { status: 200 });
+    }
+    return new Response(exactOwnerJson({ ...response, checkpoint: { ...checkpoint, version: expected } }), { status: 200 });
+  });
+  render(<RunUsageCheckpoint runId="run-1" runAllowsExecution runIsTerminal={false} quotaBlocked={false} manualPause={false} />);
+  await userEvent.setup().click(await screen.findByRole('button', { name: 'Continue to next checkpoint' }));
+  expect(await screen.findByText(/Continue recorded/)).toBeVisible();
+  expect(posts).toHaveLength(1);
+  expect(JSON.parse(posts[0]).continue_mode).toBe('next_checkpoint');
+  hasExactToken(posts[0], 'expected_version', expected);
+});
+
+test('keeps exact MAX measured usage visible but refuses a next threshold above signed64', async () => {
+  const fetcher = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(exactOwnerJson({ ...response,
+    report: { ...report, input_tokens: '9223372036854775807', output_tokens: 0,
+      baseline: { ...report.baseline, reference_tokens: null } } }), { status: 200 }));
+  render(<RunUsageCheckpoint runId="run-1" runAllowsExecution runIsTerminal={false} quotaBlocked={false} manualPause={false} />);
+  const region = await screen.findByRole('region', { name: 'Run usage checkpoint' });
+  expect(region).toHaveTextContent('9,223,372,036,854,775,807');
+  expect(within(region).getByRole('button', { name: 'Continue to next checkpoint' })).toBeDisabled();
+  expect(within(region).getByRole('button', { name: 'Continue without usage pauses' })).toBeEnabled();
+  expect(region).toHaveTextContent(/next checkpoint.*signed 64-bit/i);
+  expect(fetcher.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0);
+});
+
+test.each([
+  ['9223372036854775806', 0, null, 'complete', true],
+  ['9223372036854775787', 0, 20, 'complete', true],
+  ['9223372036854775788', 0, 20, 'complete', false],
+  ['9223372036854775805', 0, 1.1, 'complete', true],
+  ['9223372036854775806', 0, 1.1, 'complete', false],
+  ['9223372036854775806', null, null, 'lower_bound', true],
+] as const)('run next headroom combines %s input, %s output, frozen %s, %s: eligible %s',
+  async (input, output, reference, completeness, eligible) => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(exactOwnerJson({ ...response,
+      report: { ...report, input_tokens: input, output_tokens: output, completeness,
+        baseline: { ...report.baseline, reference_tokens: reference } } }), { status: 200 }));
+    render(<RunUsageCheckpoint runId="run-1" runAllowsExecution runIsTerminal={false} quotaBlocked={false} manualPause={false} />);
+    const region = await screen.findByRole('region', { name: 'Run usage checkpoint' });
+    const next = within(region).getByRole('button', { name: 'Continue to next checkpoint' });
+    if (eligible) expect(next).toBeEnabled(); else expect(next).toBeDisabled();
+    expect(within(region).getByRole('button', { name: 'Continue without usage pauses' })).toBeEnabled();
+  });
+
+test('continues from an exact high checkpoint version and accepts its numeric durable receipt', async () => {
+  const high = '9007199254740993';
+  const next = '9007199254740994';
+  const current = JSON.stringify({ ...response, checkpoint: { ...checkpoint, version: high } }).replace(`"version":"${high}"`, `"version":${high}`);
+  const completed = JSON.stringify({ receipt: { checkpoint_id: checkpoint.checkpoint_id, action: 'continue', state: 'resumed', result_version: next },
+    checkpoint: { ...checkpoint, state: 'resumed', version: next }, report }).replace(`"result_version":"${next}"`, `"result_version":${next}`).replace(`"version":"${next}"`, `"version":${next}`);
+  let sent = '';
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
+    if ((init?.method ?? 'GET') === 'POST') { sent = String(init?.body); return new Response(completed, { status: 200 }); }
+    return new Response(current, { status: 200 });
+  });
+  render(<RunUsageCheckpoint runId="run-1" runAllowsExecution runIsTerminal={false} quotaBlocked={false} manualPause={false} />);
+  await userEvent.setup().click(await screen.findByRole('button', { name: 'Continue without usage pauses' }));
+  hasExactToken(sent, 'expected_version', high);
+  expect(await screen.findByText(/Continue recorded/)).toBeVisible();
+  expect(screen.queryByRole('button', { name: 'Retry same request' })).toBeNull();
+});
+
+test('disables owner actions when checkpoint version cannot increment', async () => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify({ ...response,
+    checkpoint: { ...checkpoint, version: '9223372036854775807' } }), { status: 200 }));
+  render(<RunUsageCheckpoint runId="run-1" runAllowsExecution runIsTerminal={false} quotaBlocked={false} manualPause={false} />);
+  expect(await screen.findByRole('button', { name: 'Continue without usage pauses' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'Stop run' })).toBeDisabled();
+  expect(screen.getByText(/version cannot be incremented/i)).toBeInTheDocument();
+});
+
+test('explains a monitoring revision at the terminal signed64 version', async () => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async input => new Response(JSON.stringify(
+    String(input).endsWith('/monitoring-policy') ? { ...retainedPolicy, revision: '9223372036854775807' } : response
+  ), { status: 200 }));
+  render(<RunUsageCheckpoint runId="run-1" runAllowsExecution runIsTerminal={false} quotaBlocked={false} manualPause={false} />);
+  await userEvent.setup().click(await screen.findByRole('button', { name: 'Change monitoring settings' }));
+  expect(await screen.findByText(/Monitoring revision cannot be incremented/i)).toBeVisible();
+  expect(screen.getByRole('button', { name: 'Save monitoring revision' })).toBeDisabled();
+});
 
 test('renders settled checkpoint and honest usage, baseline and unknown context', async () => {
   const unknownSource = { binding, phase: 'implementation', role: 'primary', delegated: null,
@@ -204,7 +371,7 @@ test.each(['manual_estimate_tokens', 'hard_token_cap', 'hard_context_cap'] as co
         return new Response(JSON.stringify({ receipt: { checkpoint_id: checkpoint.checkpoint_id, action: 'set_policy', state: 'paused', result_version: 3 }, checkpoint: { ...checkpoint, version: 3 }, report }));
       }
       return new Response(JSON.stringify(String(input).includes('/monitoring-policy')
-        ? { ...retainedPolicy, [field]: Number.MAX_SAFE_INTEGER + 1 } : response));
+        ? { ...retainedPolicy, [field]: '9223372036854775808' } : response));
     });
     const user = userEvent.setup();
     render(<RunUsageCheckpoint runId="run-1" runAllowsExecution runIsTerminal={false} quotaBlocked={false} manualPause={false} />);
@@ -441,4 +608,75 @@ test('run remount cleans up pending uncertain retry state', async () => {
   await screen.findByRole('region', { name: 'Run usage checkpoint' });
   expect(screen.queryByRole('button', { name: 'Retry same request' })).toBeNull();
   expect(postCount).toBe(1);
+});
+
+test('enables continue to next checkpoint with exact-string token dimensions > MAX_SAFE', async () => {
+  const largeReport = {
+    ...response,
+    report: {
+      ...report,
+      input_tokens: '9007199254740992',
+      output_tokens: '9007199254740993',
+      completeness: 'complete',
+    },
+  };
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify(largeReport), { status: 200 }));
+  render(<RunUsageCheckpoint runId="run-1" runAllowsExecution runIsTerminal={false} quotaBlocked={false} manualPause={false} />);
+  const region = await screen.findByRole('region', { name: 'Run usage checkpoint' });
+  expect(within(region).getByRole('button', { name: 'Continue to next checkpoint' })).toBeEnabled();
+});
+
+test('disables continue to next checkpoint when two dimensions exceed int64 boundary sum', async () => {
+  const overflowReport = {
+    ...response,
+    report: {
+      ...report,
+      input_tokens: '9223372036854775800',
+      output_tokens: '100',
+      completeness: 'complete',
+    },
+  };
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify(overflowReport), { status: 200 }));
+  render(<RunUsageCheckpoint runId="run-1" runAllowsExecution runIsTerminal={false} quotaBlocked={false} manualPause={false} />);
+  const region = await screen.findByRole('region', { name: 'Run usage checkpoint' });
+  expect(within(region).getByRole('button', { name: 'Continue to next checkpoint' })).toBeDisabled();
+});
+
+test('preserves exact-string retained policy caps and allows saving revision without precision-loss alert', async () => {
+  let submitted: Record<string, unknown> | null = null;
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    if (init?.method === 'POST') {
+      submitted = parseExactJson(String(init.body)) as Record<string, unknown>;
+      return new Response(JSON.stringify({
+        receipt: { checkpoint_id: checkpoint.checkpoint_id, action: 'set_policy', state: 'paused', result_version: 3 },
+        checkpoint: { ...checkpoint, version: 3 },
+        report,
+      }));
+    }
+    return new Response(JSON.stringify(String(input).includes('/monitoring-policy')
+      ? {
+        ...retainedPolicy,
+        manual_estimate_tokens: '9007199254740992',
+        hard_token_cap: '9223372036854775807',
+        hard_context_cap: null,
+      }
+      : response));
+  });
+  const user = userEvent.setup();
+  render(<RunUsageCheckpoint runId="run-1" runAllowsExecution runIsTerminal={false} quotaBlocked={false} manualPause={false} />);
+  const region = await screen.findByRole('region', { name: 'Run usage checkpoint' });
+  await user.click(within(region).getByRole('button', { name: 'Change monitoring settings' }));
+  expect(screen.queryByText(/exceeds safe browser integer precision/)).toBeNull();
+  const saveBtn = within(region).getByRole('button', { name: 'Save monitoring revision' });
+  expect(saveBtn).toBeEnabled();
+  await user.click(saveBtn);
+  await screen.findByText('Monitoring policy revision recorded.');
+  expect(submitted).toMatchObject({
+    action: 'set_policy',
+    requested_policy: {
+      manual_estimate_tokens: '9007199254740992',
+      hard_token_cap: '9223372036854775807',
+      hard_context_cap: null,
+    },
+  });
 });

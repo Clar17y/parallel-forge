@@ -148,6 +148,37 @@ export interface AuthoringOutcome {
     output_tokens: 'unsettled_or_unknown' | null;
     estimated_api_cost_minor: 'unsettled_or_unknown' | null;
   };
+  diagnostics?: AuthoringDiagnostics | null;
+}
+
+export type AuthoringDiagnosticKind =
+  | 'launch'
+  | 'tool_started'
+  | 'tool_completed'
+  | 'tool_failed'
+  | 'provider_wait'
+  | 'provider_retry'
+  | 'provider_error'
+  | 'proposal_received'
+  | 'settlement_started'
+  | 'process_settled'
+  | 'attempt_stopped';
+
+export interface AuthoringDiagnosticEvent {
+  sequence: number;
+  kind: AuthoringDiagnosticKind;
+  occurred_at: string;
+  elapsed_ms: number;
+  operation?: string | null;
+  tool_name?: string | null;
+  duration_ms?: number | null;
+  failure?: string | null;
+}
+
+export interface AuthoringDiagnostics {
+  attempt_id: string;
+  events: AuthoringDiagnosticEvent[];
+  dropped_events: number;
 }
 
 // Delivery / Execution Schemas

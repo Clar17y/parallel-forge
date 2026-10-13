@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { components } from '@/lib/api/schema';
 import { ApiError, api } from '@/lib/api/client';
+import { stringifyExactJson } from '@/lib/api/exact-integer';
 import { ProfileEditor } from './profile-editor';
 import { profileLabel } from './labels';
 import { Button } from '@/components/ui/button';
@@ -41,6 +42,7 @@ export function ProfileList({ profiles, refresh, unverified = false }: { profile
   }, [projectionKey]);
 
   async function save(body: Create | Append) {
+    const requestBody = stringifyExactJson(body);
     const path =
       'expected_current_version' in body
         ? `/subscription-profiles/${selected?.profile_id}/versions`
@@ -56,7 +58,7 @@ export function ProfileList({ profiles, refresh, unverified = false }: { profile
           'Content-Type': 'application/json',
           'Idempotency-Key': idempotencyKey,
         },
-        body: JSON.stringify(body),
+        body: requestBody,
       });
       attempts.current.delete(bodyKey);
       if (!('expected_current_version' in body)) setNewFormVersion(version => version + 1);

@@ -1148,9 +1148,12 @@ class CodexGateway(ObservableSubscriptionGateway):
         *,
         thread_id: str | None = None,
         terminal_error: _TerminalError,
+        early_tool_call: Callable[[Mapping[str, Any], str], Awaitable[None]] | None = None,
+        early_events: list[Mapping[str, Any]] | None = None,
     ) -> Mapping[str, Any]:
         await session.send({"id": ident, "method": method, "params": dict(params)})
         announced: str | None = None
+        terminal_seen = False
         early_errors: list[tuple[Mapping[str, Any], datetime]] = []
         for _ in range(64):
             frame = await session.receive()
@@ -1164,7 +1167,7 @@ class CodexGateway(ObservableSubscriptionGateway):
                 continue
             if terminal_error.account_notification(frame, self._now()):
                 continue
-            if "id" in frame:
+            if "id" in frame and frame.get("method") != "item/tool/call":
                 if (
                     type(frame["id"]) is not int
                     or frame["id"] != ident
@@ -1218,6 +1221,39 @@ class CodexGateway(ObservableSubscriptionGateway):
                 # Bind any early error to the acknowledged turn before treating
                 # it as exhaustion evidence. Retain arrival time across the ack.
                 early_errors.append((value, self._now()))
+                if early_events is not None:
+                    early_events.append(frame)
+            elif (
+                event == "item/tool/call"
+                and method == "turn/start"
+                and early_tool_call is not None
+                and announced is not None
+                and not terminal_seen
+                and value.get("threadId") == thread_id
+                and value.get("turnId") == announced
+                and type(frame.get("id")) in (str, int)
+            ):
+                await early_tool_call(frame, announced)
+            elif (
+                method == "turn/start"
+                and early_events is not None
+                and announced is not None
+                and event in {
+                    "turn/completed", "thread/tokenUsage/updated", "item/started",
+                    "item/completed", "item/agentMessage/delta",
+                    "item/reasoning/summaryTextDelta", "item/reasoning/textDelta",
+                    "item/reasoning/summaryPartAdded",
+                }
+                and value.get("threadId") == thread_id
+                and (
+                    self._id(value.get("turn")) == announced
+                    if event == "turn/completed"
+                    else value.get("turnId") == announced
+                )
+            ):
+                if event == "turn/completed":
+                    terminal_seen = True
+                early_events.append(frame)
             else:
                 raise ProtocolError("unexpected initialization event")
         raise ProtocolError("too many initialization events")

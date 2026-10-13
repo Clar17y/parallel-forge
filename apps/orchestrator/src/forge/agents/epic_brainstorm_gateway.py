@@ -233,13 +233,15 @@ class EpicBrainstormGateway:
         duration = float(job.budget.max_duration_seconds)
         started = time.monotonic()
         usage = AuthoringUsage()
-        tools = AuthoringTools(reader, job.budget.max_tool_calls, usage)
+        diagnostic = getattr(lifecycle, "diagnostic", None)
+        tools = AuthoringTools(reader, job.budget.max_tool_calls, usage, diagnostic=diagnostic)
         session = None
         launch_files: GeminiLaunchDirectory | AntigravityAuthoringHome | MuseAuthoringHome | None = None
         proposal: BrainstormProposal | DecompositionProposal | None = None
         failure: str | None = None
         quota_reset_at: str | None = None
         muse_terminal_failed = False
+        quota_exhausted = False
         interrupted = False
         use_bridge = False
         try:
@@ -470,7 +472,10 @@ class EpicBrainstormGateway:
 
             async with asyncio.timeout(duration):
                 session = await self.supervisor.start(
-                    spec, lifecycle=lifecycle, before_stop=tools.revoke
+                    spec, lifecycle=lifecycle, before_stop=tools.revoke,
+                    settlement_started=lambda: tools.record(
+                        "settlement_started", operation="process_settlement"
+                    ),
                 )
                 proposal = await exchange(session)
         except asyncio.CancelledError:
@@ -484,6 +489,11 @@ class EpicBrainstormGateway:
             failure = error.failure
             quota_reset_at = error.quota_reset_at
             muse_terminal_failed = isinstance(installation, MuseInstallationSpec)
+            quota_exhausted = failure == "quota_exhausted"
+            try:
+                await tools.record("provider_error", operation="provider_receive", failure=failure)
+            except asyncio.CancelledError:
+                interrupted = True
         except ProtocolError, ClientProcessError, ValueError, TypeError, KeyError:
             failure = "invalid_output"
         except Exception:  # noqa: BLE001 - provider and repository errors stay private
@@ -491,7 +501,7 @@ class EpicBrainstormGateway:
         finally:
 
             async def settle() -> None:
-                nonlocal failure, quota_reset_at
+                nonlocal failure, quota_reset_at, quota_exhausted
                 cleanup_failed = False
                 try:
                     await tools.revoke()
@@ -513,13 +523,20 @@ class EpicBrainstormGateway:
                         if not receipt.stop_confirmed:
                             cleanup_failed = True
                         elif proposal is not None and (
-                            receipt.return_code != 0
+                            (
+                                receipt.return_code != 0
+                                and (
+                                    isinstance(installation, MuseInstallationSpec)
+                                    or not receipt.intentional_completed_stop
+                                )
+                            )
                             or receipt.outcome not in {"exited", "completed"}
                         ):
                             failure = "process_failed"
                         elif muse_terminal_failed and receipt.return_code == 0:
                             failure = "invalid_output"
                             quota_reset_at = None
+                            quota_exhausted = False
                     except asyncio.CancelledError, Exception:  # noqa: BLE001 - uncertain stop
                         cleanup_failed = True
                 if cleanup_failed:
@@ -557,7 +574,8 @@ class EpicBrainstormGateway:
         ):
             failure, proposal = "budget_exhausted", None
         return BrainstormGatewayResult(
-            proposal=proposal, telemetry=telemetry, failure=failure, quota_reset_at=quota_reset_at
+            proposal=proposal, telemetry=telemetry, failure=failure,
+            quota_reset_at=quota_reset_at, quota_exhausted=quota_exhausted,
         )
 
     async def _execute_inner(

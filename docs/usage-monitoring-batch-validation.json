@@ -1038,5 +1038,24 @@
       "human_code_owner_review": "pending",
       "merged": false
     }
+  },
+  "final_assembly_followup": {
+    "recorded_at_utc": "2026-10-12T17:58:08.384225+00:00",
+    "validation_record": "docs/usage-monitoring-final-validation.json",
+    "merged_deliveries_preserved": [
+      107,
+      108,
+      109,
+      110
+    ],
+    "closed_adapter_issues": [
+      98,
+      99
+    ],
+    "merged_issue_reconciliation": [
+      "https://github.com/Clar17y/parallel-forge/issues/98#issuecomment-6129558765",
+      "https://github.com/Clar17y/parallel-forge/issues/99#issuecomment-6129559637"
+    ],
+    "historical_scope": "Existing source snapshots, failed receipts, counts and limitations retain their original meaning. Later assembly proof is recorded separately; historical broad runs are not a final whole-backend pass."
   }
 }

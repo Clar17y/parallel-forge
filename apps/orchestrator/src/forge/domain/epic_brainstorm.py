@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from typing import Literal
 from uuid import UUID, uuid4
 
@@ -388,6 +389,41 @@ class BrainstormHeldReasons(_Closed):
     estimated_api_cost_minor: Literal["unsettled_or_unknown"] | None = None
 
 
+class BrainstormDiagnosticEvent(_Closed):
+    sequence: int = Field(ge=0, strict=True)
+    kind: Literal[
+        "launch", "tool_started", "tool_completed", "tool_failed", "provider_wait",
+        "provider_retry", "provider_error", "proposal_received", "settlement_started",
+        "process_settled", "attempt_stopped",
+    ]
+    occurred_at: datetime
+    elapsed_ms: int = Field(ge=0, strict=True)
+    operation: Literal[
+        "repository_read", "provider_receive", "process_settlement", "client_initialize",
+        "account_read", "model_list", "config_read", "thread_start", "turn_start",
+        "tool_reply",
+    ] | None = None
+    tool_name: Literal["list_files", "read_file", "search", "read_instructions"] | None = None
+    duration_ms: int | None = Field(default=None, ge=0, strict=True)
+    failure: Literal[
+        "unavailable", "timeout", "cancelled", "invalid_output", "quota_exhausted",
+        "process_unsettled", "process_failed", "budget_exhausted", "interrupted",
+    ] | None = None
+
+    @field_validator("occurred_at")
+    @classmethod
+    def utc_occurrence(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("diagnostic occurrence requires UTC")
+        return value.astimezone(UTC)
+
+
+class BrainstormDiagnostics(_Closed):
+    attempt_id: UUID
+    events: tuple[BrainstormDiagnosticEvent, ...] = Field(default=(), max_length=128)
+    dropped_events: int = Field(default=0, ge=0, strict=True)
+
+
 class AuthoringOutcome(_Closed):
     schema_version: Literal[1] = 1
     job_id: UUID
@@ -408,6 +444,7 @@ class AuthoringOutcome(_Closed):
     currency: str | None = Field(default=None, pattern=r"^[A-Z]{3}$", max_length=3)
     unknown_usage_fields: tuple[BrainstormDimension, ...] = Field(default=(), max_length=4)
     held_reasons: BrainstormHeldReasons = Field(default_factory=BrainstormHeldReasons)
+    diagnostics: BrainstormDiagnostics | None = None
 
     @model_validator(mode="after")
     def consistent_unknowns(self) -> AuthoringOutcome:
@@ -428,6 +465,8 @@ __all__ = [
     "AuthoringReceipt",
     "BrainstormAmounts",
     "BrainstormConflict",
+    "BrainstormDiagnosticEvent",
+    "BrainstormDiagnostics",
     "BrainstormEvidence",
     "BrainstormHeldReasons",
     "BrainstormMeasuredUsage",

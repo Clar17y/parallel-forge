@@ -8,6 +8,25 @@ export type SubscriptionModelOption = components['schemas']['SubscriptionModelOp
 export type SubscriptionModelCatalogView = components['schemas']['SubscriptionModelCatalogView'];
 export type SubscriptionModelCatalogPage = components['schemas']['SubscriptionModelCatalogPage'];
 
+// Offline suggestions are advisory; provider reports supply current availability and efforts.
+export const offlineModelSuggestions: Array<SubscriptionModelOption & {
+  provider: string;
+  client: string;
+}> = [
+  {
+    provider: 'openai', client: 'codex_app_server', id: 'gpt-6.1-sol', label: 'GPT-6.1 Sol',
+    efforts: ['low', 'medium', 'high', 'maximum'],
+  },
+  {
+    provider: 'anthropic', client: 'claude_code', id: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5',
+    efforts: [],
+  },
+  {
+    provider: 'anthropic', client: 'claude_code', id: 'claude-haiku-5-5', label: 'Claude Haiku 5.5',
+    efforts: [],
+  },
+];
+
 export const createRoute = (
   provider: string,
   client: string,
@@ -55,7 +74,7 @@ export const offlineRoleSeeds: RoleSeedConfig[] = [
   },
   {
     purpose: 'complex_implementation',
-    preferred: { provider: 'openai', client: 'codex_app_server', model: 'gpt-6-sol', effort: 'medium', family: 'sol' },
+    preferred: { provider: 'openai', client: 'codex_app_server', model: 'gpt-6.1-sol', effort: 'medium', family: 'sol' },
     fallbacks: [],
   },
   {
@@ -67,7 +86,7 @@ export const offlineRoleSeeds: RoleSeedConfig[] = [
   },
   {
     purpose: 'planning',
-    preferred: { provider: 'openai', client: 'codex_app_server', model: 'gpt-6-sol', effort: 'medium', family: 'sol' },
+    preferred: { provider: 'openai', client: 'codex_app_server', model: 'gpt-6.1-sol', effort: 'medium', family: 'sol' },
     fallbacks: [],
   },
   {
@@ -77,12 +96,12 @@ export const offlineRoleSeeds: RoleSeedConfig[] = [
   },
   {
     purpose: 'security',
-    preferred: { provider: 'openai', client: 'codex_app_server', model: 'gpt-6-sol', effort: 'high', family: 'sol' },
+    preferred: { provider: 'openai', client: 'codex_app_server', model: 'gpt-6.1-sol', effort: 'high', family: 'sol' },
     fallbacks: [],
   },
   {
     purpose: 'integration',
-    preferred: { provider: 'openai', client: 'codex_app_server', model: 'gpt-6-sol', effort: 'medium', family: 'sol' },
+    preferred: { provider: 'openai', client: 'codex_app_server', model: 'gpt-6.1-sol', effort: 'medium', family: 'sol' },
     fallbacks: [],
   },
   {

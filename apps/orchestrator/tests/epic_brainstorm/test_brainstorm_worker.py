@@ -6,7 +6,15 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
-from forge.agents.client_process import ClientLaunchSpec, ClientProcessSupervisor, _process_token
+from alembic import command
+from forge.agents.client_process import (
+    ClientLaunchSpec,
+    ClientProcessReceipt,
+    ClientProcessResult,
+    ClientProcessSupervisor,
+    _process_token,
+)
+from forge.agents.epic_brainstorm_protocol import AuthoringTools, AuthoringUsage
 from forge.application.ports.epic_brainstorm import BrainstormGatewayResult, BriefInput
 from forge.application.services.auth import AuthenticatedActor
 from forge.application.services.epic_brainstorm import EpicBrainstormService
@@ -32,6 +40,8 @@ from forge.persistence.models.subscription_quota import (
     SubscriptionQuotaPool,
 )
 from forge.persistence.repositories.epic_brainstorm import PostgresBrainstormRepository
+from forge.tools.epic_brainstorm import BrainstormReadOnlyTools
+from forge.tools.repository import RepositoryReader
 from forge.worker.epic_brainstorm import (
     DurableBrainstormProcessLifecycle,
     EpicBrainstormWorker,
@@ -146,6 +156,197 @@ async def prepared(factory, *, attempts=2, budget=None, repository="example/repo
         key="submit",
     )
     return service, epic_id, project_id, actor, receipt
+
+
+@pytest.mark.asyncio
+async def test_diagnostics_are_bounded_content_free_and_fenced_on_retry(
+    brainstorm_session_factory,
+):
+    service, epic_id, project_id, actor, receipt = await prepared(brainstorm_session_factory)
+    async with brainstorm_session_factory() as session, session.begin():
+        claimed = await PostgresBrainstormRepository(session).claim("diagnostic-worker")
+        assert claimed is not None
+        job, first = claimed
+        first_id, first_fence = first.id, first.fence
+    lifecycle = DurableBrainstormProcessLifecycle(
+        brainstorm_session_factory, first_id, first_fence, "diagnostic-worker"
+    )
+    for _ in range(130):
+        await lifecycle.diagnostic("provider_wait", operation="provider_receive")
+    with pytest.raises(ValueError):
+        await lifecycle.diagnostic("tool_started", tool_name="secret/repository/path")
+    current = await service.observe(epic_id=epic_id, project_id=project_id, job_id=receipt.job_id)
+    assert current.diagnostics is not None
+    assert current.diagnostics.attempt_id == first_id
+    assert len(current.diagnostics.events) == 128
+    assert current.diagnostics.dropped_events == 2
+    assert [event.sequence for event in current.diagnostics.events] == list(range(2, 130))
+    assert "secret/repository/path" not in current.model_dump_json()
+
+    async with brainstorm_session_factory() as session, session.begin():
+        first = await session.get(BrainstormAttemptRow, first_id, with_for_update=True)
+        assert first is not None
+        lease = first.lease_expires_at
+        first.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    await lifecycle.diagnostic("provider_error", failure="timeout")
+    async with brainstorm_session_factory() as session, session.begin():
+        first = await session.get(BrainstormAttemptRow, first_id, with_for_update=True)
+        job = await session.get(BrainstormJobRow, receipt.job_id, with_for_update=True)
+        assert first is not None and job is not None
+        assert first.diagnostics["dropped_events"] == 2
+        first.lease_expires_at = lease
+        job.state = "cancel_requested"
+    await lifecycle.diagnostic("provider_error", failure="cancelled")
+    async with brainstorm_session_factory() as session, session.begin():
+        first = await session.get(BrainstormAttemptRow, first_id, with_for_update=True)
+        job = await session.get(BrainstormJobRow, receipt.job_id, with_for_update=True)
+        assert first is not None and job is not None
+        assert first.diagnostics["dropped_events"] == 2
+        job.state = "running"
+
+    async with brainstorm_session_factory() as session, session.begin():
+        job = await session.get(BrainstormJobRow, receipt.job_id, with_for_update=True)
+        first = await session.get(BrainstormAttemptRow, first_id, with_for_update=True)
+        assert job is not None and first is not None
+        first.process_settled = first.usage_known = True
+        settled_diagnostics = first.diagnostics
+    await lifecycle.diagnostic("settlement_started", operation="process_settlement")
+    async with brainstorm_session_factory() as session, session.begin():
+        job = await session.get(BrainstormJobRow, receipt.job_id, with_for_update=True)
+        first = await session.get(BrainstormAttemptRow, first_id, with_for_update=True)
+        assert job is not None and first is not None
+        assert first.diagnostics == settled_diagnostics
+        first.state = "settled"
+        first.usage = {
+            "duration_ms": 10, "tool_call_count": 0, "input_tokens": 0,
+            "output_tokens": 0, "estimated_api_cost_minor": 0,
+        }
+        job.state, job.failure = "failed", "unavailable"
+        job.version += 1
+    failed = await service.observe(epic_id=epic_id, project_id=project_id, job_id=receipt.job_id)
+    await service.retry(
+        epic_id=epic_id, project_id=project_id, job_id=receipt.job_id,
+        expected_job_version=failed.job_version, actor=actor, key="diagnostic-retry",
+    )
+    async with brainstorm_session_factory() as session, session.begin():
+        claimed = await PostgresBrainstormRepository(session).claim("replacement-worker")
+        assert claimed is not None
+        _, second = claimed
+        second_id = second.id
+    await lifecycle.diagnostic("provider_error", operation="provider_receive", failure="unavailable")
+    replaced = await service.observe(epic_id=epic_id, project_id=project_id, job_id=receipt.job_id)
+    assert replaced.diagnostics is not None
+    assert replaced.diagnostics.attempt_id == second_id
+    assert replaced.diagnostics.events == ()
+    async with brainstorm_session_factory() as session:
+        first = await session.get(BrainstormAttemptRow, first_id)
+        assert first is not None and first.diagnostics["dropped_events"] == 2
+        assert len(first.diagnostics["events"]) == 128
+
+
+@pytest.mark.asyncio
+async def test_delayed_diagnostics_cannot_follow_process_settlement(
+    brainstorm_session_factory, tmp_path,
+):
+    await prepared(brainstorm_session_factory)
+    async with brainstorm_session_factory() as session, session.begin():
+        claimed = await PostgresBrainstormRepository(session).claim("delayed-diagnostic")
+        assert claimed is not None
+        _, attempt = claimed
+        attempt_id, fence = attempt.id, attempt.fence
+    lifecycle = DurableBrainstormProcessLifecycle(
+        brainstorm_session_factory, attempt_id, fence, "delayed-diagnostic"
+    )
+    receipt = ClientProcessReceipt("diagnostic-launch", 123, "scripted", 0.0)
+    result = ClientProcessResult(
+        receipt=receipt, return_code=None, frames=(), stdout_byte_count=0, stderr="",
+        stderr_byte_count=0, stdout_truncated=False, stderr_truncated=False,
+        outcome="unsettled", stop_confirmed=False,
+    )
+    await lifecycle.launch_intent(receipt.launch_id)
+    await lifecycle.started(receipt)
+    await lifecycle.finished(receipt, result)
+    await lifecycle.diagnostic("provider_wait")
+    async with brainstorm_session_factory() as session:
+        stored = await session.get(BrainstormAttemptRow, attempt_id)
+        assert stored is not None and not stored.process_settled
+        assert stored.diagnostics["events"][-1]["kind"] == "provider_wait"
+
+    release = asyncio.Event()
+    cancelled = asyncio.Event()
+    callback = None
+
+    async def delayed(kind: str, **fields: object) -> None:
+        nonlocal callback
+        callback = asyncio.current_task()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            await release.wait()
+        await lifecycle.diagnostic(kind, **fields)
+
+    tools = AuthoringTools(
+        BrainstormReadOnlyTools(RepositoryReader(root=str(tmp_path), secret_paths=())),
+        10, AuthoringUsage(), diagnostic=delayed,
+    )
+    try:
+        await asyncio.wait_for(tools.record("proposal_received"), 1)
+        await asyncio.wait_for(cancelled.wait(), 1)
+        assert callback is not None and not callback.done()
+        await asyncio.wait_for(lifecycle.finished(
+            receipt, replace(result, return_code=0, outcome="exited", stop_confirmed=True),
+        ), 1)
+        async with brainstorm_session_factory() as session:
+            stored = await session.get(BrainstormAttemptRow, attempt_id)
+            assert stored is not None and stored.process_settled
+            settled_diagnostics = stored.diagnostics
+            assert [event["kind"] for event in settled_diagnostics["events"]] == [
+                "launch", "provider_wait", "settlement_started", "process_settled",
+            ]
+    finally:
+        release.set()
+        if callback is not None:
+            await asyncio.wait_for(callback, 1)
+    for kind in (
+        "tool_started", "tool_completed", "tool_failed", "provider_wait",
+        "provider_retry", "provider_error", "proposal_received", "settlement_started",
+    ):
+        await lifecycle.diagnostic(kind)
+    async with brainstorm_session_factory() as session:
+        stored = await session.get(BrainstormAttemptRow, attempt_id)
+        assert stored is not None and stored.state == "admitted"
+        job = await session.get(BrainstormJobRow, stored.job_id)
+        assert job is not None and job.state == "running"
+        assert stored.lease_expires_at > datetime.now(UTC)
+        assert stored.diagnostics == settled_diagnostics
+
+
+@pytest.mark.asyncio
+async def test_diagnostics_migration_downgrades_only_without_retained_events(
+    brainstorm_session_factory, test_database_url, alembic_config_factory,
+):
+    config = alembic_config_factory(test_database_url)
+    await prepared(brainstorm_session_factory)
+    async with brainstorm_session_factory() as session, session.begin():
+        claimed = await PostgresBrainstormRepository(session).claim("migration-worker")
+        assert claimed is not None
+        _, attempt = claimed
+        attempt_id, fence = attempt.id, attempt.fence
+    await asyncio.to_thread(command.downgrade, config, "20261011_0040")
+    await asyncio.to_thread(command.upgrade, config, "20261012_0041")
+    async with brainstorm_session_factory() as session:
+        attempt = await session.get(BrainstormAttemptRow, attempt_id)
+        assert attempt is not None and attempt.diagnostics == {}
+    lifecycle = DurableBrainstormProcessLifecycle(
+        brainstorm_session_factory, attempt_id, fence, "migration-worker"
+    )
+    await lifecycle.diagnostic("provider_wait", operation="provider_receive")
+    with pytest.raises(RuntimeError, match="diagnostics must not be discarded"):
+        await asyncio.to_thread(command.downgrade, config, "20261011_0040")
+    async with brainstorm_session_factory() as session:
+        attempt = await session.get(BrainstormAttemptRow, attempt_id)
+        assert attempt is not None and len(attempt.diagnostics["events"]) == 1
 
 
 @pytest.mark.asyncio
@@ -425,6 +626,8 @@ async def test_restart_adoption_and_stale_draft(brainstorm_session_factory):
     outcome = await service().observe(epic_id=epic_id, project_id=project_id, job_id=receipt.job_id)
     assert outcome.state == "proposed" and outcome.process_settled and outcome.usage_known
     assert outcome.proposal is not None and outcome.proposal_digest == outcome.proposal.digest
+    assert outcome.diagnostics is not None
+    assert outcome.diagnostics.events[-1].kind == "attempt_stopped"
     adopted = await service().adopt(
         epic_id=epic_id,
         project_id=project_id,
@@ -767,8 +970,19 @@ async def test_cancel_before_and_during_invocation_discards_late_proposal(
 
     class SlowGateway:
         async def execute(self, job, turns, reader, *, cancelled, lifecycle):
+            class ProposalLifecycle:
+                async def launch_intent(self, launch_id):
+                    await lifecycle.launch_intent(launch_id)
+
+                async def started(self, receipt):
+                    await lifecycle.started(receipt)
+
+                async def finished(self, receipt, result):
+                    await lifecycle.diagnostic("proposal_received")
+                    await lifecycle.finished(receipt, result)
+
             result = await FakeGateway().execute(
-                job, turns, reader, cancelled=cancelled, lifecycle=lifecycle
+                job, turns, reader, cancelled=cancelled, lifecycle=ProposalLifecycle()
             )
             started.set()
             await released.wait()
@@ -784,6 +998,9 @@ async def test_cancel_before_and_during_invocation_discards_late_proposal(
     operation = asyncio.create_task(worker.run_once())
     await asyncio.wait_for(started.wait(), timeout=5)
     current = await service.observe(epic_id=epic_id, project_id=project_id, job_id=second.job_id)
+    assert current.diagnostics is not None
+    kinds = [event.kind for event in current.diagnostics.events]
+    assert kinds.index("proposal_received") < kinds.index("process_settled")
     await service.cancel(
         epic_id=epic_id,
         project_id=project_id,
@@ -796,6 +1013,9 @@ async def test_cancel_before_and_during_invocation_discards_late_proposal(
     assert await operation == second.job_id
     outcome = await service.observe(epic_id=epic_id, project_id=project_id, job_id=second.job_id)
     assert outcome.state == "cancelled" and outcome.proposal is None and outcome.process_settled
+    assert outcome.diagnostics is not None
+    assert outcome.diagnostics.events[-1].kind == "attempt_stopped"
+    assert outcome.diagnostics.events[-1].failure == "cancelled"
 
 
 @pytest.mark.asyncio
@@ -2805,3 +3025,50 @@ async def test_delayed_real_start_receipt_is_persisted_before_revoked_launch_rej
         assert stored is not None
         assert stored.process_started and stored.process_settled and stored.terminal_proof
         assert stored.process_pid == received[0].pid
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["cancelled", "process_unsettled"])
+@pytest.mark.parametrize("known_reset", [False, True])
+@pytest.mark.parametrize("settled", [False, True])
+async def test_confirmed_quota_evidence_blocks_pool_when_final_failure_differs(
+    brainstorm_session_factory, failure: str, known_reset: bool, settled: bool
+) -> None:
+    service, epic_id, project_id, _, receipt = await prepared(brainstorm_session_factory)
+    reset = datetime.now(UTC) + timedelta(hours=1) if known_reset else None
+
+    class ExhaustedGateway(FakeGateway):
+        async def execute(self, job, turns, reader, *, cancelled, lifecycle):
+            result = await super().execute(
+                job, turns, reader, cancelled=cancelled, lifecycle=lifecycle
+            )
+            return replace(
+                result, proposal=None, failure=failure, quota_exhausted=True,
+                quota_reset_at=reset.isoformat() if reset else None,
+            )
+
+    worker = EpicBrainstormWorker(
+        brainstorm_session_factory,
+        owner="quota-evidence-worker",
+        gateway_factory=lambda _: ExhaustedGateway(finish=settled),
+        reader_factory=lambda _: object(),
+    )
+    assert await worker.run_once() == receipt.job_id
+    outcome = await service.observe(epic_id=epic_id, project_id=project_id, job_id=receipt.job_id)
+    assert outcome.failure == (failure if settled else "process_unsettled")
+    async with brainstorm_session_factory() as session, session.begin():
+        row = await session.get(BrainstormJobRow, receipt.job_id)
+        assert row is not None and row.current_attempt_id is not None
+        repository = PostgresBrainstormRepository(session)
+        pool = await repository.quota_pool(repository.decode_snapshot(row))
+        assert pool.blocked and pool.next_eligible_at is not None
+        assert pool.retry_basis == ("known_reset" if known_reset else "probe_cooldown")
+        if reset is not None:
+            assert pool.next_eligible_at == reset
+        else:
+            assert pool.next_eligible_at > datetime.now(UTC)
+        await session.execute(delete(SubscriptionQuotaObservation).where(
+            SubscriptionQuotaObservation.source_attempt_id == row.current_attempt_id
+        ))
+        pool.blocked = False
+        pool.probe_attempt_id = None

@@ -1,0 +1,1167 @@
+{
+  "schema_version": 1,
+  "repository": "Clar17y/parallel-forge",
+  "epic": 94,
+  "batch_issues": [
+    98,
+    99,
+    103,
+    106
+  ],
+  "status": "Required local acceptance is complete after the C4 headroom repair and its scoped independent review. Latest-head automatic PR/Codex acceptance follows this stable pre-push snapshot and is retained on PR112 and locally.",
+  "feature_complete": "Required local acceptance established; publication acceptance remains separate and merging unauthorized.",
+  "source": {
+    "base": "17552fb2a8529c460d9dca249ff0d931aa1b504a",
+    "parent_head": "7b0954d43073bba638d6aeec7db59601d6b8ba2d",
+    "branch": "codex/usage-monitoring-final",
+    "recorded_at_utc": "2026-10-12T20:47:39.896158+00:00",
+    "code_input_sha256": "46c7178ee12945ecae254d5bf90f5cac50cc24040989a1425250eb3d4844421a",
+    "inputs": [
+      {
+        "path": "apps/orchestrator/tests/task_usage_contract/test_migration.py",
+        "sha256": "991d683601beffa93e8a62df03c34282073fe3c14f6c0997187dd0fc4d81c4b9"
+      },
+      {
+        "path": "apps/web/package.json",
+        "sha256": "f4b3cdf1e90538a74eb71cb300d8e32dc0503ae4f510fc8349950271ccd5af0c"
+      },
+      {
+        "path": "apps/web/scripts/check-api.mjs",
+        "sha256": "5540b28e7a0bc8ec43a6e283d1813395fdbc86d9a57a5ce5fca114f47bf84b2a"
+      },
+      {
+        "path": "apps/web/scripts/generate-api.mjs",
+        "sha256": "0acbacf0d21f93d776dc42b101529d3807c43ee6670d97269e5bae400e1b00a8"
+      },
+      {
+        "path": "apps/web/src/components/epics/authoring-usage-checkpoint.test.tsx",
+        "sha256": "347bddf47610d5cfff9a24bf408dd5bc6a0e979a8237b0ffe21b7b7d45fbd0b4"
+      },
+      {
+        "path": "apps/web/src/components/epics/authoring-usage-checkpoint.tsx",
+        "sha256": "a72cfd8a53f95ee683169797808ee03d0fd3f329072d0a7b07988d227e0623af"
+      },
+      {
+        "path": "apps/web/src/components/epics/epic-budget-panel.test.tsx",
+        "sha256": "720efef6483eab52e9b00bbdebc5f88824ea3e5233a47fbb07642f0ef6e69608"
+      },
+      {
+        "path": "apps/web/src/components/epics/epic-budget-panel.tsx",
+        "sha256": "9541fb4f1af61dce067fb4724209bb46905d92596f31beb356b8a0675ec31793"
+      },
+      {
+        "path": "apps/web/src/components/model-selection/optional-token-cap-input.tsx",
+        "sha256": "b9a3b6706825212518bfb5cd971bc8094648a5cf83642365a2a283f95561ec9b"
+      },
+      {
+        "path": "apps/web/src/components/model-selection/token-budget-slider.tsx",
+        "sha256": "b17a0b1f11bfb33aa2c94672456133f8eb877831249fe263465df042b8c3012f"
+      },
+      {
+        "path": "apps/web/src/components/projects/model-policy.test.tsx",
+        "sha256": "1bf6a2dbd45f975d9550dc6ba30922afbb4058b61b7145378bed243aec9b6d59"
+      },
+      {
+        "path": "apps/web/src/components/projects/model-policy.tsx",
+        "sha256": "d5baffed51a1970880136c2c52e5d5c3542efdf9ff6a292cbcccc42fc03720a3"
+      },
+      {
+        "path": "apps/web/src/components/projects/monitoring-policy-editor.test.tsx",
+        "sha256": "f56fbf081da1ef2ba6d6edb553e178f6989bb234354e5ed1a674c67be05234d9"
+      },
+      {
+        "path": "apps/web/src/components/projects/monitoring-policy-editor.tsx",
+        "sha256": "eeb46d0d672d5fbc7f11d51d13012e87aa630d4da690b250dd38aad792e51419"
+      },
+      {
+        "path": "apps/web/src/components/projects/monitoring-policy-summary.test.tsx",
+        "sha256": "5265d1bc85b6139aa80d6c190d8d3938ae1610769a0617ce22bda6cd7e3465d6"
+      },
+      {
+        "path": "apps/web/src/components/projects/monitoring-policy-summary.tsx",
+        "sha256": "eb11081faf0270f88ccb385af6025a3f207fcc72e64d4bf756996cdb56461ecc"
+      },
+      {
+        "path": "apps/web/src/components/projects/project-form.test.tsx",
+        "sha256": "e89f17471a67e7e9947c36da8f4be6fbf794dc5b8fd578b31d03fb9f3be7de06"
+      },
+      {
+        "path": "apps/web/src/components/projects/project-form.tsx",
+        "sha256": "c9e8503920fbb780620e0266aba640d734aa56fcd4fa334f3cc7d7e5448e338f"
+      },
+      {
+        "path": "apps/web/src/components/subscription-profiles/profile-editor.test.tsx",
+        "sha256": "0e3cba1b677560d094a39753f53a55a8e46508b78e1f94ec33a58af05541921c"
+      },
+      {
+        "path": "apps/web/src/components/subscription-profiles/profile-editor.tsx",
+        "sha256": "e366933731e9f7d68035f747e637b7fcf3e8edfd1d47f8c04a17acdb381a3fa7"
+      },
+      {
+        "path": "apps/web/src/components/subscription-profiles/profile-list.test.tsx",
+        "sha256": "b26276a967972dcd6090770ab1e9e34a402b33800971ff71491c816d3a24ab5f"
+      },
+      {
+        "path": "apps/web/src/components/subscription-profiles/profile-list.tsx",
+        "sha256": "d8739c14fe0cf0a89a7004657206244cd84bf365e16f27f4c491080d9e42c1b1"
+      },
+      {
+        "path": "apps/web/src/components/subscription-tasks/run-usage-checkpoint.test.tsx",
+        "sha256": "e0d1fc30eab28b9c1e65235d90e6d9a405cce9e58ce4445992b4707bade153f0"
+      },
+      {
+        "path": "apps/web/src/components/subscription-tasks/run-usage-checkpoint.tsx",
+        "sha256": "a26960e5016224490da65bcfc047a3d3516a1e97f64a10e7d0a9e723651f46f5"
+      },
+      {
+        "path": "apps/web/src/components/task-usage/historical-usage-report.test.tsx",
+        "sha256": "73a6941d497c922ed1c9abd6a007d7c6f0eee34d2c568f94e22e4df0936d66f7"
+      },
+      {
+        "path": "apps/web/src/components/task-usage/historical-usage-report.tsx",
+        "sha256": "5da869cb4a5af33782a082006b394c733f514a561ff85234d74030d9948c2341"
+      },
+      {
+        "path": "apps/web/src/components/task-usage/owner-version.test.ts",
+        "sha256": "613bb55c7e3540644dd8cfaa54f18af0430e06d5a473a5d7500d196ec4105387"
+      },
+      {
+        "path": "apps/web/src/components/task-usage/owner-version.ts",
+        "sha256": "3a94f712c720ef9b25b109b6dbaccf2d76b0f794ff963614a5bc777deb65e48c"
+      },
+      {
+        "path": "apps/web/src/components/task-usage/retained-policy-integers.test.ts",
+        "sha256": "93f7ab358cff9616a106fa9a6168af92c02c0e9d7916690f23547eefdf894e15"
+      },
+      {
+        "path": "apps/web/src/components/task-usage/retained-policy-integers.ts",
+        "sha256": "2422efe5b93b8579121c2172721748d15eff3271360a428c0e06b1f4e33baff4"
+      },
+      {
+        "path": "apps/web/src/hooks/epics/use-epic-mutations.test.tsx",
+        "sha256": "9dc925954afb28fa7b7bc80b060631b6f0192ba436a1c15836ee719b09c97692"
+      },
+      {
+        "path": "apps/web/src/hooks/epics/use-epic-mutations.ts",
+        "sha256": "433eace9be5b5aca955ece558662e76d6958058df7ad6cffee147eec980a55bc"
+      },
+      {
+        "path": "apps/web/src/lib/api/client.test.ts",
+        "sha256": "ff44a2bfccd2b70358aad1e3d962291d65e2cca3ded1e7067c4ae182464e300d"
+      },
+      {
+        "path": "apps/web/src/lib/api/client.ts",
+        "sha256": "d54ca74f921dff96f52b843644a4412fc3bee146a82e92ac785cd1cf78aa3649"
+      },
+      {
+        "path": "apps/web/src/lib/api/exact-integer.test.ts",
+        "sha256": "5b883592fedfd0b3d92c9eacb7865239ed5fe30680505acab2a2e397fbfb06bd"
+      },
+      {
+        "path": "apps/web/src/lib/api/exact-integer.ts",
+        "sha256": "a6178416f501a8bb59426c60a2cd9a9e80f64203b1e2bf211bd6264367fd5978"
+      },
+      {
+        "path": "apps/web/src/lib/api/monitoring-policy.test.ts",
+        "sha256": "081324237d2271e2ddbab8c9e171be0f5f9b717a3ba667ebca6cc1414e3878a9"
+      },
+      {
+        "path": "apps/web/src/lib/api/monitoring-policy.ts",
+        "sha256": "e4a1e00d00f28dc512aef5644687a235e61a59068416bf8ed1af850a463de5c0"
+      },
+      {
+        "path": "apps/web/src/lib/api/schema.d.ts",
+        "sha256": "4845310d5c82b9693f958e931368394d012ada33a9b55ecb1990c8ef90e679da"
+      },
+      {
+        "path": "tests/acceptance/process_harness.py",
+        "sha256": "90f34a711cf6a29b078181fc79789c2d21417eb66d7fd5750177e19234d223bd"
+      },
+      {
+        "path": "tests/acceptance/task_usage_monitoring_browser.mjs",
+        "sha256": "8c5b9aafc3be3c5ffe35b38f201c701a02731b8730669315349ca31834bacd99"
+      },
+      {
+        "path": "tests/acceptance/task_usage_monitoring_browser_fixture.py",
+        "sha256": "f4dd67e28df8f54beb1587db2888062ffac6a5ce08646b006fedcc77c35e38df"
+      },
+      {
+        "path": "tests/acceptance/test_task_usage_final_only_process.py",
+        "sha256": "4e927ef429b1a6e60274cd5967d5724e8aa853a24e21d6d9a3e43d4eb9297af5"
+      },
+      {
+        "path": "tests/acceptance/test_task_usage_foreign_host_process.py",
+        "sha256": "d53dfcf5dc6559485ab03636af5a6076d0c7b97f0088f21ae906fb119ce2f5ca"
+      },
+      {
+        "path": "tests/acceptance/test_task_usage_monitoring_process.py",
+        "sha256": "13c17b02980a2de3d2164599d3c3b239b9618dc14bb30fc48ca1609e73002eec"
+      },
+      {
+        "path": "tests/acceptance/test_task_usage_reporting_process.py",
+        "sha256": "80c7c586bc514a7ec588967ef16445e8d99daa4d3fe8866086173ebc6e3d6d0e"
+      },
+      {
+        "path": "tests/acceptance/worker_process.py",
+        "sha256": "0786237d72ec4fe4229b9ef827104d6674610c60d136897582bd8d1aa6b0f0d8"
+      },
+      {
+        "path": "tests/integration/test_task_usage_downgrade.py",
+        "sha256": "7d846eff04944fcc66a786c6f1c78e35eafc5a24923acb30b8fcd0a5d78d31c8"
+      }
+    ],
+    "scope": "Changed source/tests/generated client only; ignored browser repositories and private logs excluded."
+  },
+  "environment": {
+    "python": "3.14.5",
+    "node": "24.20.0",
+    "postgresql": "Disposable forge_test_* databases on existing local port5435",
+    "source_import": "C:\\Users\\sdyer\\.codex\\worktrees\\usage-monitoring-final\\parallel-forge\\apps\\orchestrator\\src\\forge\\__init__.py",
+    "managed_worktree": "C:\\Users\\sdyer\\.codex\\worktrees\\usage-monitoring-final\\parallel-forge",
+    "main_next_env_sha256": "0f70629890b72a0a82e91972cc032c04b658b26c265373cb711cf576bfbf8fcc"
+  },
+  "merged_deliveries": {
+    "109": {
+      "merge": "558645377ce919a7c6e79cbd144a8c3dff9ffba6",
+      "tested_head": "3446690547427085a1c0d563b36984caeb00b5e6"
+    },
+    "110": {
+      "merge": "4ea96bb9a0351c2fa6a291c3ae3ba080baf6318b",
+      "tested_head": "0e0229b688a286a027cdf8df100767a1407607f0",
+      "matching_tree": "79501f71512fcd5f1fa929c589cd4822113b124f",
+      "preserved_files_verified_unchanged": 926
+    },
+    "111": {
+      "current_base": "17552fb2a8529c460d9dca249ff0d931aa1b504a",
+      "affected_paths_rechecked": true
+    }
+  },
+  "coverage": [
+    {
+      "invariant": "Advisory expectations and optional explicit hard caps",
+      "cases": [
+        "No-policy reporting, manual/learned/insufficient-history warm-up, explicit/absent caps; no monitoring-derived generation limit."
+      ],
+      "check": [
+        "tests/acceptance/test_task_usage_final_only_process.py",
+        "tests/acceptance/test_task_usage_reporting_process.py"
+      ],
+      "status": "proved locally",
+      "evidence": ".llm-output/usage-final/integration/candidate.md and candidate-bound command receipts; earlier named unchanged cases retain their original candidates."
+    },
+    {
+      "invariant": "Versioned policy and direct authenticated owner controls",
+      "cases": [
+        "Browser saves all six supported signed64 monitoring settings, optional notes, stale rebase, exact revisions and explicit clears; authenticated session/CSRF and idempotent controls retained.",
+        "Seeded high checkpoint versions followed by actual authenticated run set_policy/continue and authoring set_policy/stop; exact numeric expected/result pairs match PostgreSQL owner receipts up to INT64_MAX. Monitoring revision MAX-1 to MAX saves exactly; impossible increment refused without POST."
+      ],
+      "check": [
+        "tests/acceptance/task_usage_monitoring_browser.mjs",
+        "docs/usage-monitoring-checkpoints-validation.json"
+      ],
+      "status": "proved locally",
+      "evidence": ".llm-output/usage-final/integration/c3/final5/ exact API/SQL and browser receipts, command-receipts.json and primary matching-input/wire/SQL assertions; high retry/409/next-mode branches use component evidence."
+    },
+    {
+      "invariant": "Comparable units and robust baselines",
+      "cases": [
+        "Distinct authoring/run categories and routes; measured positive, measured zero and unavailable; all four learned successors finish with frozen reference100, exact distinct source/observation identities and retained proposals. Additional learned threshold200 crossing at220 continues to320 with no repair debit."
+      ],
+      "check": [
+        "tests/acceptance/test_task_usage_final_only_process.py",
+        "tests/acceptance/test_task_usage_reporting_process.py"
+      ],
+      "status": "proved locally",
+      "evidence": ".llm-output/usage-final/integration/learned-final7.log and review-delta-receipts.json; reporting candidate-bound receipts cover positive/zero/unavailable sources."
+    },
+    {
+      "invariant": "Frozen reference and once-only accounting",
+      "cases": [
+        "Authoring60/40\u219270/45 and delegated62/42\u2192122/82, distinct sources, one final reconciliation, frozen revision/digest, normal attempts and zero monitoring repair debit."
+      ],
+      "check": [
+        "tests/acceptance/test_task_usage_monitoring_process.py",
+        "docs/usage-monitoring-checkpoints-validation.json"
+      ],
+      "status": "proved locally",
+      "evidence": ".llm-output/usage-final/integration/candidate.md and candidate-bound command receipts; earlier named unchanged cases retain their original candidates."
+    },
+    {
+      "invariant": "Atomic fencing and actual settlement before paused",
+      "cases": [
+        "Actual held-check PID and advancing heartbeat continue after the provider child settles. Same callback/binding/operation identities remain PENDING, checkpoint pausing/unsettled and continue409; release yields the same SUCCEEDED operation and settled pause. Callback completion itself awaits the check."
+      ],
+      "check": [
+        "tests/acceptance/test_task_usage_monitoring_process.py"
+      ],
+      "status": "proved locally",
+      "evidence": ".llm-output/usage-final/integration/held-check-identity.log and review-delta-receipts.json. Independent leased-effect injection remains a separately labelled controlled simulation."
+    },
+    {
+      "invariant": "Restart, uncertain foreign ownership and cancellation across owners",
+      "cases": [
+        "Two local workers, supervised slow/noncooperative child, lease expiry, controlled foreign origin metadata, refusal while uncertain, settlement after valid local proof and actual exit."
+      ],
+      "check": [
+        "tests/acceptance/test_task_usage_foreign_host_process.py"
+      ],
+      "status": "proved locally",
+      "evidence": ".llm-output/usage-final/integration/candidate.md and candidate-bound command receipts; earlier named unchanged cases retain their original candidates."
+    },
+    {
+      "invariant": "Retained proposals, results and independent constraints",
+      "cases": [
+        "Final-only crossing retains unadopted proposal; policy/usage continuation does not clear independent manual pause/cancel/quota or spend repair allowance; accepted scopes/routes preserved."
+      ],
+      "check": [
+        "tests/acceptance/test_task_usage_final_only_process.py",
+        "docs/usage-monitoring-checkpoints-validation.json"
+      ],
+      "status": "proved locally",
+      "evidence": ".llm-output/usage-final/integration/candidate.md and candidate-bound command receipts; earlier named unchanged cases retain their original candidates."
+    },
+    {
+      "invariant": "Exact browser integers and compatibility",
+      "cases": [
+        "MAX_SAFE, +1, +2, INT64_MAX; six monitoring fields, epic execution caps, profile and API-backed model caps; raw numeric API wire and exact PostgreSQL equality; invalid/unsafe/fraction/overflow refusal; null/clear and stale rebase.",
+        "Actual browser outbound epic PUT bodies contain unquoted numeric tokens at all four boundaries; a serializer failure precedes pending replay reservation, while uncertain valid requests retain the identical body/key.",
+        "Actual profile creation and append versions1-4 save all four boundaries with numeric StrictInt POST bodies, exact per-version GET and PostgreSQL equality; version5 clears both caps while earlier immutable rows retain their values. NaN/Infinity cannot silently clear an epic cap through frozen-request copying.",
+        "Supported checkpoint expected/result versions and monitoring revisions use exact decimal state, route-scoped numeric serialization and shared BigInt comparisons. Valid older durable replay receipts remain accepted; ordinary int32 version payloads remain compatible."
+      ],
+      "check": [
+        "apps/web/src/lib/api/exact-integer.test.ts",
+        "apps/web/src/lib/api/monitoring-policy.test.ts",
+        "tests/acceptance/task_usage_monitoring_browser.mjs",
+        "apps/web/src/components/task-usage/owner-version.test.ts"
+      ],
+      "status": "proved locally",
+      "evidence": ".llm-output/usage-final/integration/hook-red.log, hook-final53.log, browser-epic-outbound.json, browser-review-delta-receipt.json, exact API/SQL snapshots and source-bound review-delta-receipts.json. C1 final actual profile write evidence: .llm-output/usage-final/integration/profile-browser-final/ and profile-repair-receipts.json. Earlier profile rendering was not this proof. Final C3 full browser repeats prior epic/profile/policy/model/report surfaces on changed shared transport; 195 affected tests and exact owner-command/policy-revision API/SQL receipts are in integration/c3/."
+    },
+    {
+      "invariant": "Real multi-project access and reporting filters",
+      "cases": [
+        "Three registered operator-accessible projects; selected/pooled route-kind filters; measured positive/zero/unavailable; anonymous401 and unregistered UUID empty; current single-operator auth model preserved."
+      ],
+      "check": [
+        "tests/acceptance/test_task_usage_reporting_process.py",
+        "tests/acceptance/task_usage_monitoring_browser.mjs"
+      ],
+      "status": "proved locally",
+      "evidence": ".llm-output/usage-final/integration/candidate.md and candidate-bound command receipts; earlier named unchanged cases retain their original candidates."
+    },
+    {
+      "invariant": "Data-preserving rollback and refusal",
+      "cases": [
+        "Populated checkpoint/admission/telemetry metadata and owner receipts; exact row/timestamp/Alembic snapshots unchanged after destructive downgrade refusal; compatible0041\u21920039\u21920041 retains rows."
+      ],
+      "check": [
+        "tests/integration/test_task_usage_downgrade.py",
+        "apps/orchestrator/tests/task_usage_contract/test_migration.py"
+      ],
+      "status": "proved locally",
+      "evidence": ".llm-output/usage-final/integration/candidate.md and candidate-bound command receipts; earlier named unchanged cases retain their original candidates."
+    },
+    {
+      "invariant": "Context, progress, tools and provider boundaries",
+      "cases": [
+        "Unknown context remains unknown; cache/reasoning subsets remain separate; context and stall autopause stay outside this epic; existing callback/tool/account/quota/cancellation controls retained."
+      ],
+      "check": [
+        "docs/usage-monitoring-adapters-ui-validation.json",
+        "docs/usage-monitoring-checkpoints-validation.json",
+        "docs/task-usage-monitoring.md"
+      ],
+      "status": "proved locally",
+      "evidence": ".llm-output/usage-final/integration/candidate.md and candidate-bound command receipts; earlier named unchanged cases retain their original candidates."
+    },
+    {
+      "invariant": "Representable next checkpoint without losing known usage or bypass",
+      "cases": [
+        "Shared frozen-reference ceil interval plus exact measured total, including exact fit and overflow; known/lower-bound usage stays visible; independent constraints and bypass unchanged."
+      ],
+      "check": [
+        "apps/web/src/components/task-usage/retained-policy-integers.test.ts",
+        "apps/web/src/components/subscription-tasks/run-usage-checkpoint.test.tsx",
+        "apps/web/src/components/epics/authoring-usage-checkpoint.test.tsx",
+        "tests/acceptance/task_usage_monitoring_browser.mjs"
+      ],
+      "status": "proved locally",
+      "evidence": ".llm-output/usage-final/integration/c4/ raw80 tests, actual browser/API/SQL, unchanged frozen digest and primary matching-input/threshold assertions."
+    }
+  ],
+  "combined_matrix": {
+    "reference": [
+      "manual",
+      "learned",
+      "unavailable warm-up"
+    ],
+    "telemetry": [
+      "streaming",
+      "final-only"
+    ],
+    "cap": [
+      "absent",
+      "explicit5000"
+    ],
+    "logical_cells": 12,
+    "real_process_cases": 9,
+    "warmup_and_learned": "Four learned first/second job pairs complete actual supervised attempts: unavailable warm-up then frozen ready reference100, across streaming/final-only and absent/explicit5000 caps. An additional streaming learned crossing pauses at220 over threshold200 and continues to a retained proposal at320 with frozen reference100."
+  },
+  "checks": {
+    "ui_initial_affected": {
+      "passed": 143,
+      "historical_within_batch": true,
+      "limits": "Later changed paths use final repair receipts; full933 run is not required final evidence."
+    },
+    "ui_exact_repair": {
+      "passed": 102,
+      "files": 7,
+      "raw_log": ".llm-output/usage-final/ui-repair/green-tests.log",
+      "red_log": ".llm-output/usage-final/ui-repair/red-tests.log",
+      "receipt": ".llm-output/usage-final/ui-repair/receipts.md"
+    },
+    "model_cap_and_shared_helpers": {
+      "passed": 93,
+      "files": 6,
+      "receipt": ".llm-output/usage-final/integration/model-cap-receipts.json"
+    },
+    "current_adapter_authoring_regressions": {
+      "passed": 332,
+      "receipt": ".llm-output/usage-final/integration/command-receipts.json",
+      "provenance": "Exact terminal summary retained; not a fabricated raw full log."
+    },
+    "assembly_matrix_and_migration": {
+      "earlier_combined_passed": 27,
+      "affected_final_passed": 5,
+      "receipt": ".llm-output/usage-final/integration/command-receipts.json",
+      "limits": "Earlier27 and affected5 receipts remain candidate-specific. The final7 learned/manual cases and1 held-check case supersede their changed rows; unaffected cases retain matching evidence. Counts overlap."
+    },
+    "transport": {
+      "passed": 16,
+      "raw_log": ".llm-output/usage-final/integration/transport16.log"
+    },
+    "api_types_web_typing_style_build": {
+      "result": "Web typing/lint/build pass on C4; unchanged API generation inputs retain matching C3 api:check result",
+      "receipt": ".llm-output/usage-final/integration/c4/command-receipts.json"
+    },
+    "actual_browser": {
+      "result": "C4 headroom browser passed on current source; prior C3 high owner-command browser retained separately",
+      "receipt": ".llm-output/usage-final/integration/c4/receipt-final.json",
+      "api": ".llm-output/usage-final/integration/c4/browser-headroom-api.json",
+      "sql": ".llm-output/usage-final/integration/c4/browser-sql-snapshot.json",
+      "C3_high_versions": ".llm-output/usage-final/integration/c3/final5/receipt.json"
+    },
+    "adk_reuse": {
+      "passed": 100,
+      "matching_four_inputs": true,
+      "receipt": ".llm-output/usage-final/reuse-adk.json"
+    },
+    "test_eof_normalization": {
+      "behavior_changed": false,
+      "receipt": ".llm-output/usage-final/test-eof-normalization.json"
+    },
+    "acceptance_delta": {
+      "web_tests": 53,
+      "web_files": 3,
+      "authoring_process_cases": 7,
+      "held_check_process_cases": 1,
+      "receipt": ".llm-output/usage-final/integration/review-delta-receipts.json",
+      "commands_and_results": [
+        {
+          "command": "npm run test --workspace @parallel-forge/web -- --run src/hooks/epics/use-epic-mutations.test.tsx src/lib/api/exact-integer.test.ts src/lib/api/client.test.ts",
+          "exit_code": 0,
+          "output_file": "hook-final53.log",
+          "result": "3 files, 53 tests passed; exact numeric body, identical pending replay key/body, unsafe local number refused before pending state"
+        },
+        {
+          "command": ".venv/Scripts/python.exe -m pytest tests/acceptance/test_task_usage_final_only_process.py -q --tb=short",
+          "exit_code": 0,
+          "output_file": "learned-final7.log",
+          "result": "7 passed in 94.24s; manual final-only and learned final-only/streaming with absent/5000 caps complete; learned streaming threshold200 crossing pauses at 220, continues to proposed at 320, with frozen reference100, exact attempts and no repair debit"
+        },
+        {
+          "command": ".venv/Scripts/python.exe -m pytest tests/acceptance/test_task_usage_monitoring_process.py -q --tb=short -k delegated",
+          "exit_code": 0,
+          "output_file": "held-check-identity.log",
+          "result": "1 passed in 37.19s; held check PID/heartbeat and durable callback/operation identities remain stable after provider-child settlement, checkpoint cannot pause/continue until actual check release"
+        },
+        {
+          "command": "npm run typecheck --workspace @parallel-forge/web",
+          "exit_code": 0,
+          "output_file": "review-delta-typecheck.log"
+        },
+        {
+          "command": "npm run lint --workspace @parallel-forge/web",
+          "exit_code": 0,
+          "output_file": "review-delta-lint.log"
+        },
+        {
+          "command": "npm run build --workspace @parallel-forge/web",
+          "exit_code": 0,
+          "output_file": "review-delta-build.log"
+        },
+        {
+          "command": "node tests/acceptance/task_usage_monitoring_browser.mjs http://127.0.0.1:64552 .llm-output/usage-final/integration/browser-review-delta-receipt.json .llm-output/usage-final/integration/browser-review-delta-scenario.json",
+          "exit_code": 0,
+          "observed_at_utc": "2026-10-12T18:21:08.809Z",
+          "output_file": "browser-review-delta.log",
+          "receipt_file": "browser-review-delta-receipt.json",
+          "raw_outbound_http_bodies": "browser-epic-outbound.json",
+          "raw_api_and_sql": [
+            "browser-project-model-api.json",
+            "browser-policy-api.json",
+            "browser-report-api.json",
+            "browser-sql-snapshot.json"
+          ],
+          "database": "forge_test_a61c8e3b1e444d77928711cc76571f0d",
+          "result": "four actual browser epic PUT bodies use unquoted numeric tokens at MAX_SAFE,+1,+2,INT64_MAX; API and PostgreSQL exact; prior full UI assembly remains green"
+        }
+      ],
+      "red_failures_preserved": [
+        {
+          "command": "npm run test --workspace @parallel-forge/web -- --run src/hooks/epics/use-epic-mutations.test.tsx",
+          "exit_code": 1,
+          "output_file": "hook-red.log",
+          "finding": "epic budget cap 9007199254740993 was quoted in outbound JSON"
+        },
+        {
+          "command": ".venv/Scripts/python.exe -m pytest tests/acceptance/test_task_usage_final_only_process.py -q --tb=short -k True",
+          "exit_code": 1,
+          "output_file": "learned-crossing-red.log",
+          "finding": "unhandled scripted provider cancellation yielded unknown telemetry and budget_exhausted instead of a known interrupted debit"
+        }
+      ],
+      "input_sha256": {
+        "apps/web/src/hooks/epics/use-epic-mutations.ts": "CE165E4A448A30AC0720DEC53EE910C82057957E8A04D22CB87D6144058E9C9A",
+        "apps/web/src/hooks/epics/use-epic-mutations.test.tsx": "708D3C39F419BCB93263C6C35EAB4E2330999045B13900252CA10F31F827B6E9",
+        "tests/acceptance/test_task_usage_final_only_process.py": "4E927EF429B1A6E60274CD5967D5724E8AA853A24E21D6D9A3E43D4EB9297AF5",
+        "tests/acceptance/test_task_usage_monitoring_process.py": "13C17B02980A2DE3D2164599D3C3B239B9618DC14BB30FC48CA1609E73002EEC",
+        "tests/acceptance/worker_process.py": "0786237D72EC4FE4229B9EF827104D6674610C60D136897582BD8D1AA6B0F0D8",
+        "tests/acceptance/process_harness.py": "90F34A711CF6A29B078181FC79789C2D21417EB66D7FD5750177E19234D223BD",
+        "tests/acceptance/task_usage_monitoring_browser.mjs": "74EEA5EE5BA08754F1402B72F98DF99ECCDC8D7CC1BC0D62C4BAE0A9E66986E4",
+        "tests/acceptance/task_usage_monitoring_browser_fixture.py": "BCF801D784FF8FECC7D3E4BB2398D98FBBC066A0A6370FB5622FF40BADB45C02"
+      }
+    },
+    "source_typing": {
+      "command_description": "Source-only mypy through rtk; raw terminal result retained.",
+      "exit_code": 0,
+      "source_files": 568,
+      "raw_log": ".llm-output/usage-final/source-mypy.log",
+      "scope": "Current active-worktree production Python source; no production Python change in this batch."
+    },
+    "C1_repair": {
+      "passed": 97,
+      "files": 5,
+      "focused_command": "npm run test --workspace @parallel-forge/web -- --run src/components/subscription-profiles/profile-list.test.tsx src/components/subscription-profiles/profile-editor.test.tsx src/hooks/epics/use-epic-mutations.test.tsx src/lib/api/exact-integer.test.ts src/lib/api/client.test.ts",
+      "raw_green": ".llm-output/usage-final/integration/profile-repair-green.log",
+      "red": {
+        "profile": "profile-red-final.log: exit 1, 2 expected numeric-body failures, 13 passed",
+        "epic": "epic-freeze-red.log: exit 1, 3 expected nonfinite-cap failures, 37 passed"
+      },
+      "checks": {
+        "browser": "node tests/acceptance/task_usage_monitoring_browser.mjs fresh fixture; exit 0, profile create and versions 2-5, raw numeric POST/GET, SQL exact, full prior journey",
+        "build": "npm run build --workspace @parallel-forge/web; exit 0",
+        "focused": "npm run test --workspace @parallel-forge/web -- --run profile-list/profile-editor/use-epic-mutations/exact-integer/client; exit 0, 97 passed",
+        "lint": "npm run lint --workspace @parallel-forge/web; exit 0",
+        "typecheck": "npm run typecheck --workspace @parallel-forge/web; exit 0",
+        "api": "npm run api:check --workspace @parallel-forge/web; exit 0"
+      },
+      "input_sha256": [
+        {
+          "path": "apps/web/scripts/generate-api.mjs",
+          "sha256": "60a74625facefe252433fcecc0314d6be33c39fd356cba7f824a4a0675cd7115"
+        },
+        {
+          "path": "apps/web/src/components/subscription-profiles/profile-list.test.tsx",
+          "sha256": "b26276a967972dcd6090770ab1e9e34a402b33800971ff71491c816d3a24ab5f"
+        },
+        {
+          "path": "apps/web/src/components/subscription-profiles/profile-list.tsx",
+          "sha256": "d8739c14fe0cf0a89a7004657206244cd84bf365e16f27f4c491080d9e42c1b1"
+        },
+        {
+          "path": "apps/web/src/hooks/epics/use-epic-mutations.test.tsx",
+          "sha256": "9dc925954afb28fa7b7bc80b060631b6f0192ba436a1c15836ee719b09c97692"
+        },
+        {
+          "path": "apps/web/src/hooks/epics/use-epic-mutations.ts",
+          "sha256": "433eace9be5b5aca955ece558662e76d6958058df7ad6cffee147eec980a55bc"
+        },
+        {
+          "path": "apps/web/src/lib/api/schema.d.ts",
+          "sha256": "ba650e4effb1fc4007f8dddd1407766b21cfb8a29e482327d264214879511dae"
+        },
+        {
+          "path": "tests/acceptance/task_usage_monitoring_browser.mjs",
+          "sha256": "439eff4d86ecfda8e38389ccd23f0d8d46e278c20da7d756024c049f934c873a"
+        },
+        {
+          "path": "tests/acceptance/task_usage_monitoring_browser_fixture.py",
+          "sha256": "56ee8b249714f166279979f6bf5770241450d8ca288eea7ac136b11c1789e509"
+        }
+      ],
+      "browser_command": "node tests/acceptance/task_usage_monitoring_browser.mjs http://127.0.0.1:57206 .llm-output/usage-final/integration/profile-browser-final/receipt.json .llm-output/usage-final/integration/profile-browser-final/scenario.json",
+      "fixture_command": ".venv/Scripts/python.exe -u -m tests.acceptance.task_usage_monitoring_browser_fixture",
+      "fixture_environment": {
+        "FORGE_BROWSER_SCENARIO_OUTPUT": ".llm-output/usage-final/integration/profile-browser-final/scenario.json"
+      },
+      "postgresql_database": "forge_test_22c9e1b5d6fd4652b457da84c20a2c15",
+      "source_origin_context": "Same active worktree .venv and source origin as prior process receipts; parent capture reconfirms forge.__file__. Final fixture did not print a new import line.",
+      "counts_overlap": true
+    },
+    "C1_fixture_style": {
+      "command": "rtk proxy .venv/Scripts/python.exe -m ruff check tests/acceptance/task_usage_monitoring_browser_fixture.py",
+      "exit_code": 0,
+      "raw_log": ".llm-output/usage-final/c1-fixture-ruff.log"
+    },
+    "C2_epic_budget_tests": {
+      "cause": "Native JSON.parse in two exact-cap tests rounded numeric wire tokens; stale-rebase mock also needed lossless decoding. Production browser/API/SQL evidence was valid but this test file was not proved on the updated hook until this repair.",
+      "red_command": "rtk proxy npm run test --workspace @parallel-forge/web -- --run src/components/epics/epic-budget-panel.test.tsx",
+      "red": "2 failed,16 passed",
+      "red_log": ".llm-output/usage-final/c2-budget-red.log",
+      "green": "18 passed",
+      "green_log": ".llm-output/usage-final/c2-budget-green.log",
+      "typing_and_lint": "passed",
+      "scope": "Test-only correction; raw numeric token assertions remain an independent oracle, with exact readback from the rebase mock. Production source unchanged; matched browser/backend/build receipts reused.",
+      "self_review": "Reuse existing lossless decoder in the mock, type the projection honestly, preserve safe/null assertions and avoid redundant wrappers. No additional independent round warranted for this small test-only fix.",
+      "jev_search_exemption": "Exact reported test file/locations and localized assertion/mock repair; no substantial behavioral search."
+    },
+    "C3_exact_owner_versions": {
+      "passed": 195,
+      "files": 10,
+      "counts_overlap": true,
+      "raw_log": ".llm-output/usage-final/integration/c3/affected-final2.log",
+      "receipt": ".llm-output/usage-final/integration/c3/command-receipts.json",
+      "red_receipts": {
+        "max_editor": "red-max-editor.log: 1 expected failure, 22 passed",
+        "panels": "red-panels.log: 2 expected failures, 38 passed",
+        "max_checkpoint": "red-max-checkpoint.log: 2 expected failures",
+        "terminal_panel": "red-max-checkpoint.log: 2 expected failures"
+      },
+      "source_inputs": [
+        {
+          "path": "apps/web/scripts/generate-api.mjs",
+          "sha256": "0acbacf0d21f93d776dc42b101529d3807c43ee6670d97269e5bae400e1b00a8"
+        },
+        {
+          "path": "apps/web/src/components/epics/authoring-usage-checkpoint.test.tsx",
+          "sha256": "86a56ff3bbc2f248cb394e75cb3f7843f8c9f0045be303b27fe62b9fc0ed2096"
+        },
+        {
+          "path": "apps/web/src/components/epics/authoring-usage-checkpoint.tsx",
+          "sha256": "c84ba05902cbbe893e62e228e9d148764f05ccf88c3e98b8a1d12dfaf5defe8b"
+        },
+        {
+          "path": "apps/web/src/components/projects/monitoring-policy-editor.test.tsx",
+          "sha256": "f56fbf081da1ef2ba6d6edb553e178f6989bb234354e5ed1a674c67be05234d9"
+        },
+        {
+          "path": "apps/web/src/components/projects/monitoring-policy-editor.tsx",
+          "sha256": "eeb46d0d672d5fbc7f11d51d13012e87aa630d4da690b250dd38aad792e51419"
+        },
+        {
+          "path": "apps/web/src/components/subscription-tasks/run-usage-checkpoint.test.tsx",
+          "sha256": "2437a369e6a9453398b03d160efa837e4ded826436f21b7ab8c11c1325d21932"
+        },
+        {
+          "path": "apps/web/src/components/subscription-tasks/run-usage-checkpoint.tsx",
+          "sha256": "aa8543b9b6df54b36535c7f6096c0fa94691ad262b92dfb3d456476a3c42e1c9"
+        },
+        {
+          "path": "apps/web/src/components/task-usage/owner-version.test.ts",
+          "sha256": "613bb55c7e3540644dd8cfaa54f18af0430e06d5a473a5d7500d196ec4105387"
+        },
+        {
+          "path": "apps/web/src/components/task-usage/owner-version.ts",
+          "sha256": "3a94f712c720ef9b25b109b6dbaccf2d76b0f794ff963614a5bc777deb65e48c"
+        },
+        {
+          "path": "apps/web/src/lib/api/client.test.ts",
+          "sha256": "ff44a2bfccd2b70358aad1e3d962291d65e2cca3ded1e7067c4ae182464e300d"
+        },
+        {
+          "path": "apps/web/src/lib/api/client.ts",
+          "sha256": "d54ca74f921dff96f52b843644a4412fc3bee146a82e92ac785cd1cf78aa3649"
+        },
+        {
+          "path": "apps/web/src/lib/api/exact-integer.ts",
+          "sha256": "a6178416f501a8bb59426c60a2cd9a9e80f64203b1e2bf211bd6264367fd5978"
+        },
+        {
+          "path": "apps/web/src/lib/api/monitoring-policy.test.ts",
+          "sha256": "081324237d2271e2ddbab8c9e171be0f5f9b717a3ba667ebca6cc1414e3878a9"
+        },
+        {
+          "path": "apps/web/src/lib/api/monitoring-policy.ts",
+          "sha256": "e4a1e00d00f28dc512aef5644687a235e61a59068416bf8ed1af850a463de5c0"
+        },
+        {
+          "path": "apps/web/src/lib/api/schema.d.ts",
+          "sha256": "4845310d5c82b9693f958e931368394d012ada33a9b55ecb1990c8ef90e679da"
+        },
+        {
+          "path": "tests/acceptance/task_usage_monitoring_browser.mjs",
+          "sha256": "ede79b52a78b5091ec5addd55c673225a9c7493a8eed3f710986d797bea12eec"
+        },
+        {
+          "path": "tests/acceptance/task_usage_monitoring_browser_fixture.py",
+          "sha256": "f3e42973add3710db12d5658110cc38b77a5bdfe486c40482c069e7d8bebebc8"
+        }
+      ],
+      "actual_browser": ".llm-output/usage-final/integration/c3/final5/receipt.json",
+      "actual_numeric_owner_pairs": [
+        {
+          "kind": "run",
+          "expected": "9007199254740993",
+          "resultVersion": "9007199254740994",
+          "action": "set_policy"
+        },
+        {
+          "kind": "run",
+          "expected": "9007199254740994",
+          "resultVersion": "9007199254740995",
+          "action": "continue"
+        },
+        {
+          "kind": "authoring_job",
+          "expected": "9223372036854775805",
+          "resultVersion": "9223372036854775806",
+          "action": "set_policy"
+        },
+        {
+          "kind": "authoring_job",
+          "expected": "9223372036854775806",
+          "resultVersion": "9223372036854775807",
+          "action": "stop"
+        }
+      ],
+      "actual_monitoring_revision": {
+        "seededExpected": "9223372036854775806",
+        "saved": "9223372036854775807",
+        "numericWire": true,
+        "overflowRefusedLocally": true
+      },
+      "api_typing_lint_build_fixture_checks": {
+        "node": "node --check browser script: exit 0",
+        "affected": "npm run test --workspace @parallel-forge/web -- --run src/components/task-usage/owner-version.test.ts src/components/subscription-tasks/run-usage-checkpoint.test.tsx src/components/epics/authoring-usage-checkpoint.test.tsx src/components/projects/monitoring-policy-editor.test.tsx src/lib/api/monitoring-policy.test.ts src/lib/api/client.test.ts src/lib/api/exact-integer.test.ts src/components/subscription-profiles/profile-list.test.tsx src/components/subscription-profiles/profile-editor.test.tsx src/hooks/epics/use-epic-mutations.test.tsx; affected-final2.log exit0 195/195",
+        "build": "build-final3.log exit0",
+        "typecheck": "typecheck-final3.log exit0",
+        "lint": "lint-final3.log exit0",
+        "ruff": "ruff check browser fixture: exit 0",
+        "final_c3": "focused-final2.log: 112/112",
+        "browser": "final5/browser.log exit0; full authenticated browser and four high owner commands, high monitoring revision and local max refusal",
+        "api": "api-check.log: exit 0"
+      },
+      "primary_evidence_check": ".llm-output/usage-final/c3-primary-acceptance.json",
+      "limits": "High retained counters were seeded in disposable PostgreSQL. High-version uncertain retry/409 and next-checkpoint mode have component evidence; they are not extra browser claims.",
+      "candidate_code_input_sha256": "5b0b287f863fcf0e1b6d5c3aed450e4450cbc272d090987e3507dc7e74482313",
+      "reuse": "195 tests ran on the original C3 candidate. Production and browser inputs are unchanged; V1 changes only two panel test files and supersedes their 44 cases with 50. Counts overlap, not a fresh whole 195 run."
+    },
+    "C3_V1_combined_transitions": {
+      "passed": 50,
+      "files": 2,
+      "six_new_combined_cases": true,
+      "receipt": ".llm-output/usage-final/integration/c3/v1-command-receipts.json",
+      "raw_log": ".llm-output/usage-final/integration/c3/v1-panels.log",
+      "source_inputs": [
+        {
+          "path": "apps/web/src/components/epics/authoring-usage-checkpoint.test.tsx",
+          "sha256": "d1920e1d249171b3b68c41e8a6257ea262a42149423efe08367eb7da641134da"
+        },
+        {
+          "path": "apps/web/src/components/subscription-tasks/run-usage-checkpoint.test.tsx",
+          "sha256": "aaa92c4aff012db788d9a75cf315bf0a80bcbeec0b46dc1c90853090e0e5c69d"
+        }
+      ],
+      "cases": "Both panels: high uncertain policy request with high revisions/caps, newer checkpoint and older valid receipt, identical raw body/key; high409 recovery and new exact version/key; successful high next-checkpoint command. Full numeric-token assertions.",
+      "typecheck_lint_diff": "passed on V1 tests; build/API/browser and other source evidence reused for unchanged inputs",
+      "limitations": "High uncertain replay, 409, and next-checkpoint combinations are mocked component transitions, not new browser/API/PostgreSQL executions."
+    },
+    "C4_headroom": {
+      "passed": 80,
+      "files": 3,
+      "counts_overlap": true,
+      "receipt": ".llm-output/usage-final/integration/c4/command-receipts.json",
+      "raw_log": ".llm-output/usage-final/integration/c4/affected-final.log",
+      "source_inputs": [
+        {
+          "path": "apps/web/src/components/epics/authoring-usage-checkpoint.test.tsx",
+          "sha256": "347bddf47610d5cfff9a24bf408dd5bc6a0e979a8237b0ffe21b7b7d45fbd0b4"
+        },
+        {
+          "path": "apps/web/src/components/epics/authoring-usage-checkpoint.tsx",
+          "sha256": "a72cfd8a53f95ee683169797808ee03d0fd3f329072d0a7b07988d227e0623af"
+        },
+        {
+          "path": "apps/web/src/components/subscription-tasks/run-usage-checkpoint.test.tsx",
+          "sha256": "e0d1fc30eab28b9c1e65235d90e6d9a405cce9e58ce4445992b4707bade153f0"
+        },
+        {
+          "path": "apps/web/src/components/subscription-tasks/run-usage-checkpoint.tsx",
+          "sha256": "a26960e5016224490da65bcfc047a3d3516a1e97f64a10e7d0a9e723651f46f5"
+        },
+        {
+          "path": "apps/web/src/components/task-usage/retained-policy-integers.test.ts",
+          "sha256": "93f7ab358cff9616a106fa9a6168af92c02c0e9d7916690f23547eefdf894e15"
+        },
+        {
+          "path": "apps/web/src/components/task-usage/retained-policy-integers.ts",
+          "sha256": "2422efe5b93b8579121c2172721748d15eff3271360a428c0e06b1f4e33baff4"
+        },
+        {
+          "path": "tests/acceptance/task_usage_monitoring_browser.mjs",
+          "sha256": "8c5b9aafc3be3c5ffe35b38f201c701a02731b8730669315349ca31834bacd99"
+        },
+        {
+          "path": "tests/acceptance/task_usage_monitoring_browser_fixture.py",
+          "sha256": "f4dd67e28df8f54beb1587db2888062ffac6a5ce08646b006fedcc77c35e38df"
+        }
+      ],
+      "red": {
+        "result": "expected 2 failed, 50 passed",
+        "log": "integration/c4/red-panels.log",
+        "command": "npm run test --workspace @parallel-forge/web -- --run src/components/subscription-tasks/run-usage-checkpoint.test.tsx src/components/epics/authoring-usage-checkpoint.test.tsx"
+      },
+      "commands": [
+        {
+          "exit_code": 0,
+          "result": "80/80",
+          "log": "integration/c4/affected-final.log",
+          "command": "npm run test --workspace @parallel-forge/web -- --run src/components/task-usage/retained-policy-integers.test.ts src/components/subscription-tasks/run-usage-checkpoint.test.tsx src/components/epics/authoring-usage-checkpoint.test.tsx"
+        },
+        {
+          "exit_code": 0,
+          "log": "integration/c4/typecheck-final.log",
+          "command": "npm run typecheck --workspace @parallel-forge/web"
+        },
+        {
+          "exit_code": 0,
+          "log": "integration/c4/lint-final.log",
+          "command": "npm run lint --workspace @parallel-forge/web"
+        },
+        {
+          "exit_code": 0,
+          "log": "integration/c4/build.log",
+          "command": "npm run build --workspace @parallel-forge/web"
+        },
+        {
+          "command": "node --check tests/acceptance/task_usage_monitoring_browser.mjs",
+          "exit_code": 0
+        },
+        {
+          "command": ".venv/Scripts/python.exe -m ruff check tests/acceptance/task_usage_monitoring_browser_fixture.py",
+          "exit_code": 0
+        },
+        {
+          "command": "git diff --check -- [eight scoped C4 files]",
+          "exit_code": 0
+        }
+      ],
+      "cases": "Known total remains exact; max/minstep, MAX-1, step20 exact fit/overflow, fractional ceil2, null/zero/exponent reference, lower-bound/unknown/invalid/overflow dimensions; both panel next gates preserve bypass and other controls.",
+      "actual_browser": ".llm-output/usage-final/integration/c4/receipt-final.json",
+      "actual_api": ".llm-output/usage-final/integration/c4/browser-headroom-api.json",
+      "actual_sql": ".llm-output/usage-final/integration/c4/browser-sql-snapshot.json",
+      "refused_owner_posts": 0,
+      "seeded_overflow_total": "9223372036854775807",
+      "seeded_fitting_total": "9223372036854775787",
+      "frozen_reference": 20,
+      "actual_stored_threshold": "9223372036854775807",
+      "unchanged_frozen_digest": "2a2561818342c5b028d22df3451b4039454d44784d1054a8a44c508c00cccde9",
+      "seeded_usage": "Controlled append-only fixture data in disposable PostgreSQL, not physical provider telemetry.",
+      "failed_fixture_attempts_retained": [
+        "browser.log: immutable-row UPDATE rejected; preserved and repaired by append-only seed",
+        "browser2.log: authoring source had provisional observation but no final; preserved and repaired fixture selector",
+        "browser3.log: full scenario reached exact persisted threshold, then late evidence writer scope error; preserved and repaired"
+      ],
+      "limits": "C4 actual browser proves the authoring headroom boundary and repeats prior editor/report/project/profile journeys. It skips C3 high owner-version sequence because the next command resumes that same checkpoint; C3 actual high-version receipt remains separate, with unchanged serialization/receipt code and current high-version panel tests."
+    }
+  },
+  "counts_overlap": true,
+  "evidence_policy": "Historical broad runs retain actual failures and later scoped repairs; no final whole-backend pass is claimed. Raw logs and transcript summaries are labelled. Matching source/config evidence is reused; four test files only lost blank EOF lines after102 run. Final delta retains red numeric-wire and scripted-cancellation failures, followed by raw green receipts. A learned reference admission alone is not cited as complete successor acceptance.",
+  "browser_summary": {
+    "observedAt": "2026-10-12T20:40:19.399Z",
+    "surfaces": [
+      {
+        "kind": "authoring",
+        "pathname": "/epics/12ba66d0-e0e4-4b36-a3e5-1c5a894a19a6",
+        "rendered": true,
+        "checkpoint": true,
+        "measured": true,
+        "apiRole": "api"
+      },
+      {
+        "kind": "run",
+        "pathname": "/runs/b33baa4b-9e27-4cef-99b3-bb35fc0f6115",
+        "rendered": true,
+        "checkpoint": true,
+        "measured": true,
+        "apiRole": "api"
+      },
+      {
+        "kind": "project",
+        "pathname": "/projects/bddfa9ea-0974-4a3a-ae6d-3753cf866b2b",
+        "rendered": true
+      },
+      {
+        "kind": "profiles",
+        "pathname": "/subscription-profiles",
+        "rendered": true
+      }
+    ],
+    "epicCaps": {
+      "epicId": "4c5c9d6f-3918-48ed-b7b4-40bfd17e6536",
+      "savedCaps": [
+        "9007199254740991",
+        "9007199254740992",
+        "9007199254740993",
+        "9223372036854775807"
+      ],
+      "invalidWritesRefused": 3,
+      "staleRebasedCap": "9007199254740992",
+      "cleared": true,
+      "sqlVersion": 7
+    },
+    "history": {
+      "filtered": true,
+      "overview": "Pooled overview \u00b7 mixed routes\n\nMean Unknown \u00b7 Median Unknown \u00b7 P90 Unknown\n\n0 measured samples \u00b7 coverage unknown \u00b7 all-time window; observed dates unknown\n\nCoverage: 0 measured of 0 eligible \u00b7 1 excluded. Source: overview.\n\nProvider, model and effort breakdowns below show the pooled route mix; they are separate marginal views.\n\nPhase and role breakdown unavailable.",
+      "excludedOutcomes": {
+        "in_progress": 1
+      },
+      "comparableCohorts": 1
+    },
+    "multiProjectHistory": {
+      "measuredProject": "61670518-0bbd-4eac-9753-3ae135aba6bf",
+      "unknownProject": "06a215a2-5d3a-4307-9bbc-95dedce90c9c",
+      "projects": [
+        "06a215a2-5d3a-4307-9bbc-95dedce90c9c",
+        "61670518-0bbd-4eac-9753-3ae135aba6bf",
+        "bddfa9ea-0974-4a3a-ae6d-3753cf866b2b"
+      ],
+      "measuredSamples": 2,
+      "excluded": 3,
+      "anonymousStatus": 401
+    },
+    "projectModelCaps": {
+      "apiNumeric": true,
+      "sqlExact": true,
+      "version": 2
+    },
+    "monitoringPolicy": {
+      "exactFields": true,
+      "sqlRevision": 8,
+      "savedPolicyCaps": [
+        {
+          "cap": "9007199254740991",
+          "revision": 3
+        },
+        {
+          "cap": "9007199254740992",
+          "revision": 4
+        },
+        {
+          "cap": "9007199254740993",
+          "revision": 5
+        },
+        {
+          "cap": "9223372036854775807",
+          "revision": 6
+        }
+      ],
+      "windowCleared": true,
+      "staleRebased": true
+    },
+    "profileCaps": {
+      "profileId": "8d768241-d866-408e-b350-9ae95d19db12",
+      "versions": [
+        [
+          "8d768241-d866-408e-b350-9ae95d19db12",
+          1,
+          "9007199254740991",
+          "9007199254740991"
+        ],
+        [
+          "8d768241-d866-408e-b350-9ae95d19db12",
+          2,
+          "9007199254740992",
+          "9007199254740992"
+        ],
+        [
+          "8d768241-d866-408e-b350-9ae95d19db12",
+          3,
+          "9007199254740993",
+          "9007199254740993"
+        ],
+        [
+          "8d768241-d866-408e-b350-9ae95d19db12",
+          4,
+          "9223372036854775807",
+          "9223372036854775807"
+        ],
+        [
+          "8d768241-d866-408e-b350-9ae95d19db12",
+          5,
+          null,
+          null
+        ]
+      ],
+      "numericPostBodies": 5
+    },
+    "highMonitoringRevision": {
+      "seededExpected": "9223372036854775806",
+      "saved": "9223372036854775807",
+      "numericWire": true,
+      "overflowRefusedLocally": true
+    },
+    "headroom": {
+      "seededWorkUnit": "7e1465e4-adea-42b0-9f30-172dd20d6e3c",
+      "fittingWorkUnit": "7e1465e4-adea-42b0-9f30-172dd20d6e3c",
+      "frozenDigest": "2a2561818342c5b028d22df3451b4039454d44784d1054a8a44c508c00cccde9",
+      "frozenReference": 20,
+      "overflowTotal": "9223372036854775807",
+      "fittingTotal": "9223372036854775787",
+      "refusedPosts": 0,
+      "storedThreshold": "9223372036854775807"
+    }
+  },
+  "owner_controls": "Direct authenticated actions authorize their concrete effect; notes optional; cap/reference changes do not waive real settlement, quota/manual pause/cancel, tool/route or merge boundaries.",
+  "simplify": {
+    "scope": "Entire integrated source/test/generated diff against17552fb2",
+    "applied": [
+      "Share signed64 maximum constant across transport/validators/retained-policy checks",
+      "Reuse identical generator field arrays without changing schema scope",
+      "Remove only blank test EOF lines reported by diff check",
+      "Share exact checkpoint version validation, increment and durable receipt comparisons between run and authoring panels; scope serializer version fields to their supported routes.",
+      "Share next-threshold headroom calculation between both panels; keep known-total calculation distinct from future eligibility."
+    ],
+    "review_dimensions": [
+      "reuse",
+      "quality",
+      "efficiency"
+    ],
+    "independent_review": "One full integrated review plus named A1-A3, C1 and C3 follow-ups reused matching unchanged evidence. C3 reuse/quality/efficiency found no additional justified refactor; its evidence gap was resolved by test-only V1 checks and primary adjudication. Named C4 arithmetic/eligibility follow-up found no material defects or further justified simplification."
+  },
+  "remaining_limitations": [
+    "Foreign-host identity/lease manipulation is a controlled local simulation; genuine execution on a second physical host is unrun.",
+    "Native runtime live-provider/schema conformance and real provider pricing are unrun and not an invented acceptance gate.",
+    "No new manually dispatched full hosted CI or final whole-backend pass.",
+    "Optional direct mypy on acceptance fixtures reports baseline/import and new fixture typing errors; no production Python source changed. Normal source typing remains distinct.",
+    "Downgrade proof covers named populated shapes/targets on disposable PostgreSQL, not blanket production downgrade authorization.",
+    "Disposable browser fixture directories remain intact after automatic cleanup approval review rejected removal.",
+    "Context-triggered automatic pauses and progress-stall intervention remain separate follow-ups.",
+    "C3 high retained counters are controlled PostgreSQL fixture seeds. High-version network-uncertain retry/409 and next-checkpoint mode have component coverage, not a separate fresh browser journey.",
+    "C4 large usage values are seeded fixture data. Actual browser proves the authoring threshold boundary; both run/authoring eligibility have focused component coverage. C3 high owner-version browser remains separately retained rather than relabelled as the C4 execution."
+  ],
+  "publication": {
+    "snapshot": "Final local repair candidate before update push; latest-head hosted acceptance recorded subsequently on PR and privately.",
+    "normal_automatic_pr_checks_and_codex": "Explicitly authorized; latest-head receipts will be recorded on the one published PR and retained locally.",
+    "manual_full_hosted_ci_authorized": false,
+    "runtime_live_provider_authorized": false,
+    "merge_authorized": false,
+    "pr": 112,
+    "url": "https://github.com/Clar17y/parallel-forge/pull/112",
+    "history": [
+      {
+        "head": "518fae8659d8f376c144978900f536a5662d0a7f",
+        "smoke": "passed",
+        "smoke_url": "https://github.com/Clar17y/parallel-forge/actions/runs/38291517929",
+        "codex": "completed with substantiated C1; one unresolved conversation before repair push"
+      },
+      {
+        "head": "86bf27ce157f6df4f687290d73db0d3304cac674",
+        "smoke": "failed secret scan before tests",
+        "smoke_url": "https://github.com/Clar17y/parallel-forge/actions/runs/38295462873",
+        "adjudication": "generic-api-key finding is a verified source SHA256 for apps/web/scripts/generate-api.mjs in the validation input map. Reformatting as path/sha256 entries preserves the same hashes without rule suppression.",
+        "redacted_evidence": ".llm-output/usage-final/gitleaks-86bf27c.tsv",
+        "C1_thread": "repaired with evidence reply and resolved"
+      },
+      {
+        "head": "626e760c487f9cc44d20c7679112197a2111a207",
+        "smoke": "passed",
+        "smoke_url": "https://github.com/Clar17y/parallel-forge/actions/runs/38296466761",
+        "codex": "completed with substantiated C2 test precision finding",
+        "finding": "https://github.com/Clar17y/parallel-forge/pull/112#discussion_r4251565162"
+      },
+      {
+        "head": "3190f6bc09cafdb27850038c83e1e562f062dcdb",
+        "smoke": "passed",
+        "smoke_url": "https://github.com/Clar17y/parallel-forge/actions/runs/38298487304",
+        "codex": "completed with substantiated C3 version precision finding; C1 and C2 conversations resolved",
+        "finding": "https://github.com/Clar17y/parallel-forge/pull/112#discussion_r4251691927"
+      },
+      {
+        "head": "7b0954d43073bba638d6aeec7db59601d6b8ba2d",
+        "smoke": "passed",
+        "smoke_url": "https://github.com/Clar17y/parallel-forge/actions/runs/38303586183",
+        "codex": "completed with substantiated C4 headroom finding; prior three finding conversations resolved"
+      }
+    ]
+  },
+  "independent_review": {
+    "provider_attempt": "Pinned Claude Opus5.5 medium ended in provider_error from expired OAuth, before a completed step; not quota exhaustion.",
+    "fallback": "Fresh reviewer, gpt-6-astra low",
+    "integrated_review": "Completed with no material production correctness/security findings; reuse, quality and efficiency covered.",
+    "original_diff_sha256": "2e2bf3706f68aaebee04ea424000a917db8fb7506b0211312bc4d67e41881e57",
+    "acceptance_clarifications": [
+      "A1 numeric epic outbound wire",
+      "A2 completed learned successors and crossing",
+      "A3 actual held check after provider-child settlement"
+    ],
+    "followup": "Original A1-A3 follow-up completed on b93bfb8e with no material findings. Codex subsequently found C1 on that published candidate; original review reports are preserved and are not proof of absence.",
+    "code_input_sha256": "b93bfb8ee88009b29e7e424d016eaf103637b4ec189632eff0373e2a715216e4",
+    "review_summary": ".llm-output/usage-final/integrated-review-summary.json",
+    "jev": "Attempted on exact saved integrated diff; partial advisory coverage remains visible. Final pre-push result retained locally.",
+    "C1_followup": {
+      "status": "completed; no material findings or remaining required acceptance gaps",
+      "question": "Numeric strict-API profile create/append, exact generated types, immutable version/retry behavior, and nonfinite values preserved until rejection before pending replay.",
+      "code_input_sha256": "300c8d1b89bb685d162e904e90ccc2be07f60ea97ed396eceb78a69d1bfdbec4",
+      "evidence": ".llm-output/usage-final/integration/profile-repair-receipts.json",
+      "full_review_reused_for_unchanged_paths": true
+    },
+    "C3_followup": {
+      "reason": "Named unresolved question: exact owner-version request/replay/receipt and policy-revision boundaries after C3; reuse the full integrated review for unchanged code.",
+      "status": "Completed: no material production-code defect. Evidence finding C3-V1 substantiated and resolved by six combined high-version panel tests; primary inspected the repair against the finding and verified 50 passing cases. No source behavior changed for V1.",
+      "code_input_sha256": "5b0b287f863fcf0e1b6d5c3aed450e4450cbc272d090987e3507dc7e74482313",
+      "reviewed_code_input_sha256": "5b0b287f863fcf0e1b6d5c3aed450e4450cbc272d090987e3507dc7e74482313",
+      "final_code_input_sha256": "dfdfb044b0ac429ec62ccb6c58186860eb877444824a891a467a61e7dc978faa",
+      "reviewed_integrated_diff_sha256": "b1bfb3d8b491154ec3152e8c84225ee4bf61b32945fff99060ec0283e52b00f5",
+      "report": ".llm-output/usage-final/c3-independent-review.md",
+      "validation_repair": ".llm-output/usage-final/integration/c3/v1-command-receipts.json",
+      "jev_status": "partial: hunk and operation budget limits; advisory only"
+    },
+    "C4_followup": {
+      "reason": "Named unresolved question: shared UI next-threshold headroom matches backend frozen-reference float/ceil semantics and preserves independent owner controls.",
+      "status": "Completed: no material findings; source arithmetic, independent controls and precise coverage/reuse claims accepted.",
+      "code_input_sha256": "46c7178ee12945ecae254d5bf90f5cac50cc24040989a1425250eb3d4844421a",
+      "report": ".llm-output/usage-final/c4-independent-review.md",
+      "reviewed_integrated_diff_sha256": "e2d71f470ce6b3cc06f3fc0a073ece23a04bc78286a0ca346d6a39ed0a1b2a42",
+      "jev": ".llm-output/usage-final/jev-c4-review.json",
+      "jev_status": "partial: hunk/budget/oversized-hunk limits; advisory only"
+    }
+  },
+  "post_publish_repair": {
+    "prior_head": "518fae8659d8f376c144978900f536a5662d0a7f",
+    "codex_finding": "https://github.com/Clar17y/parallel-forge/pull/112#discussion_r4251239629",
+    "adjudication": "Substantiated: ProfileList quoted exact cap strings, rejected by existing StrictInt API. Corrected before idempotency attempt state. Server numeric contract retained.",
+    "adjacent_case": "NaN and positive/negative Infinity became null during epic JSON cloning; structuredClone now preserves them for exact serializer rejection before pending/replay.",
+    "consolidation": "Second same raw-serializer caller defect prompted one remaining cap-writer audit and complete create/append/retry/stale/null/nonfinite repair batch with the existing integration owner.",
+    "prior_acceptance_limit": "Earlier profile page rendering and editor mocks did not prove exact-cap profile create/append. The new actual browser POST/API/SQL sequence supersedes that claim.",
+    "caller_audit": "Other JSON uses serve display, local storage/comparison keys or UUID/version/action-only writes. Monitoring/project actual mutation sends use the shared exact serializer.",
+    "receipt": ".llm-output/usage-final/integration/profile-repair-receipts.json",
+    "earlier_red_and_failed_browser_receipts_retained": true
+  },
+  "post_publish_repair_C3": {
+    "prior_head": "3190f6bc09cafdb27850038c83e1e562f062dcdb",
+    "finding": "https://github.com/Clar17y/parallel-forge/pull/112#discussion_r4251691927",
+    "adjudication": "Substantiated: PostgreSQL BIGINT and StrictInt request bounds support unsafe-for-JavaScript checkpoint versions; both panels rounded expected versions and rejected exact receipt strings. Related monitoring revision paths were consolidated under the same integration owner.",
+    "scope": "Checkpoint owner requests/receipts, monitoring revision editor/helper, route-scoped serializer and supported generated types; ordinary int32 application versions excluded.",
+    "receipt": ".llm-output/usage-final/integration/c3/command-receipts.json",
+    "earlier_failed_receipts_retained": true,
+    "independent_evidence_gap": "C3-V1: prior prose incorrectly combined high successes/helper cases with ordinary retry/409/next transitions. Those claims are now supported by six combined high-version panel tests; original195/browser receipts retained with their inputs."
+  },
+  "post_publish_repair_C4": {
+    "prior_head": "7b0954d43073bba638d6aeec7db59601d6b8ba2d",
+    "finding": "https://github.com/Clar17y/parallel-forge/pull/112#discussion_r4252025803",
+    "adjudication": "Substantiated: measured total fit alone did not ensure next_threshold total+max(1,ceil(frozen reference)) fits signed64. Both panels now share that eligibility calculation while keeping valid usage known and bypass eligibility unchanged.",
+    "receipt": ".llm-output/usage-final/integration/c4/command-receipts.json"
+  }
+}

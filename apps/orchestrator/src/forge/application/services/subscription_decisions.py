@@ -17,6 +17,14 @@ class SubscriptionDecisionApplication:
     def __init__(self, work_factory: Callable[[], UnitOfWork]) -> None:
         self._factory = work_factory
 
+    async def reject_invalid_primary_handoff(
+        self, attempt_id: UUID
+    ) -> SubscriptionSettlement | None:
+        async with self._factory() as work:
+            result = await work.subscription_decisions.reject_invalid_primary_handoff(attempt_id)
+            await work.commit()
+            return result
+
     async def prepare_acceptance(self, attempt_id: UUID) -> SubscriptionSettlement:
         async with self._factory() as work:
             result = await work.subscription_decisions.prepare_acceptance(attempt_id)

@@ -1,4 +1,5 @@
 import { api, mutate } from './client';
+import { MAX_SIGNED_64 } from './exact-integer';
 import type { components } from './schema';
 
 export type MonitoringMode = components['schemas']['MonitoringMode'];
@@ -8,11 +9,11 @@ export type TaskUsageHistoryResponse = components['schemas']['TaskUsageHistoryRe
 export type UsageHistorySummaryResponse = components['schemas']['UsageHistorySummaryResponse'];
 
 export const JS_MAX_SAFE_INTEGER = Number.MAX_SAFE_INTEGER; // 9,007,199,254,740,991
-export const MAX_SAFE_SIGNED_64 = 9223372036854775807n; // 2^63 - 1
+export const MAX_SAFE_SIGNED_64 = MAX_SIGNED_64;
 
 export interface IntegerValidationResult {
   valid: boolean;
-  value?: number | null;
+  value?: number | string | null;
   error?: string;
 }
 
@@ -22,15 +23,23 @@ export function validateSafeInteger(
     fieldName?: string;
     allowNull?: boolean;
     allowZero?: boolean;
-    min?: number;
-    max?: number;
+    allowSigned64?: boolean;
+    min?: number | bigint;
+    max?: number | bigint;
   } = {}
 ): IntegerValidationResult {
-  const { fieldName = 'Value', allowNull = true, allowZero = false, min, max } = options;
+  const { fieldName = 'Value', allowNull = true, allowZero = false, allowSigned64 = false, min, max } = options;
 
   if (input === null || input === undefined) {
     if (allowNull) return { valid: true, value: null };
     return { valid: false, error: `${fieldName} is required.` };
+  }
+
+  if (typeof input === 'number' && !Number.isSafeInteger(input)) {
+    return {
+      valid: false,
+      error: `${fieldName} is an unsafe JavaScript number. Integer precision loss rejected.`,
+    };
   }
 
   const rawStr = String(input).trim();
@@ -45,26 +54,39 @@ export function validateSafeInteger(
 
   try {
     const big = BigInt(rawStr);
-    if (big > BigInt(Number.MAX_SAFE_INTEGER) || big < -BigInt(Number.MAX_SAFE_INTEGER)) {
-      return {
-        valid: false,
-        error: `${fieldName} exceeds JavaScript safe integer limit (${Number.MAX_SAFE_INTEGER.toLocaleString()}). Integer precision loss rejected.`,
-      };
+    if (allowSigned64) {
+      if (big > MAX_SAFE_SIGNED_64 || big < -MAX_SAFE_SIGNED_64) {
+        return {
+          valid: false,
+          error: `${fieldName} exceeds signed 64-bit integer limit (${MAX_SAFE_SIGNED_64.toString()}).`,
+        };
+      }
+    } else {
+      if (big > BigInt(Number.MAX_SAFE_INTEGER) || big < -BigInt(Number.MAX_SAFE_INTEGER)) {
+        return {
+          valid: false,
+          error: `${fieldName} exceeds JavaScript safe integer limit (${Number.MAX_SAFE_INTEGER.toLocaleString()}). Integer precision loss rejected.`,
+        };
+      }
     }
-    const num = Number(big);
-    if (!allowZero && num === 0) {
+
+    if (!allowZero && big === 0n) {
       return {
         valid: false,
         error: `${fieldName} cannot be zero. Zero is invalid; omit or clear for unbounded.`,
       };
     }
-    if (min !== undefined && num < min) {
+    if (min !== undefined && big < BigInt(min)) {
       return { valid: false, error: `${fieldName} must be at least ${min}.` };
     }
-    if (max !== undefined && num > max) {
+    if (max !== undefined && big > BigInt(max)) {
       return { valid: false, error: `${fieldName} cannot exceed ${max}.` };
     }
-    return { valid: true, value: num };
+
+    if (big >= -BigInt(Number.MAX_SAFE_INTEGER) && big <= BigInt(Number.MAX_SAFE_INTEGER)) {
+      return { valid: true, value: Number(big) };
+    }
+    return { valid: true, value: big.toString() };
   } catch {
     return { valid: false, error: `${fieldName} is not a valid integer.` };
   }
@@ -77,12 +99,11 @@ export async function getMonitoringPolicy(projectId: string): Promise<Monitoring
 
 export async function getMonitoringPolicyRevision(
   projectId: string,
-  revision: number
+  revision: number | string
 ): Promise<MonitoringPolicyResponse> {
-  if (!Number.isSafeInteger(revision) || revision < 1) {
-    throw new Error('Revision must be a valid positive safe integer');
-  }
-  const result = await api<MonitoringPolicyResponse>(`/projects/${projectId}/monitoring-policy/${revision}`);
+  const validated = validateSafeInteger(revision, { allowSigned64: true, min: 1, allowNull: false });
+  if (!validated.valid) throw new Error('Revision must be a valid positive signed 64-bit integer');
+  const result = await api<MonitoringPolicyResponse>(`/projects/${projectId}/monitoring-policy/${validated.value}`);
   if (!result) throw new Error('Monitoring policy revision unavailable');
   return result;
 }
@@ -92,23 +113,48 @@ export async function reviseMonitoringPolicy(
   request: MonitoringPolicyRevisionRequest,
   options: { idempotencyKey?: string } = {}
 ): Promise<MonitoringPolicyResponse> {
-  if (!Number.isSafeInteger(request.expected_revision) || request.expected_revision < 0) {
-    throw new Error('Expected revision must be a valid nonnegative safe integer');
-  }
+  const expected = validateSafeInteger(request.expected_revision, { allowSigned64: true,
+    min: 0, max: MAX_SIGNED_64 - 1n, allowZero: true, allowNull: false });
+  if (!expected.valid) throw new Error('Expected revision must be a valid nonnegative signed 64-bit integer');
+  const signed64Fields = new Set([
+    'hard_token_cap',
+    'hard_context_cap',
+    'manual_estimate_tokens',
+    'history_limit',
+    'minimum_comparables',
+    'window_days',
+  ]);
+  const sanitizedRequest: MonitoringPolicyRevisionRequest = { ...request, expected_revision: expected.value as number | string };
   for (const field of ['hard_token_cap', 'hard_context_cap', 'manual_estimate_tokens', 'history_limit', 'minimum_comparables', 'window_days'] as const) {
     const value = request[field];
-    if (value != null && !validateSafeInteger(value, { fieldName: field, min: 1 }).valid) {
-      throw new Error(`${field} must be a positive safe integer or null`);
+    if (value != null) {
+      const isSigned64 = signed64Fields.has(field);
+      const validation = validateSafeInteger(value, {
+        fieldName: field,
+        min: 1,
+        allowSigned64: isSigned64,
+      });
+      if (!validation.valid) {
+        throw new Error(`${field} must be a positive safe integer or null`);
+      }
+      sanitizedRequest[field] = validation.value as (number | string);
+    }
+  }
+  if (sanitizedRequest.history_limit != null && sanitizedRequest.minimum_comparables != null) {
+    if (BigInt(sanitizedRequest.minimum_comparables) > BigInt(sanitizedRequest.history_limit)) {
+      throw new Error('minimum_comparables cannot exceed history_limit');
     }
   }
   const idempotencyKey = options.idempotencyKey ?? crypto.randomUUID();
   const result = await mutate<MonitoringPolicyResponse>(
     `/projects/${projectId}/monitoring-policy`,
-    request as Record<string, unknown>,
+    sanitizedRequest as Record<string, unknown>,
     { idempotencyKey, method: 'POST' }
   );
   if (!result) throw new Error('Monitoring policy revision response unavailable');
-  if (!Number.isSafeInteger(result.revision) || result.revision < 1) throw new Error('Monitoring policy revision response has unsafe revision');
+  if (!validateSafeInteger(result.revision, { allowSigned64: true, min: 1, allowNull: false }).valid) {
+    throw new Error('Monitoring policy revision response has invalid revision');
+  }
   return result;
 }
 
@@ -133,15 +179,12 @@ export interface TaskUsageReportFilterParams {
   provider?: string | null;
   model?: string | null;
   effort?: string | null;
-  windowDays?: number | null;
+  windowDays?: number | string | null;
 }
 
 export async function getTaskUsageReport(
   params: TaskUsageReportFilterParams
 ): Promise<TaskUsageHistoryResponse> {
-  if (params.windowDays != null && !validateSafeInteger(params.windowDays, { fieldName: 'Window days', min: 1 }).valid) {
-    throw new Error('Window days must be a positive safe integer');
-  }
   const query = new URLSearchParams();
   query.append('project_id', params.projectId);
   if (params.subjectKind) query.append('subject_kind', params.subjectKind);
@@ -150,7 +193,15 @@ export async function getTaskUsageReport(
   if (params.model) query.append('model', params.model);
   if (params.effort) query.append('effort', params.effort);
   if (params.windowDays != null) {
-    query.append('window_days', String(params.windowDays));
+    const validation = validateSafeInteger(params.windowDays, {
+      fieldName: 'Window days',
+      min: 1,
+      allowSigned64: true,
+    });
+    if (!validation.valid) {
+      throw new Error(validation.error ?? 'Window days must be a positive safe integer');
+    }
+    query.append('window_days', String(validation.value));
   }
 
   const result = await api<TaskUsageHistoryResponse>(`/task-usage-report?${query.toString()}`);

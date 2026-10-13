@@ -51,7 +51,11 @@ async def _commit():
 
 
 async def _run(run_id):
-    return SimpleNamespace(state=RunState.IMPLEMENTING)
+    return SimpleNamespace(id=run_id, project_id=UUID(int=2), state=RunState.IMPLEMENTING)
+
+
+async def _no_checkpoint(_subject):
+    return None
 
 
 async def test_recovery_pages_past_deferred_and_unsupported_sources():
@@ -87,6 +91,7 @@ async def test_recovery_pages_past_deferred_and_unsupported_sources():
                 subscription_decisions=SimpleNamespace(pending_applications=pending),
                 subscription_recovery=RecoveryProjectionStub(),
                 runs=SimpleNamespace(get=_run),
+                task_usage_checkpoints=SimpleNamespace(active_for_subject=_no_checkpoint),
                 commit=_commit,
                 rollback=rollback,
             )
@@ -122,6 +127,7 @@ async def test_recovery_does_not_swallow_cancellation():
             subscription_decisions=SimpleNamespace(pending_applications=pending),
             subscription_recovery=RecoveryProjectionStub(),
             runs=SimpleNamespace(get=_run),
+            task_usage_checkpoints=SimpleNamespace(active_for_subject=_no_checkpoint),
             commit=_commit,
             rollback=rollback,
         )
@@ -174,6 +180,7 @@ async def test_recovery_classifies_database_failures_consistently(error, classif
             subscription_decisions=SimpleNamespace(pending_applications=pending),
             subscription_recovery=projection,
             runs=SimpleNamespace(get=_run),
+            task_usage_checkpoints=SimpleNamespace(active_for_subject=_no_checkpoint),
             commit=_commit,
             rollback=_commit,
         )
@@ -220,6 +227,7 @@ async def test_recovery_dispatches_handoff_only_when_observer_is_configured():
             subscription_decisions=SimpleNamespace(pending_applications=pending),
             subscription_recovery=RecoveryProjectionStub(),
             runs=SimpleNamespace(get=_run),
+            task_usage_checkpoints=SimpleNamespace(active_for_subject=_no_checkpoint),
             commit=_commit,
             rollback=rollback,
         )
@@ -227,12 +235,88 @@ async def test_recovery_dispatches_handoff_only_when_observer_is_configured():
     async def apply(attempt):
         applied.append(attempt)
 
-    unavailable = await SubscriptionDecisionRecovery(factory, object()).reconcile_all()
+    async def no_primary_mismatch(attempt):
+        assert attempt == identity
+
+    unavailable_recovery = SubscriptionDecisionRecovery(factory, object())
+    unavailable_recovery._decisions = SimpleNamespace(
+        reject_invalid_primary_handoff=no_primary_mismatch
+    )
+    unavailable = await unavailable_recovery.reconcile_all()
     assert unavailable.unsupported == 1 and not applied
-    available = await SubscriptionDecisionRecovery(
+    available_recovery = SubscriptionDecisionRecovery(
         factory, object(), handoffs=SimpleNamespace(apply=apply)
-    ).reconcile_all()
+    )
+    available_recovery._decisions = SimpleNamespace(
+        reject_invalid_primary_handoff=no_primary_mismatch
+    )
+    available = await available_recovery.reconcile_all()
     assert available.applied == 1 and applied == [identity]
+
+
+async def test_recovery_rejects_primary_handoff_before_handoff_observer():
+    identity = UUID(int=91)
+    rejected = []
+    applied = []
+
+    async def pending(cursor, _limit):
+        return (
+            () if cursor else (PendingSubscriptionDecision(identity, PendingDecisionKind.HANDOFF),)
+        )
+
+    @asynccontextmanager
+    async def factory():
+        yield SimpleNamespace(
+            subscription_decisions=SimpleNamespace(pending_applications=pending),
+            subscription_recovery=RecoveryProjectionStub(),
+            runs=SimpleNamespace(get=_run),
+            task_usage_checkpoints=SimpleNamespace(active_for_subject=_no_checkpoint),
+            commit=_commit,
+            rollback=_commit,
+        )
+
+    async def reject(attempt):
+        rejected.append(attempt)
+        return object()
+
+    async def apply(attempt):
+        applied.append(attempt)
+
+    recovery = SubscriptionDecisionRecovery(
+        factory, object(), handoffs=SimpleNamespace(apply=apply)
+    )
+    recovery._decisions = SimpleNamespace(reject_invalid_primary_handoff=reject)
+    report = await recovery.reconcile_all()
+    assert report.applied == 1
+    assert rejected == [identity] and applied == []
+
+
+async def test_active_usage_checkpoint_defers_primary_handoff_rejection():
+    identity = UUID(int=92)
+
+    async def pending(cursor, _limit):
+        return (
+            () if cursor else (PendingSubscriptionDecision(identity, PendingDecisionKind.HANDOFF),)
+        )
+
+    @asynccontextmanager
+    async def factory():
+        yield SimpleNamespace(
+            subscription_decisions=SimpleNamespace(pending_applications=pending),
+            subscription_recovery=RecoveryProjectionStub(),
+            runs=SimpleNamespace(get=_run),
+            task_usage_checkpoints=SimpleNamespace(
+                active_for_subject=AsyncMock(return_value=object())
+            ),
+            commit=_commit,
+            rollback=_commit,
+        )
+
+    recovery = SubscriptionDecisionRecovery(factory, object())
+    recovery._decisions = SimpleNamespace(reject_invalid_primary_handoff=AsyncMock())
+    report = await recovery.reconcile_all()
+    assert (report.applied, report.deferred) == (0, 1)
+    recovery._decisions.reject_invalid_primary_handoff.assert_not_awaited()
 
 
 async def test_recovery_does_not_record_failure_from_changed_task_version():
@@ -250,6 +334,7 @@ async def test_recovery_does_not_record_failure_from_changed_task_version():
             subscription_decisions=SimpleNamespace(pending_applications=pending),
             subscription_recovery=projection,
             runs=SimpleNamespace(get=_run),
+            task_usage_checkpoints=SimpleNamespace(active_for_subject=_no_checkpoint),
             commit=_commit,
             rollback=_commit,
         )
@@ -283,6 +368,8 @@ async def test_recovery_role_rejection_uses_observed_task_version():
         yield SimpleNamespace(
             subscription_decisions=SimpleNamespace(pending_applications=pending),
             subscription_recovery=projection,
+            runs=SimpleNamespace(get=_run),
+            task_usage_checkpoints=SimpleNamespace(active_for_subject=_no_checkpoint),
             commit=_commit,
             rollback=_commit,
         )

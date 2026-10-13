@@ -252,18 +252,35 @@ test('appending a saved above-reference budget requires clearing invalid zero', 
   expect(save.mock.calls[0][0].preferences[0].token_budget).toEqual({ max_input_tokens: 2_000_000, max_output_tokens: null });
 });
 
-test('rejects unsafe and fractional role caps before saving', async () => {
+test('saves exact signed64 role caps up to INT64_MAX and rejects fractional or overflow caps', async () => {
   const save = vi.fn().mockResolvedValue(undefined);
   render(<ProfileEditor onSave={save} />);
   await userEvent.click(screen.getAllByText('Advanced')[0]);
   const cap = screen.getByRole('textbox', { name: 'Primary input token budget' });
-  await userEvent.type(cap, '9007199254740993');
+
+  // Try overflow beyond INT64_MAX
+  await userEvent.type(cap, '9223372036854775808');
   await userEvent.click(screen.getByRole('button', { name: 'Create profile version 1' }));
   expect(save).not.toHaveBeenCalled();
+
+  // Try fraction
   await userEvent.clear(cap);
   await userEvent.type(cap, '1.5');
   await userEvent.click(screen.getByRole('button', { name: 'Create profile version 1' }));
   expect(save).not.toHaveBeenCalled();
+
+  // Valid exact signed64 cap beyond MAX_SAFE
+  await userEvent.clear(cap);
+  await userEvent.type(cap, '9007199254740993');
+  await userEvent.click(screen.getByRole('button', { name: 'Create profile version 1' }));
+  expect(save).toHaveBeenCalledWith(expect.objectContaining({
+    preferences: expect.arrayContaining([
+      expect.objectContaining({
+        purpose: 'primary',
+        token_budget: expect.objectContaining({ max_input_tokens: '9007199254740993' }),
+      }),
+    ]),
+  }));
 });
 
 test('choosing a model leaves explicit authentication and billing choices intact', async () => {
@@ -285,8 +302,13 @@ test('regression: uses updated offline fallback seeds and provides refresh model
   const review = defaults.find(p => p.purpose === 'independent_review');
   const routine = defaults.find(p => p.purpose === 'routine_implementation');
 
-  expect(complex?.preferred_route.model).toBe('gpt-6-sol');
+  expect(complex?.preferred_route.model).toBe('gpt-6.1-sol');
   expect(complex?.preferred_route.effort).toBe('medium');
+  for (const purpose of ['planning', 'security', 'integration']) {
+    const route = defaults.find(p => p.purpose === purpose)?.preferred_route;
+    expect(route?.model).toBe('gpt-6.1-sol');
+    expect(route?.effort).toBe(purpose === 'security' ? 'high' : 'medium');
+  }
   expect(review?.preferred_route.model).toBe('claude-opus-5-5');
   expect(routine?.fallback_routes[0]?.model).toBe('gpt-6-luna');
 

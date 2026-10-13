@@ -8,8 +8,10 @@ import { Button } from '@/components/ui/button';
 import { profileLabel } from './labels';
 import {
   defaultRolePreferences,
+  offlineModelSuggestions,
   type Route,
   type Preference,
+  type ReasoningEffort,
   type SubscriptionModelCatalogPage,
 } from './models';
 import { JevSettings, type JevPolicy } from '@/components/projects/jev-settings';
@@ -193,7 +195,30 @@ export function ProfileEditor({
     : fetchedCatalogs;
 
   const availableCatalogs = catalogs.value?.catalogs;
-  const presets = useMemo(() => routePresets(availableCatalogs), [availableCatalogs]);
+  const presets = useMemo(() => {
+    const list = routePresets(availableCatalogs).map(p => {
+      if (p.model === 'gpt-6.1-sol' && p.source === 'suggestion') {
+        return { ...p, defaultEffort: 'maximum' as ReasoningEffort, efforts: ['maximum' as ReasoningEffort] };
+      }
+      return p;
+    });
+    const catalogReported = new Set(
+      availableCatalogs?.flatMap(c => c.models.map(m => `${c.provider.toLowerCase()}:${c.client.toLowerCase()}:${m.id}`)) ?? []
+    );
+    const extraSuggestions: RoutePreset[] = offlineModelSuggestions
+      .filter(s => !catalogReported.has(`${s.provider.toLowerCase()}:${s.client.toLowerCase()}:${s.id}`) &&
+                   !list.some(p => p.provider === s.provider && p.client === s.client && p.model === s.id))
+      .map(s => ({
+        provider: s.provider,
+        client: s.client,
+        model: s.id,
+        label: s.label,
+        efforts: (s.efforts.length ? s.efforts : ['low']) as ReasoningEffort[],
+        defaultEffort: (s.efforts[0] ?? 'low') as ReasoningEffort,
+        source: 'suggestion' as const,
+      }));
+    return [...list, ...extraSuggestions];
+  }, [availableCatalogs]);
 
   const [preferences, setPreferences] = useState<EditablePreference[]>(() =>
     (initial?.preferences ?? defaultRolePreferences()).map((value, i) => ({
@@ -288,7 +313,7 @@ export function ProfileEditor({
     for (const preference of preferences) {
       for (const key of ['max_input_tokens', 'max_output_tokens'] as const) {
         const value = preference.token_budget?.[key];
-        if (value != null && !validateSafeInteger(value, { fieldName: key, min: 1 }).valid) {
+        if (value != null && !validateSafeInteger(value, { fieldName: key, min: 1, allowSigned64: true }).valid) {
           setError(`${profileLabel(preference.purpose)} ${key} must be a positive safe integer or blank to inherit.`);
           return;
         }
@@ -384,7 +409,7 @@ export function ProfileEditor({
               {(['input', 'output'] as const).map(dimension => {
                 const key = dimension === 'input' ? 'max_input_tokens' : 'max_output_tokens';
                 const budget = preference.token_budget ?? {};
-                const updateBudget = (value: number | null) => updatePreference(index, {
+                const updateBudget = (value: number | string | null) => updatePreference(index, {
                   token_budget: { ...budget, [key]: value },
                 });
                 const label = `${profileLabel(preference.purpose)} ${dimension} token budget`;
@@ -395,9 +420,10 @@ export function ProfileEditor({
                     ariaLabel={label}
                     fieldName={label}
                     value={budget[key]}
+                    allowSigned64
                     onChange={updateBudget}
                   />
-                  <span>{budget[key] == null ? `${dimension === 'input' ? 'Input' : 'Output'} tokens: Use run/task default` : `Saved ${dimension} hard cap: ${budget[key]!.toLocaleString()} tokens`}</span>
+                  <span>{budget[key] == null ? `${dimension === 'input' ? 'Input' : 'Output'} tokens: Use run/task default` : `Saved ${dimension} hard cap: ${(typeof budget[key] === 'number' ? budget[key]!.toLocaleString() : BigInt(budget[key]!).toLocaleString())} tokens`}</span>
                 </div>;
               })}
             </fieldset>

@@ -4,13 +4,14 @@ import { useState } from 'react';
 import { validateSafeInteger } from '@/lib/api/monitoring-policy';
 
 export interface OptionalTokenCapInputProps {
-  value: number | null | undefined;
-  onChange: (value: number | null) => void;
+  value: number | string | null | undefined;
+  onChange: (value: number | string | null) => void;
   caption: string;
   ariaLabel: string;
   fieldName: string;
   helpText: string;
   error?: string;
+  allowSigned64?: boolean;
 }
 
 export function OptionalTokenCapInput({
@@ -21,9 +22,16 @@ export function OptionalTokenCapInput({
   fieldName,
   helpText,
   error,
+  allowSigned64 = false,
 }: OptionalTokenCapInputProps) {
   const [draft, setDraft] = useState(value == null ? '' : String(value));
+  const [prevValue, setPrevValue] = useState(value);
   const [localError, setLocalError] = useState<string>();
+
+  if (value !== prevValue) {
+    setPrevValue(value);
+    setDraft(value == null ? '' : String(value));
+  }
 
   const activeError = error || localError;
 
@@ -42,6 +50,7 @@ export function OptionalTokenCapInput({
           const result = validateSafeInteger(raw, {
             fieldName,
             min: 1,
+            allowSigned64,
           });
           const message = result.valid ? '' : (result.error ?? '');
           event.target.setCustomValidity(message);

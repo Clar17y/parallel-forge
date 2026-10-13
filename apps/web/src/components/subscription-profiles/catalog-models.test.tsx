@@ -2,7 +2,7 @@ import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { ProfileEditor } from './profile-editor';
-import { defaultRolePreferences, extractNumericVersion, compareNumericVersions, deriveModelFromCatalogs } from './models';
+import { defaultRolePreferences, extractNumericVersion, compareNumericVersions, deriveModelFromCatalogs, offlineModelSuggestions } from './models';
 import { routePresetIdentity } from '@/components/model-selection/model-presets';
 import { SubscriptionRuntimeStatus } from './runtime-status';
 import type { SubscriptionModelCatalogPage, SubscriptionModelCatalogView } from './models';
@@ -130,7 +130,7 @@ describe('numeric versioning and catalog derivation', () => {
     // Offline / seed fallback when catalogs unavailable
     const offlinePreferences = defaultRolePreferences();
     const offlineComplex = offlinePreferences.find(p => p.purpose === 'complex_implementation');
-    expect(offlineComplex?.preferred_route.model).toBe('gpt-6-sol');
+    expect(offlineComplex?.preferred_route.model).toBe('gpt-6.1-sol');
   });
 
   test('uses a compatible current model even when the offline suggestion is newer', () => {
@@ -297,6 +297,33 @@ describe('profile editor catalog choices and interactions', () => {
     const gemini = Array.from((fbModelChoice as HTMLSelectElement).options).find(option => option.textContent?.includes('Gemini 4 Flash'))!;
     await userEvent.selectOptions(fbModelChoice, gemini.value);
     expect(screen.getByLabelText('Primary fallback route 1 custom model')).toHaveValue('gemini-4-flash');
+  });
+
+  test('offline model suggestions are scoped by provider and client and available in presets', async () => {
+    expect(offlineModelSuggestions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ provider: 'openai', client: 'codex_app_server', id: 'gpt-6.1-sol' }),
+      expect.objectContaining({ provider: 'anthropic', client: 'claude_code', id: 'claude-sonnet-5-5' }),
+      expect.objectContaining({ provider: 'anthropic', client: 'claude_code', id: 'claude-haiku-5-5' }),
+    ]));
+
+    render(<ProfileEditor catalogPage={{ ...catalogPage, catalogs: [] }} onSave={vi.fn()} />);
+    const modelSelect = screen.getByLabelText('Primary model') as HTMLSelectElement;
+    const optionLabels = Array.from(modelSelect.options).map(o => o.textContent ?? '');
+    expect(optionLabels).toContain('Claude Sonnet 5.5');
+    expect(optionLabels).toContain('Claude Haiku 5.5');
+    expect(optionLabels).toContain('Sol 6.1');
+  });
+
+  test('fresh catalog models take precedence over matching offline suggestions', () => {
+    const catalogs: SubscriptionModelCatalogView[] = [{
+      ...sampleCatalogs[2],
+      models: [{ id: 'claude-sonnet-5-5', label: 'Reported Sonnet', efforts: ['high'] }],
+    }];
+    render(<ProfileEditor catalogPage={{ ...catalogPage, catalogs }} onSave={vi.fn()} />);
+    const modelSelect = screen.getByLabelText('Primary model') as HTMLSelectElement;
+    const matching = Array.from(modelSelect.options).filter(o => o.value.includes('claude-sonnet-5-5'));
+    expect(matching).toHaveLength(1);
+    expect(matching[0].textContent).toContain('Reported Sonnet');
   });
 
   test('changing role purpose does not remount role section or destroy focus/draft', async () => {

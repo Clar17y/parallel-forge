@@ -462,5 +462,19 @@ test('blocks saving a legacy unsafe project cap before JSON can round it', async
   render(<ProjectForm policyOnly initial={{ planner_model: { ...defaultModel, max_input_tokens: Number.MAX_SAFE_INTEGER + 1 } }} onSave={save} />);
   await userEvent.click(screen.getByRole('button', { name: 'Create policy version' }));
   expect(save).not.toHaveBeenCalled();
-  expect(screen.getByText(/planner_model max_input_tokens must be a positive safe integer/i)).toBeInTheDocument();
+  expect(screen.getByText(/planner_model max_input_tokens must be a positive signed 64-bit integer/i)).toBeInTheDocument();
+});
+
+test('submits exact signed64 project model caps without narrowing them to JavaScript numbers', async () => {
+  const save = vi.fn().mockResolvedValue(undefined);
+  render(<ProjectForm policyOnly initial={{ planner_model: {
+    ...defaultModel, max_input_tokens: '9007199254740993',
+    max_output_tokens: '9223372036854775807',
+  } }} onSave={save} />);
+  await userEvent.click(screen.getByRole('button', { name: 'Create policy version' }));
+  expect(save).toHaveBeenCalledWith(expect.objectContaining({
+    planner_model: expect.objectContaining({
+      max_input_tokens: '9007199254740993', max_output_tokens: '9223372036854775807',
+    }),
+  }));
 });

@@ -227,7 +227,7 @@ async def test_gateways_keep_exhaustion_when_client_stop_is_uncertain(
         async def start(self, *args, **kwargs):
             return Session()
 
-    async def exchange(*args):
+    async def exchange(*args, **kwargs):
         return SubscriptionInvocationResult(
             attempt=request.attempt, failure=SubscriptionFailure.QUOTA, quota_exhaustion=evidence
         )

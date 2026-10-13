@@ -108,7 +108,10 @@ class SubscriptionDecisionRecovery:
                 if checkpoint is not None:
                     deferred += 1
                     continue
-                if violation is not None:
+                if violation is not None and not (
+                    candidate.kind is PendingDecisionKind.HANDOFF
+                    and violation == "primary_handoff_forbidden"
+                ):
                     async with self._factory() as work:
                         await work.subscription_recovery.reject_role_violation(
                             candidate.attempt_id,
@@ -140,10 +143,15 @@ class SubscriptionDecisionRecovery:
                         and self._acceptance is not None
                     ):
                         await self._acceptance.apply(candidate.attempt_id)
-                    elif (
-                        candidate.kind is PendingDecisionKind.HANDOFF and self._handoffs is not None
-                    ):
-                        await self._handoffs.apply(candidate.attempt_id)
+                    elif candidate.kind is PendingDecisionKind.HANDOFF:
+                        rejected = await self._decisions.reject_invalid_primary_handoff(
+                            candidate.attempt_id
+                        )
+                        if rejected is None:
+                            if self._handoffs is None:
+                                unsupported += 1
+                                continue
+                            await self._handoffs.apply(candidate.attempt_id)
                     elif (
                         candidate.kind is PendingDecisionKind.REVIEW_SELECTION
                         and self._candidates is not None

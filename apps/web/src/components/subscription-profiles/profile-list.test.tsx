@@ -7,15 +7,20 @@ const mockedClient = vi.hoisted(() => {
   class MockApiError extends Error { constructor(public status: number, code: string) { super(code); } }
   return { MockApiError, api: vi.fn() };
 });
-mockedClient.api.mockImplementation(async (path: string) => {
+const defaultApi = async (path: string) => {
   if (path === '/subscription-models') {
     return { observed_at: '2026-09-29T20:00:00Z', catalogs: [] };
   }
   throw new mockedClient.MockApiError(409, 'stale-projection');
-});
+};
+mockedClient.api.mockImplementation(defaultApi);
 vi.mock('@/lib/api/client', () => ({ ApiError: mockedClient.MockApiError, api: mockedClient.api }));
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  mockedClient.api.mockReset();
+  mockedClient.api.mockImplementation(defaultApi);
+});
 const profile = (version: number) => ({ profile_id: 'profile-1', version, default_billing_mode: 'allowance_only', approved_mappings: [], preferences: [{ purpose: 'primary', preferred_route: { provider: 'openai', client: 'codex', model: `model-${version}`, effort: 'low', auth_mode: 'subscription', billing_mode: 'allowance_only' }, fallback_routes: [] }] });
 test('keeps historical versions visible and labels them immutable', async () => {
   render(<ProfileList profiles={[profile(1), profile(2)]} refresh={vi.fn()} />);
@@ -28,6 +33,46 @@ test('keeps historical versions visible and labels them immutable', async () => 
 test('derives the same retry key only for the same request payload', () => {
   expect(keyFor({ path: '/subscription-profiles', body: { x: 1 } })).toBe(keyFor({ path: '/subscription-profiles', body: { x: 1 } }));
   expect(keyFor({ path: '/subscription-profiles', body: { x: 1 } })).not.toBe(keyFor({ path: '/subscription-profiles', body: { x: 2 } }));
+  expect(keyFor({ path: '/subscription-profiles', body: { max_input_tokens: '9007199254740992' } })).not.toBe(
+    keyFor({ path: '/subscription-profiles', body: { max_input_tokens: '9007199254740993' } })
+  );
+});
+
+test.each(['create', 'append'])('sends exact numeric profile caps and replays the same body/key after uncertain %s', async mode => {
+  const requests: Array<{ path: string; body: string; key: string }> = [];
+  mockedClient.api.mockImplementation(async (path: string, options?: RequestInit) => {
+    if (path === '/subscription-models') return { catalogs: [] };
+    requests.push({ path, body: String(options?.body),
+      key: String((options?.headers as Record<string, string>)['Idempotency-Key']) });
+    if (requests.length === 1) throw new Error('response lost');
+    return profile(mode === 'create' ? 1 : 2);
+  });
+  const refresh = vi.fn();
+  render(<ProfileList profiles={mode === 'create' ? [] : [profile(1)]} refresh={refresh} />);
+  if (mode === 'append') {
+    await userEvent.click(screen.getByText(/Saved profile history/));
+    await userEvent.click(screen.getByRole('button', { name: 'Append from latest version 1' }));
+  }
+  const form = screen.getByRole('form', { name: mode === 'create' ? 'Create subscription profile' : 'Append profile version 1' });
+  const fields = within(form);
+  await userEvent.click(fields.getAllByText('Advanced')[0]);
+  fireEvent.change(fields.getByRole('textbox', { name: 'Primary input token budget' }),
+    { target: { value: '9007199254740993' } });
+  fireEvent.change(fields.getByRole('textbox', { name: 'Primary output token budget' }),
+    { target: { value: '9223372036854775807' } });
+  const save = fields.getByRole('button', { name: mode === 'create' ? 'Create profile version 1' : 'Append version 2' });
+  await userEvent.click(save);
+  expect(await fields.findByRole('alert')).toHaveTextContent('response lost');
+  expect(requests).toHaveLength(1);
+  expect(requests[0].body).toMatch(/"max_input_tokens":9007199254740993\b/);
+  expect(requests[0].body).toMatch(/"max_output_tokens":9223372036854775807\b/);
+  expect(requests[0].body).toMatch(/"purpose":"primary"/);
+  expect(requests[0].path).toBe(mode === 'create' ? '/subscription-profiles' : '/subscription-profiles/profile-1/versions');
+  if (mode === 'append') expect(requests[0].body).toMatch(/"expected_current_version":1\b/);
+  await userEvent.click(save);
+  expect(requests).toHaveLength(2);
+  expect(requests[1]).toEqual(requests[0]);
+  expect(refresh).toHaveBeenCalledOnce();
 });
 
 test('offers an explicit reload after a stale append response', async () => {
@@ -116,26 +161,18 @@ test.each([
   const model = fields.getByLabelText('Primary model') as HTMLSelectElement;
   await userEvent.selectOptions(model, Array.from(model.options).find(option => option.textContent === 'Sol 6.1')!.value);
   await userEvent.click(fields.getAllByText('Advanced')[0]);
-  await userEvent.click(fields.getByRole('button', { name: 'Set Primary input token budget' }));
-  const input = fields.getByRole('slider', { name: 'Primary input token budget' });
-  const inputControls = within(input.parentElement!);
-  await userEvent.click(inputControls.getByRole('button', { name: '25%' }));
-  await userEvent.click(inputControls.getByLabelText('Exact value'));
-  const exact = fields.getByRole('spinbutton', { name: 'Primary input token budget exact value' });
-  const enableOutput = fields.getByRole('button', { name: 'Set Primary output token budget' });
+  const input = fields.getByRole('textbox', { name: 'Primary input token budget' });
+  await userEvent.type(input, '262500');
+  const output = fields.getByRole('textbox', { name: 'Primary output token budget' });
   await userEvent.click(fields.getByRole('button', { name: mode === 'create' ? 'Create profile version 1' : 'Append version 2' }));
   expect(input).toBeDisabled();
   expect(model).toBeDisabled();
   expect(fields.getByLabelText('Primary reasoning')).toBeDisabled();
-  expect(exact).toBeDisabled();
-  expect(inputControls.getByLabelText('Exact value')).toBeDisabled();
-  expect(inputControls.getByRole('button', { name: '50%' })).toBeDisabled();
-  expect(enableOutput).toBeDisabled();
-  expect(fields.getByRole('button', { name: 'Primary input tokens use run/task default' })).toBeDisabled();
+  expect(output).toBeDisabled();
   for (const operation of fields.getAllByRole('button', { name: mode === 'create' ? 'Remove role' : 'Add role preference' })) {
     expect(operation).toBeDisabled();
   }
-  await userEvent.click(inputControls.getByRole('button', { name: '50%' }));
+  await userEvent.type(input, '9');
   fireEvent.submit(form);
   expect(posted).toHaveLength(1);
   expect(input).toHaveValue('262500');
@@ -148,8 +185,9 @@ test.each([
   } else {
     expect(fields.getByRole('alert')).toHaveTextContent('Save failed');
     expect(input).toBeEnabled();
-    expect(exact).toHaveValue(262500);
-    await userEvent.click(inputControls.getByRole('button', { name: '50%' }));
+    expect(input).toHaveValue('262500');
+    await userEvent.clear(input);
+    await userEvent.type(input, '525000');
     expect(input).toHaveValue('525000');
     expect(posted).toHaveLength(1);
   }

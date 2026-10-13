@@ -4,7 +4,7 @@ import asyncio
 import subprocess
 from pathlib import Path
 from time import monotonic, sleep
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -20,7 +20,11 @@ pytestmark = pytest.mark.integration
 pytest_plugins = ("apps.orchestrator.tests.persistence.conftest",)
 
 
-async def _seed_checkpoint(database_url: str) -> tuple[str, str]:
+async def _seed_checkpoint(
+    database_url: str, *, generation: int = 1,
+    next_threshold: int | None = None, usage_pauses_disabled: bool = False,
+    monitoring_policy_revision: int | None = None,
+) -> tuple[str, str]:
     project, task, run, execution, unit, checkpoint, actor = (uuid4() for _ in range(7))
     members = '[{"role":"developer","provider":"fixture","model":"fixture","ordinal":0}]'
     digest = RouteCohort.from_members(
@@ -38,7 +42,7 @@ async def _seed_checkpoint(database_url: str) -> tuple[str, str]:
             await db.execute(text("INSERT INTO task_usage_policy_revisions (project_id, revision, mode, warning_multiplier, checkpoint_multiplier, history_limit, minimum_comparables, actor_id) VALUES (:project, 1, 'checkpoint', 1.5, 2, 50, 20, :actor)"), {"project": project, "actor": actor})
             await db.execute(text("INSERT INTO task_usage_observations (id, project_id, work_unit_id, event_id, sequence, counter_kind, scope, input_tokens, context_occupied_tokens, context_capacity_tokens, compaction_count, final, final_status, observed_at, schema_version) VALUES (:id, :project, :unit, 'process-event', 1, 'cumulative', 'source', 100, 40, 100, 2, true, 'succeeded', now(), 1)"), {"id": uuid4(), "project": project, "unit": unit})
             await db.execute(text("INSERT INTO task_usage_baselines (work_unit_id, project_id, subject_kind, subject_id, policy_revision, history_digest, snapshot_digest, estimator_version, window_limit, minimum_comparables, cohort_digest, frozen_at, schema_version, sample_count, status, reference_tokens, warning_threshold_tokens, checkpoint_threshold_tokens, frozen_payload) VALUES (:unit, :project, 'run', :run, 1, :history, :snapshot, 'median_p90_v1', 50, 20, :cohort, now(), 1, 0, 'manual', 25, 37.5, 50, '{}'::jsonb)"), {"unit": unit, "project": project, "run": run, "history": "c" * 64, "snapshot": "d" * 64, "cohort": digest})
-            await db.execute(text("INSERT INTO task_usage_checkpoints (id, project_id, work_unit_id, baseline_work_unit_id, subject_kind, subject_id, policy_revision, reference_digest, trigger_event_id, state, version, generation, process_settled) VALUES (:id, :project, :unit, :unit, 'run', :run, 1, :reference, 'process-event', 'checkpoint_requested', 0, 1, false)"), {"id": checkpoint, "project": project, "unit": unit, "run": run, "reference": "d" * 64})
+            await db.execute(text("INSERT INTO task_usage_checkpoints (id, project_id, work_unit_id, baseline_work_unit_id, subject_kind, subject_id, policy_revision, reference_digest, trigger_event_id, state, version, generation, process_settled, next_checkpoint_threshold_tokens, usage_pauses_disabled, monitoring_policy_revision) VALUES (:id, :project, :unit, :unit, 'run', :run, 1, :reference, 'process-event', 'checkpoint_requested', 0, :generation, false, :threshold, :disabled, :monitoring_revision)"), {"id": checkpoint, "project": project, "unit": unit, "run": run, "reference": "d" * 64, "generation": generation, "threshold": next_threshold, "disabled": usage_pauses_disabled, "monitoring_revision": monitoring_policy_revision})
     finally:
         await engine.dispose()
     return str(run), str(checkpoint)
@@ -140,9 +144,16 @@ async def _authoring_journey(database_url: str, job_id: str) -> dict[str, object
                 "WHERE u.subject_kind = 'authoring_job' AND u.subject_id = :job "
                 "ORDER BY o.observed_at"
             ), {"job": job_id})).all()
+            debits = (await db.execute(text(
+                "SELECT number, usage->>'input_tokens', usage->>'output_tokens', "
+                "failure FROM epic_brainstorm_attempts WHERE job_id = :job ORDER BY number"
+            ), {"job": job_id})).all()
+            repair_debits = await db.scalar(text("SELECT count(*) FROM subscription_repair_debits"))
             return {"attempts": [tuple(row) for row in attempts],
                     "units": [tuple(row) for row in units],
-                    "observations": [tuple(row) for row in observations]}
+                    "observations": [tuple(row) for row in observations],
+                    "debits": [tuple(row) for row in debits],
+                    "repair_debits": repair_debits}
     finally:
         await engine.dispose()
 
@@ -182,10 +193,41 @@ async def _delegated_journey(database_url: str, run_id: str) -> dict[str, object
         await engine.dispose()
 
 
+async def _named_check_identity(database_url: str, run_id: str) -> tuple[str, str, str, str]:
+    engine = create_engine(database_url)
+    try:
+        async with engine.connect() as db:
+            row = (await db.execute(text(
+                "SELECT b.id, b.provider_call_key, o.id, o.status "
+                "FROM subscription_operation_bindings b "
+                "JOIN subscription_attempts a ON a.id = b.attempt_id "
+                "JOIN operation_intents o ON o.id = b.durable_operation_id "
+                "WHERE a.run_id = :run AND o.operation_kind = 'named_check'"
+            ), {"run": run_id})).one()
+            return tuple(str(value) for value in row)
+    finally:
+        await engine.dispose()
+
+
 def _repository_with_managed_worktrees(repository: Path) -> None:
     _repository(repository)
     (repository / ".gitignore").write_text(".worktrees/\n", encoding="utf-8")
-    subprocess.run(["git", "-C", str(repository), "add", ".gitignore"],
+    checks = repository / "checks"
+    checks.mkdir()
+    (checks / "held_check.py").write_text(
+        "from pathlib import Path\nimport os\nimport time\n"
+        "p = Path('.forge-acceptance')\np.mkdir(exist_ok=True)\n"
+        "pid = os.getpid()\n"
+        "(p / 'check.entered').write_text(str(pid))\n"
+        "deadline = time.monotonic() + 25\n"
+        "beat = 0\n"
+        "while not (p / 'check.release').exists() and time.monotonic() < deadline:\n"
+        "    beat += 1\n    (p / 'check.heartbeat').write_text(f'{pid}:{beat}')\n"
+        "    time.sleep(0.05)\n"
+        "assert (p / 'check.release').exists()\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "-C", str(repository), "add", ".gitignore", "checks/held_check.py"],
                    check=True, capture_output=True, timeout=15)
     subprocess.run(["git", "-C", str(repository), "-c", "user.name=Forge fixture",
                     "-c", "user.email=fixture@example.invalid", "commit", "-m", "Ignore managed worktrees"],
@@ -250,8 +292,9 @@ def test_checkpoint_reconciles_in_worker_and_continues_via_authenticated_api(
             assert replay.json()["receipt"]["replayed"] is True
 
 
+@pytest.mark.parametrize("cap", [None, 5000])
 def test_supervised_authoring_observation_requests_checkpoint_across_processes(
-    test_database_url: str, alembic_config_factory, tmp_path: Path
+    test_database_url: str, alembic_config_factory, tmp_path: Path, cap: int | None,
 ) -> None:
     command.upgrade(alembic_config_factory(test_database_url), "head")
     repository = tmp_path / "repository"
@@ -295,8 +338,10 @@ def test_supervised_authoring_observation_requests_checkpoint_across_processes(
             }, "PUT")
             policy = mutate(f"/api/projects/{project_id}/monitoring-policy", {
                 "expected_revision": 1, "mode": "checkpoint", "manual_estimate_tokens": 20,
+                "hard_token_cap": cap,
             })
             assert policy["revision"] == 2
+            assert policy["hard_token_cap"] == cap
             epic = mutate("/api/epics", {"project_id": project_id, "title": "Observed process"})
             epic_id = epic["epic_id"]
             conversation = mutate(f"/api/epics/{epic_id}/brainstorm-conversations", {
@@ -377,6 +422,7 @@ def test_supervised_delegated_observation_requests_checkpoint_across_processes(
         database_url=test_database_url, data_root=data_root,
         prompt_root=Path.cwd() / "agents", bare_remote_path=bare,
         task_usage_process=True, task_usage_delegated=True,
+        task_usage_effect_repository=repository,
     ) as harness:
         harness.start_api()
         harness.start_worker()
@@ -393,7 +439,9 @@ def test_supervised_delegated_observation_requests_checkpoint_across_processes(
                 "name": "Observed delegated process", "repository_path": str(repository),
                 "github_repository": "example/a8-profiles", "default_branch": "main",
                 "runner_mode": "trusted_host", "trusted_project": True,
-                "commands": [{"kind": "test", "name": "unit", "argv": ["python", "--version"], "timeout_seconds": 30}],
+                "commands": [{"kind": "test", "name": "unit", "argv": ["python", "--version"], "timeout_seconds": 30},
+                             {"kind": "test", "name": "held-check", "argv": ["python", "-u", "checks/held_check.py"],
+                              "timeout_seconds": 30}],
             })
             project_id = project["id"]
             primary = {"provider": "openai", "client": "codex_app_server", "model": "gpt-6-astra",
@@ -442,6 +490,60 @@ def test_supervised_delegated_observation_requests_checkpoint_across_processes(
                 "challenge_token": challenge["token"],
             })
             checkpoint_path = f"/api/runs/{run_id}/usage-checkpoint"
+            held_deadline = monotonic() + 20
+            while True:
+                held_markers = list((repository / ".worktrees").rglob("check.entered"))
+                if held_markers:
+                    held_marker = held_markers[0]
+                    break
+                if monotonic() >= held_deadline:
+                    pytest.fail("declared trusted-host check never entered")
+                sleep(0.05)
+            held_worktree = held_marker.parent
+            requested_deadline = monotonic() + 10
+            while True:
+                held_response = client.get(checkpoint_path)
+                assert held_response.status_code == 200, held_response.text
+                held_checkpoint = held_response.json()["checkpoint"]
+                if held_checkpoint is not None:
+                    break
+                if monotonic() >= requested_deadline:
+                    pytest.fail("measured usage did not request checkpoint during held check")
+                sleep(0.05)
+            assert held_checkpoint["state"] in {"checkpoint_requested", "pausing"}
+            assert held_checkpoint["process_settled"] is False
+            assert not (held_worktree / "check.release").exists()
+            held_pid = int(held_marker.read_text())
+            check_identity = asyncio.run(_named_check_identity(test_database_url, run_id))
+            assert check_identity[1].startswith("held-check-")
+            assert check_identity[3] == "PENDING"
+            settled_deadline = monotonic() + 8
+            while "[DELEGATED OBSERVED] cancelled process settled" not in (
+                data_root / "worker.log"
+            ).read_text():
+                if monotonic() >= settled_deadline:
+                    pytest.fail("provider child did not settle while declared check remained held")
+                sleep(0.05)
+            heartbeat = held_worktree / "check.heartbeat"
+            first_beat = int(heartbeat.read_text().split(":")[1])
+            sleep(0.35)
+            beat_pid, later_beat = map(int, heartbeat.read_text().split(":"))
+            assert beat_pid == held_pid and later_beat > first_beat
+            still_held = client.get(checkpoint_path)
+            still_held.raise_for_status()
+            assert still_held.json()["checkpoint"]["state"] in {"checkpoint_requested", "pausing"}
+            assert still_held.json()["checkpoint"]["process_settled"] is False
+            active_operations = asyncio.run(_run_diagnostics(test_database_url, run_id))["operations"]
+            assert any(row[0] == "named_check" and row[1] != "SUCCEEDED" for row in active_operations)
+            assert asyncio.run(_named_check_identity(test_database_url, run_id)) == check_identity
+            held_denial = client.post(checkpoint_path + "/commands", json={
+                "checkpoint_id": held_checkpoint["checkpoint_id"],
+                "expected_version": held_checkpoint["version"],
+                "idempotency_key": "held-check-continue",
+                "action": "continue", "continue_mode": "next_checkpoint",
+            })
+            assert held_denial.status_code == 409, held_denial.text
+            (held_worktree / "check.release").write_text("release", encoding="utf-8")
             deadline = monotonic() + 35
             while True:
                 response = client.get(checkpoint_path)
@@ -460,7 +562,15 @@ def test_supervised_delegated_observation_requests_checkpoint_across_processes(
             report = response.json()["report"]
             assert report["input_tokens"] == 62 and report["output_tokens"] == 42
             assert report["baseline"]["reference_tokens"] == 20
-            assert "[DELEGATED OBSERVED] usage persisted while process live" in (data_root / "worker.log").read_text()
+            worker_log = (data_root / "worker.log").read_text()
+            assert "[DELEGATED OBSERVED] usage persisted while process live" in worker_log
+            assert '"command_name":"held-check"' in worker_log
+            assert ('named_check', 'SUCCEEDED', None) in asyncio.run(
+                _run_diagnostics(test_database_url, run_id)
+            )["operations"]
+            settled_check_identity = asyncio.run(_named_check_identity(test_database_url, run_id))
+            assert settled_check_identity[:3] == check_identity[:3]
+            assert settled_check_identity[3] == "SUCCEEDED"
             before = asyncio.run(_delegated_journey(test_database_url, run_id))
             first_child_sources = [row for row in before["observations"]
                                    if row[1].startswith("scripted-child-") and row[2] == 60 and row[3] == 40]
@@ -469,6 +579,38 @@ def test_supervised_delegated_observation_requests_checkpoint_across_processes(
             assert len(before["attempts"]) == 3, before
             assert sum(row[4] == "1" for row in before["attempts"]) == 3, before
             assert before["repair_debits"] == 0, before
+            # A leased check/effect command is an independent quiescence fence,
+            # even after provider process settlement. Keep it pending while
+            # attempting the direct owner continuation.
+            effect_id = uuid4()
+
+            async def fence_effect(active: bool) -> None:
+                engine = create_engine(test_database_url)
+                try:
+                    async with engine.begin() as db:
+                        if active:
+                            await db.execute(text(
+                                "INSERT INTO run_commands (id, run_id, idempotency_key, "
+                                "command_type, expected_run_version, payload_schema_version, "
+                                "payload, status, attempt_count, lease_owner, lease_expires_at) VALUES "
+                                "(:id, :run, :key, 'test.active_check', 0, 1, '{}'::jsonb, "
+                                "'LEASED', 1, 'other-worker', now() + interval '60 seconds')"
+                            ), {"id": effect_id, "run": UUID(run_id), "key": str(effect_id)})
+                        else:
+                            await db.execute(text("DELETE FROM run_commands WHERE id = :id"),
+                                             {"id": effect_id})
+                finally:
+                    await engine.dispose()
+
+            asyncio.run(fence_effect(True))
+            blocked = client.post(checkpoint_path + "/commands", json={
+                "checkpoint_id": checkpoint["checkpoint_id"],
+                "expected_version": checkpoint["version"],
+                "idempotency_key": "delegated-active-check-continue",
+                "action": "continue", "continue_mode": "next_checkpoint",
+            })
+            assert blocked.status_code == 409, blocked.text
+            asyncio.run(fence_effect(False))
             continued = client.post(checkpoint_path + "/commands", json={
                 "checkpoint_id": checkpoint["checkpoint_id"],
                 "expected_version": checkpoint["version"],

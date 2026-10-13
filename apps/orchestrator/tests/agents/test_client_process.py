@@ -4,10 +4,330 @@ import asyncio
 import ctypes
 import hashlib
 import os
+import signal
 import sys
+import threading
+import time
+from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+
+
+def test_posix_root_stop_skips_reaped_pid(monkeypatch: pytest.MonkeyPatch) -> None:
+    import forge.agents.client_process as transport
+
+    calls: list[tuple[str, int]] = []
+    monkeypatch.setattr(transport, "sys", SimpleNamespace(platform="linux"))
+    monkeypatch.setattr(transport.signal, "SIGKILL", 9, raising=False)
+    for name, value in {"P_PID": 1, "WEXITED": 1, "WNOHANG": 2, "WNOWAIT": 4}.items():
+        monkeypatch.setattr(transport.os, name, value, raising=False)
+    monkeypatch.setattr(transport.os, "waitid", lambda *_args: None, raising=False)
+    monkeypatch.setattr(transport.os, "kill", lambda pid, _sig: calls.append(("root", pid)))
+    monkeypatch.setattr(transport.os, "killpg", lambda pid, _sig: calls.append(("group", pid)), raising=False)
+    owned = object.__new__(transport._PosixProcess)
+    owned.pid = 4242
+    owned.process = SimpleNamespace(returncode=7, _waitpid_lock=threading.Lock())
+
+    assert owned.terminate_tree() is None
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_posix_root_stop_coordinates_with_reaper(monkeypatch: pytest.MonkeyPatch) -> None:
+    import forge.agents.client_process as transport
+
+    entered = threading.Event()
+    calls: list[tuple[str, int]] = []
+    held = threading.Lock()
+    held.acquire()
+    monkeypatch.setattr(transport, "sys", SimpleNamespace(platform="linux"))
+    monkeypatch.setattr(transport.signal, "SIGKILL", 9, raising=False)
+    for name, value in {"P_PID": 1, "WEXITED": 1, "WNOHANG": 2, "WNOWAIT": 4}.items():
+        monkeypatch.setattr(transport.os, name, value, raising=False)
+    monkeypatch.setattr(transport.os, "waitid", lambda *_args: None, raising=False)
+    monkeypatch.setattr(transport.os, "kill", lambda pid, _sig: calls.append(("root", pid)))
+    monkeypatch.setattr(transport.os, "killpg", lambda pid, _sig: calls.append(("group", pid)), raising=False)
+    owned = object.__new__(transport._PosixProcess)
+    owned.pid = 4243
+    owned.process = SimpleNamespace(returncode=None, _waitpid_lock=held)
+
+    def stop() -> int | None:
+        entered.set()
+        return owned.terminate_tree()
+
+    work = asyncio.create_task(asyncio.to_thread(stop))
+    try:
+        assert await asyncio.to_thread(entered.wait, 1)
+        await asyncio.sleep(0.05)
+        assert calls == []
+    finally:
+        held.release()
+        await asyncio.wait_for(work, 2)
+    assert calls == [("root", 4243), ("group", 4243)]
+
+
+@pytest.mark.asyncio
+async def test_posix_observer_accepts_own_reap_between_polls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from io import BytesIO
+
+    import forge.agents.client_process as transport
+
+    between_polls, release, reaped = threading.Event(), threading.Event(), threading.Event()
+    monkeypatch.setattr(transport, "sys", SimpleNamespace(platform="linux"))
+    monkeypatch.setattr(transport.signal, "SIGKILL", 9, raising=False)
+    for name, value in {"P_PID": 1, "WEXITED": 1, "WNOHANG": 2, "WNOWAIT": 4}.items():
+        monkeypatch.setattr(transport.os, name, value, raising=False)
+    monkeypatch.setattr(transport.os, "kill", lambda *_args: None)
+    monkeypatch.setattr(transport.os, "killpg", lambda *_args: None, raising=False)
+
+    def waitid(*_args):
+        if threading.current_thread() is threading.main_thread():
+            return
+        return
+
+    def paused_sleep(_seconds):
+        between_polls.set()
+        assert release.wait(2)
+
+    monkeypatch.setattr(transport.os, "waitid", waitid, raising=False)
+    monkeypatch.setattr(transport, "time", SimpleNamespace(monotonic=time.monotonic, sleep=paused_sleep))
+
+    class Popen:
+        returncode = None
+
+        def __init__(self):
+            self._waitpid_lock = threading.Lock()
+
+        def wait(self, timeout):
+            assert timeout == 2
+            self.returncode = -9
+            reaped.set()
+            return -9
+
+    owned = object.__new__(transport._PosixProcess)
+    owned.pid = 4244
+    owned.process = Popen()
+    owned.stdin, owned.stdout, owned.stderr = BytesIO(), BytesIO(), BytesIO()
+    owned._pinned_descriptors = []
+    session = transport.ClientProcessSession(
+        owned,
+        transport.ClientProcessReceipt("reaped-between-polls", owned.pid, "owned", 1.0),
+        transport.ClientLaunchSpec(argv=(sys.executable, "-c", "pass"), cwd=".", environment={}),
+        lifecycle=None, deadline=asyncio.get_running_loop().time() + 2,
+    )
+    session._exit_task = asyncio.create_task(session._watch_exit())
+    try:
+        assert await asyncio.to_thread(between_polls.wait, 1)
+        stop = asyncio.create_task(session.close(completed=True))
+        assert await asyncio.to_thread(reaped.wait, 1)
+        release.set()
+        receipt = await asyncio.wait_for(stop, 3)
+        assert receipt.outcome == "completed"
+        assert receipt.intentional_completed_stop
+        assert receipt.return_code == -9
+    finally:
+        release.set()
+
+
+def test_posix_observer_rejects_unowned_reap(monkeypatch: pytest.MonkeyPatch) -> None:
+    import forge.agents.client_process as transport
+
+    monkeypatch.setattr(transport, "sys", SimpleNamespace(platform="linux"))
+    for name, value in {"P_PID": 1, "WEXITED": 1, "WNOHANG": 2, "WNOWAIT": 4}.items():
+        monkeypatch.setattr(transport.os, name, value, raising=False)
+
+    def missing_child(*_args):
+        raise ChildProcessError("reaped outside owner")
+
+    monkeypatch.setattr(transport.os, "waitid", missing_child, raising=False)
+    owned = object.__new__(transport._PosixProcess)
+    owned.pid = 4245
+    owned.process = SimpleNamespace(returncode=None, _waitpid_lock=threading.Lock())
+    with pytest.raises(ChildProcessError):
+        owned.observe_exit(0)
+    owned.process.returncode = 7
+    owned.observe_exit(0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owned_code", (0, 7, -9))
+async def test_posix_observer_waits_for_owned_returncode_publication(
+    monkeypatch: pytest.MonkeyPatch, owned_code: int,
+) -> None:
+    import forge.agents.client_process as transport
+
+    reaped, publish = threading.Event(), threading.Event()
+    lock = threading.Lock()
+    process = SimpleNamespace(returncode=None, _waitpid_lock=lock)
+    monkeypatch.setattr(transport, "sys", SimpleNamespace(platform="linux"))
+    for name, value in {"P_PID": 1, "WEXITED": 1, "WNOHANG": 2, "WNOWAIT": 4}.items():
+        monkeypatch.setattr(transport.os, name, value, raising=False)
+
+    def already_reaped(*_args):
+        raise ChildProcessError("waitpid has reaped before returncode publication")
+
+    monkeypatch.setattr(transport.os, "waitid", already_reaped, raising=False)
+    owned = object.__new__(transport._PosixProcess)
+    owned.pid = 4246
+    owned.process = process
+
+    def reaper() -> None:
+        with lock:
+            reaped.set()
+            assert publish.wait(2)
+            process.returncode = owned_code
+
+    reaper_task = asyncio.create_task(asyncio.to_thread(reaper))
+    observer = None
+    try:
+        assert await asyncio.to_thread(reaped.wait, 1)
+        observer = asyncio.create_task(asyncio.to_thread(owned.observe_exit, 1))
+        await asyncio.sleep(0.05)
+        assert not observer.done(), "observer must wait for owned reaper publication"
+    finally:
+        publish.set()
+        await asyncio.wait_for(reaper_task, 2)
+        if observer is not None:
+            await asyncio.gather(observer, return_exceptions=True)
+    await asyncio.wait_for(observer, 2)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "probe_exited,root_terminated,exit_kind,expected_intent",
+    [
+        (False, True, "forced", True),
+        (False, False, "forced", False),
+        (False, True, "natural", False),
+        (True, False, "zero", False),
+        (True, False, "forced", False),
+        (False, "error", "forced", False),
+    ],
+)
+async def test_completed_stop_proof_requires_native_root_termination_and_exit_status(
+    probe_exited: bool, root_terminated: bool | str, exit_kind: str, expected_intent: bool,
+) -> None:
+    from io import BytesIO
+
+    from forge.agents.client_process import (
+        ClientLaunchSpec,
+        ClientProcessReceipt,
+        ClientProcessSession,
+    )
+
+    forced_code = 1 if sys.platform == "win32" else -signal.SIGKILL
+    code = 0 if exit_kind == "zero" else (7 if exit_kind == "natural" else forced_code)
+
+    class Process:
+        pid = 323
+
+        def __init__(self):
+            self.stdin, self.stdout, self.stderr = BytesIO(), BytesIO(), BytesIO()
+            self.pinned_paths = {}
+            self.terminated = False
+
+        def wait(self, seconds):
+            assert seconds != 0, "completed stop must probe without reaping"
+            return code
+
+        def observe_exit(self, seconds):
+            assert seconds == 0
+            if not probe_exited:
+                raise TimeoutError("running at probe")
+
+        def terminate_tree(self):
+            self.terminated = True
+            if root_terminated == "error":
+                raise OSError("termination failed")
+            return forced_code if root_terminated else None
+
+        def close(self):
+            pass
+
+    process = Process()
+    session = ClientProcessSession(
+        process,
+        ClientProcessReceipt("probe-race", process.pid, "owned", 1.0),
+        ClientLaunchSpec(argv=(sys.executable, "-c", "pass"), cwd=".", environment={}),
+        lifecycle=None, deadline=asyncio.get_running_loop().time() + 2,
+    )
+    receipt = await session.finish_completed(grace_seconds=0)
+    assert process.terminated
+    assert receipt.return_code == (None if root_terminated == "error" else code)
+    assert receipt.intentional_completed_stop is expected_intent
+    assert receipt.outcome == (
+        "stop_uncertain" if root_terminated == "error"
+        else "exited" if probe_exited else "completed"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("diagnostic_fault", ["raises", "stalls", "resists_cancel"])
+async def test_settlement_diagnostic_fault_cannot_prevent_stop(diagnostic_fault: str) -> None:
+    from forge.agents.client_process import (
+        ClientLaunchSpec,
+        ClientProcessReceipt,
+        ClientProcessSession,
+    )
+
+    class Process:
+        pid = 323
+
+        def __init__(self) -> None:
+            self.stdin, self.stdout, self.stderr = BytesIO(), BytesIO(), BytesIO()
+            self.pinned_paths = {}
+            self.stopped = False
+
+        def observe_exit(self, _seconds: float) -> None:
+            raise TimeoutError
+
+        def terminate_tree(self) -> int:
+            self.stopped = True
+            return 0
+
+        def wait(self, _seconds: float) -> int:
+            return 0
+
+        def close(self) -> None:
+            pass
+
+    release = asyncio.Event()
+    diagnostic_task: asyncio.Task[None] | None = None
+
+    async def diagnostic() -> None:
+        nonlocal diagnostic_task
+        diagnostic_task = asyncio.current_task()
+        if diagnostic_fault == "raises":
+            raise RuntimeError("diagnostic unavailable")
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            if diagnostic_fault == "resists_cancel":
+                await release.wait()
+            else:
+                raise
+
+    process = Process()
+    session = ClientProcessSession(
+        process, ClientProcessReceipt("diagnostic", process.pid, "owned", 1.0),
+        ClientLaunchSpec(argv=(sys.executable, "-c", "pass"), cwd=".", environment={}),
+        lifecycle=None, deadline=asyncio.get_running_loop().time() + 2,
+        settlement_started=diagnostic,
+    )
+    try:
+        receipt = await asyncio.wait_for(session.close(), 0.5)
+        assert process.stopped and receipt.stop_confirmed
+    finally:
+        release.set()
+        await asyncio.wait_for(session.close(), 1)
+        if diagnostic_task is not None:
+            await asyncio.wait_for(
+                asyncio.gather(diagnostic_task, return_exceptions=True), 1
+            )
 
 
 @pytest.mark.asyncio

@@ -61,6 +61,9 @@ class PendingSubscriptionDecision:
 
 
 class SubscriptionDecisionRepository(Protocol):
+    async def reject_invalid_primary_handoff(
+        self, attempt_id: UUID
+    ) -> SubscriptionSettlement | None: ...
     async def reserve_acceptance_base(
         self, proposal: PreparedSubscriptionAcceptance
     ) -> BaseUpdateReservation | None: ...

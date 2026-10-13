@@ -161,9 +161,10 @@ export function ModelPolicy({ role, value, onChange, errors = {} }: {
                 fieldName={label}
                 value={cap}
                 error={errors[key]}
+                allowSigned64
                 onChange={next => onChange({ ...value, [key]: next })}
               />
-              <span className="text-xs">{hasCap ? `Saved hard cap: ${cap.toLocaleString()} tokens` : `${dimension === 'input' ? 'Input' : 'Output'} tokens: Unbounded (no hard cap)`}</span>
+              <span className="text-xs">{hasCap ? `Saved hard cap: ${(typeof cap === 'number' ? cap.toLocaleString() : BigInt(cap).toLocaleString())} tokens` : `${dimension === 'input' ? 'Input' : 'Output'} tokens: Unbounded (no hard cap)`}</span>
               {errors[key] && !hasCap && (
                 <p role="alert" className="text-xs text-[var(--danger)]">
                   {errors[key]}

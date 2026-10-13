@@ -274,9 +274,15 @@ class OwnedWindowsProcess:
         _check(_exit_code(self.process, ctypes.byref(code)), "GetExitCodeProcess")
         return int(code.value)
 
-    def terminate_tree(self) -> None:
+    def terminate_tree(self) -> int | None:
+        # Terminating the root handle is the evidence that the root was still
+        # live; killing an already empty Job can otherwise report success.
+        root_termination_requested = bool(_kill_process(self.process, 1))
+        if not root_termination_requested and ctypes.get_last_error() != 5:
+            _check(False, "TerminateProcess")
         if self.job:
             _check(_kill_job(self.job, 1), "TerminateJobObject")
+        return 1 if root_termination_requested else None
 
     def wait_tree(self, seconds: float) -> None:
         """Confirm every member of the controlled Job has exited before cleanup."""

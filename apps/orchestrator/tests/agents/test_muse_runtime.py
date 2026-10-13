@@ -663,6 +663,7 @@ async def test_muse_authoring_failed_terminal_correlates_process_exit(
     assert result.failure == expected
     assert result.proposal is None
     assert (result.quota_reset_at is not None) is (exit_code == 1)
+    assert result.quota_exhausted is (exit_code == 1)
 
 
 @pytest.mark.asyncio
@@ -1032,6 +1033,9 @@ async def test_muse_authoring_exchange_success(tmp_path: Path) -> None:
 
         async def receive(self, session):
             return self.frames.pop(0) if self.frames else None
+
+        async def record(self, kind, **fields):
+            assert kind == "proposal_received" and fields == {}
 
     proposal = await muse_exchange(
         FakeSession(), job, (), FakeTools(), AuthoringUsage()
