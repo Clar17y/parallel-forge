@@ -86,6 +86,9 @@ quota, process-settlement and human approval controls still apply. Muse grants
 only selected Forge MCP names through a private per-run permission
 hook; each callback still passes Forge authorization. On Windows, record the
 native `muse-bin-<version>.exe` digest behind `muse.cmd` in the manifest.
+Muse launches with `--workspace` and `--trust-workspace` targeting only a fresh
+private directory;
+Forge MCP callbacks retain the managed repository boundary.
 Always restart the worker after editing installation manifests.
 
 Existing `FORGE_SUBSCRIPTION_PRIMARY_BUDGET` JSON overrides copied from the old example

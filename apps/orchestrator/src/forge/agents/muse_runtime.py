@@ -120,6 +120,12 @@ def muse_launch_spec(
     *, mcp_name: str, mcp_server: Mapping[str, object], tools: tuple[str, ...], duration: float,
 ) -> ClientLaunchSpec:
     """Bind the installed client, configured account home, and exact Forge toolset."""
+    info = home.path.lstat()
+    if (
+        home._identity != (info.st_dev, info.st_ino)
+        or home.path.resolve(strict=True) != home.path
+    ):
+        raise OSError("Muse private home changed before launch")
     server_config = dict(mcp_server)
     server_env = server_config.get("env")
     environment = home.environment()
@@ -138,19 +144,13 @@ def muse_launch_spec(
     )
     hooks: dict[str, object] = {}
     if tools:
-        info = home.path.lstat()
-        if (
-            home._identity != (info.st_dev, info.st_ino)
-            or home.path.resolve(strict=True) != home.path
-        ):
-            raise OSError("Muse private home changed before hook setup")
         hooks = permission_hook_settings(
             home.path / "approval-policy.json", home.path, mcp_name, tools,
         )
     command = (
         native, *installation.script, "exec", "--json",
         "--prompt-file", str(home._prompt_file), "--output-schema", str(home._schema_file),
-        "--workspace", installation.cwd, "--model", installation.model,
+        "--workspace", str(home.path), "--trust-workspace", "--model", installation.model,
         "--reasoning-effort", "max" if installation.effort == "maximum" else installation.effort,
         "--max-model-steps", str(installation.max_model_steps),
         "--disable-shell", "--disable-write", "--disable-web-tools",

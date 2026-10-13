@@ -197,6 +197,9 @@ def test_muse_route_effort_is_exact_and_model_is_bound(tmp_path: Path) -> None:
         )
         assert spec.argv[spec.argv.index("--reasoning-effort") + 1] == "max"
         assert spec.argv[spec.argv.index("--model") + 1] == "official-custom-model"
+        assert spec.argv[spec.argv.index("--workspace") + 1] == str(home.path) == str(spec.cwd)
+        assert "--trust-workspace" in spec.argv
+        assert installation.cwd != str(spec.cwd)
         assert "mcp__forge__read_file" in " ".join(spec.argv)
         assert spec.argv[spec.argv.index("--approval-mode") + 1] == "on-request"
         assert spec.argv[spec.argv.index("--approval-judge") + 1] == "off"
@@ -218,12 +221,52 @@ def test_muse_route_effort_is_exact_and_model_is_bound(tmp_path: Path) -> None:
         )
         assert "hooks={}" in empty_spec.argv
         assert not (empty_home.path / "approval-policy.json").exists()
+        assert empty_spec.argv[empty_spec.argv.index("--workspace") + 1] == str(empty_home.path)
+        assert "--trust-workspace" in empty_spec.argv
     finally:
         empty_home.cleanup()
     with pytest.raises(ValueError, match="invalid Muse installation"):
         MuseInstallation(**{**common, "model": "cli-default"}, effort="medium")
     with pytest.raises(ValueError, match="invalid Muse installation"):
         MuseInstallation(**common, effort="minimal")
+
+
+@pytest.mark.parametrize("tools", [(), ("read_file",)])
+def test_muse_launch_rejects_unprepared_or_replaced_private_home(
+    tmp_path: Path, tools: tuple[str, ...],
+) -> None:
+    from forge.agents.muse_runtime import muse_launch_spec
+
+    fake = tmp_path / "client.exe"
+    fake.write_bytes(b"dummy")
+    installation = MuseInstallation(
+        executable=str(fake.resolve()), cwd=str(tmp_path.resolve()),
+        home=str(tmp_path.resolve()), model="muse-wonder-1.0", effort="medium",
+        executable_digest=hashlib.sha256(fake.read_bytes()).hexdigest(),
+    )
+    server = {"transport": "stdio", "command": "test", "args": [], "env": {}}
+    unprepared = MuseAuthoringHome(installation, uuid4())
+    with pytest.raises(OSError):
+        muse_launch_spec(
+            installation, unprepared, mcp_name="forge", mcp_server=server,
+            tools=tools, duration=1,
+        )
+    home = MuseAuthoringHome(installation, uuid4())
+    home.prepare("prompt", {"type": "object"})
+    saved = tmp_path / "saved-private-home"
+    home.path.rename(saved)
+    home.path.mkdir()
+    try:
+        with pytest.raises(OSError, match="private home changed"):
+            muse_launch_spec(
+                installation, home, mcp_name="forge", mcp_server=server,
+                tools=tools, duration=1,
+            )
+        assert not (home.path / "approval-policy.json").exists()
+    finally:
+        home.path.rmdir()
+        saved.rename(home.path)
+        home.cleanup()
 
 
 def test_manifest_loads_muse_under_operator_trust_and_unsupported_in_verified(tmp_path: Path) -> None:
@@ -477,7 +520,8 @@ async def test_muse_supervised_process_calls_real_mcp_and_settles(tmp_path: Path
 options = sys.argv
 assert "--output-schema" in options
 assert json.load(open(options[options.index("--output-schema") + 1], encoding="utf-8"))
-assert "--disable-approval" not in options and "--trust-workspace" not in options
+assert "--disable-approval" not in options and "--trust-workspace" in options
+assert options[options.index("--workspace") + 1] == os.getcwd()
 config = json.loads(next(x.split("=", 1)[1] for x in options if x.startswith("mcp_servers.")))
 assert config["transport"] == "stdio"
 assert config["env"]["FORGE_GEMINI_BRIDGE_SECRET"] == "${FORGE_GEMINI_BRIDGE_SECRET}"
@@ -598,6 +642,8 @@ async def test_muse_authoring_real_process_receives_job_and_read_only_mcp(tmp_pa
         '''import json, os, socket, sys
 options = sys.argv
 prompt = open(options[options.index("--prompt-file") + 1], encoding="utf-8").read()
+assert "--trust-workspace" in options
+assert options[options.index("--workspace") + 1] == os.getcwd()
 assert options[options.index("--max-model-steps") + 1] == "250"
 assert "Test problem" in prompt and "prompt_turn_id" in prompt
 assert json.load(open(options[options.index("--output-schema") + 1], encoding="utf-8"))
