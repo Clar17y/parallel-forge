@@ -26,6 +26,7 @@ class RunListQuery:
         state: str | None = None,
         project_id: UUID | None = None,
         attention: bool | None = None,
+        exclude_pending_gate: bool | None = None,
         updated_since: datetime | None = None,
         offset: int = 0,
         limit: int = 50,
@@ -42,6 +43,10 @@ class RunListQuery:
                 predicates.append(Run.project_id == project_id)
             if updated_since is not None:
                 predicates.append(Run.updated_at >= updated_since)
+            if exclude_pending_gate:
+                # Lets callers (the inbox) page blocked runs without pending
+                # approvals consuming the page before client-side filtering.
+                predicates.append(Run.pending_gate.is_(None))
             attention_expr = _attention_expression()
             if attention is not None:
                 predicates.append(attention_expr == attention)

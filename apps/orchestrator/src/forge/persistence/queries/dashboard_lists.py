@@ -11,6 +11,7 @@ from forge.application.services.public_data import public_payload
 from forge.domain.actor import AgentRole
 from forge.domain.agent import _ALLOWED_ROLE_TOOLS
 from forge.domain.policy import ProjectPolicy
+from forge.observability.redaction import redact_value
 from forge.persistence.models import (
     AgentExecution,
     Approval,
@@ -22,6 +23,11 @@ from forge.persistence.models import (
     Run,
     Task,
 )
+
+
+def _text(value: str) -> str:
+    redacted = redact_value(value)
+    return redacted if isinstance(redacted, str) else "[REDACTED]"
 
 
 class DashboardListQuery:
@@ -123,8 +129,9 @@ class DashboardListQuery:
         async with self._factory() as s:
             rows = (
                 await s.execute(
-                    select(Run, Task)
+                    select(Run, Task, Project)
                     .join(Task, Task.id == Run.task_id)
+                    .join(Project, Project.id == Run.project_id)
                     .where(Run.pending_gate.is_not(None))
                     .order_by(Run.updated_at.desc(), Run.id)
                     .offset(offset)
@@ -135,12 +142,15 @@ class DashboardListQuery:
             {
                 "run_id": r.id,
                 "task_id": t.id,
+                "task_title": _text(t.title),
+                "project_id": p.id,
+                "project_name": _text(p.name),
                 "gate": r.pending_gate,
                 "evidence_digest": r.pending_evidence_digest,
                 "run_version": r.version,
                 "policy_version": r.policy_version,
             }
-            for r, t in rows[:limit]
+            for r, t, p in rows[:limit]
         ], len(rows) > limit
 
     async def policy(self, project_id: UUID) -> dict[str, object] | None:
