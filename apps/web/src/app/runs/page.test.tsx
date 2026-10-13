@@ -118,6 +118,30 @@ test('refreshing re-anchors the relative window to now', async () => {
   }
 });
 
+test('restoring an updated range through URL navigation re-anchors it to now', async () => {
+  vi.useFakeTimers();
+  try {
+    vi.setSystemTime(new Date('2026-10-13T12:00:00Z'));
+    window.history.replaceState(null, '', '/runs?updated=24h');
+    const requested = mockRunsApi();
+    const { rerender } = render(<RunsPage />);
+    await act(async () => {});
+    const sinceOf = (path: string) => new URLSearchParams(path.split('?')[1]).get('updated_since');
+    const projections = () => requested.filter(path => path.startsWith('/run-projections?'));
+    expect(sinceOf(projections().at(-1)!)).toBe('2026-10-12T12:00:00.000Z');
+    window.history.replaceState(null, '', '/runs');
+    rerender(<RunsPage />); // sidebar-style navigation away from the range
+    await act(async () => {});
+    vi.setSystemTime(new Date('2026-10-13T18:00:00Z'));
+    window.history.replaceState(null, '', '/runs?updated=24h');
+    rerender(<RunsPage />); // Back restores the range hours later
+    await act(async () => {});
+    expect(sinceOf(projections().at(-1)!)).toBe('2026-10-12T18:00:00.000Z');
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 test('refreshing runs also refreshes the bucket totals behind the chips', async () => {
   const requested = mockRunsApi();
   render(<RunsPage />);

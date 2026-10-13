@@ -87,8 +87,16 @@ function RunsPageContent() {
 
   // Relative cutoffs anchor when the range is selected (or on manual
   // refresh) and then stay stable across re-renders and pagination, so
-  // "Last 24 hours" never silently widens while the page sits open.
+  // "Last 24 hours" never silently widens while the page sits open. The
+  // range can also change through the URL (back/forward, sidebar links)
+  // without touching the select, so re-anchor whenever the URL-derived
+  // range id changes, however it changed.
   const [anchor, setAnchor] = useState(() => Date.now());
+  const [syncedUpdatedId, setSyncedUpdatedId] = useState(updated.id);
+  if (updated.id !== syncedUpdatedId) {
+    setSyncedUpdatedId(updated.id);
+    setAnchor(() => Date.now());
+  }
   const updatedSince = useMemo(
     () => (updated.days === null ? null : new Date(anchor - updated.days * 86_400_000).toISOString()),
     [anchor, updated],
