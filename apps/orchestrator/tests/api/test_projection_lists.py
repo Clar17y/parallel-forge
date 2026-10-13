@@ -43,6 +43,7 @@ async def test_lists_read_persisted_data_with_auth_bounds_and_typed_contract(
     async with session_factory() as session, session.begin():
         project = Project(
             id=project_id,
+            name="List project",
             canonical_path=str(tmp_path),
             github_repository="owner/repo",
             default_branch="main",
@@ -61,6 +62,7 @@ async def test_lists_read_persisted_data_with_auth_bounds_and_typed_contract(
                 Task(
                     id=task_id,
                     project_id=project_id,
+                    title="List task",
                     normalized_text="list task",
                     task_digest="b" * 64,
                 ),
@@ -283,6 +285,9 @@ async def test_lists_read_persisted_data_with_auth_bounds_and_typed_contract(
             {
                 "run_id": str(run_id),
                 "task_id": str(task_id),
+                "task_title": "List task",
+                "project_id": str(project_id),
+                "project_name": "List project",
                 "gate": "plan",
                 "evidence_digest": "c" * 64,
                 "run_version": run.version,

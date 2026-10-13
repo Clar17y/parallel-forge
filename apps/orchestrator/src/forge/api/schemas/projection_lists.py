@@ -31,6 +31,9 @@ class PolicyProjection(ProjectionModel):
 class ApprovalItem(ProjectionModel):
     run_id: UUID
     task_id: UUID
+    task_title: str
+    project_id: UUID
+    project_name: str
     gate: Literal["plan", "pr", "merge"]
     evidence_digest: str
     run_version: int
