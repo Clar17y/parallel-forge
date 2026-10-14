@@ -158,7 +158,7 @@ class LocalCliMcp:
         schema = tool_input_schema(tool)
         if not isinstance(args, Mapping) or not arguments_match_schema(tool, args):
             if self.calls >= self.request.budget.max_tool_calls:
-                raise ProtocolError("tool budget exhausted")
+                return _budget_exhausted()
             self.calls += 1
             # No broker dispatch or command debit. Let the worker correct a
             # permitted tool's arguments within the same bounded invocation.
@@ -192,7 +192,7 @@ class LocalCliMcp:
                 or check
                 and self.checks >= self.request.budget.max_named_checks
             ):
-                raise ProtocolError("tool budget exhausted")
+                return _budget_exhausted()
             self.calls += 1
             self.checks += int(check)
             try:
@@ -217,3 +217,18 @@ class LocalCliMcp:
             "content": [{"type": "text", "text": json.dumps(json_value(receipt), allow_nan=False)}],
             "isError": False,
         }
+
+
+def _budget_exhausted() -> dict[str, object]:
+    # Dispatch nothing more, but let the client finish its answer: raising here
+    # tore down the transport and discarded the attempt's work.
+    return {
+        "content": [
+            {
+                "type": "text",
+                "text": "Tool budget exhausted for this attempt. Do not call more tools; "
+                "return your final structured answer now using what you already have.",
+            }
+        ],
+        "isError": True,
+    }

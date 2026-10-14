@@ -210,14 +210,15 @@ async def test_argument_errors_keep_permission_checks_and_consume_the_tool_budge
     assert response["result"]["isError"] is True
     assert "private" not in response["result"]["content"][0]["text"]
     for arguments in ({}, {"path": "README.md"}):
-        with pytest.raises(ProtocolError, match="tool budget exhausted"):
-            await mcp._handle(
-                {
-                    **frame,
-                    "id": 2,
-                    "params": {"name": "repository.read_file", "arguments": arguments},
-                }
-            )
+        exhausted = await mcp._handle(
+            {
+                **frame,
+                "id": 2,
+                "params": {"name": "repository.read_file", "arguments": arguments},
+            }
+        )
+        assert exhausted["result"]["isError"] is True
+        assert "Tool budget exhausted" in exhausted["result"]["content"][0]["text"]
     assert broker.calls == [] and mcp.calls == 1 and mcp.checks == 0
 
 
