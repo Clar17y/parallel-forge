@@ -3138,6 +3138,33 @@
         "title": "CommandNetworkPolicy",
         "type": "object"
       },
+      "CommandPathScope": {
+        "additionalProperties": false,
+        "description": "Run a command only on the task's owned paths under these prefixes.\n\nForge appends the selected paths to the command's argv; agents still choose\nonly the command name.  No matching owned path refuses the check, so a\nfocused command never silently runs its unscoped (full) argv.",
+        "properties": {
+          "max_paths": {
+            "default": 64,
+            "maximum": 256.0,
+            "minimum": 1.0,
+            "title": "Max Paths",
+            "type": "integer"
+          },
+          "prefixes": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 16,
+            "minItems": 1,
+            "title": "Prefixes",
+            "type": "array"
+          }
+        },
+        "required": [
+          "prefixes"
+        ],
+        "title": "CommandPathScope",
+        "type": "object"
+      },
       "CommandSpec": {
         "additionalProperties": false,
         "description": "One exact argv vector in the project's command registry.\n\nCommands deliberately have no shell command text field.  The runner can\nexecute only this validated argv vector and its explicitly allowed inputs.",
@@ -3170,6 +3197,16 @@
             "default": false,
             "title": "Network Enabled",
             "type": "boolean"
+          },
+          "path_scope": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CommandPathScope"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "required": {
             "default": true,

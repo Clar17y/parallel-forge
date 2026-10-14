@@ -2887,6 +2887,23 @@ export interface components {
             network_enabled: boolean;
         };
         /**
+         * CommandPathScope
+         * @description Run a command only on the task's owned paths under these prefixes.
+         *
+         *     Forge appends the selected paths to the command's argv; agents still choose
+         *     only the command name.  No matching owned path refuses the check, so a
+         *     focused command never silently runs its unscoped (full) argv.
+         */
+        CommandPathScope: {
+            /**
+             * Max Paths
+             * @default 64
+             */
+            max_paths: number;
+            /** Prefixes */
+            prefixes: string[];
+        };
+        /**
          * CommandSpec
          * @description One exact argv vector in the project's command registry.
          *
@@ -2909,6 +2926,7 @@ export interface components {
              * @default false
              */
             network_enabled: boolean;
+            path_scope?: components["schemas"]["CommandPathScope"] | null;
             /**
              * Required
              * @default true

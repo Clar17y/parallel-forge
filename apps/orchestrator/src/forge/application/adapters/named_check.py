@@ -45,7 +45,7 @@ from forge.domain.operation import (
     OperationStatus,
     canonical_digest,
 )
-from forge.domain.policy import CommandSpec, ProjectPolicy, RunnerMode
+from forge.domain.policy import CommandSpec, ProjectPolicy, RunnerMode, scoped_command
 from forge.domain.subscription import SPECIALIST_ALLOWED_TOOLS, SpecialistPurpose
 from forge.domain.tool import ToolName
 from forge.domain.validation import command_spec_digest, effective_network_enabled
@@ -192,7 +192,17 @@ class NamedCheckOperationAdapter(OperationAdapter):
             raise NamedCheckOperationError("named check worktree head changed")
         subscription = values.get("authority_schema_version") == 2
         before = await asyncio.to_thread(self._candidate_digest, values) if subscription else None
-        runner = self._factory.create(self._worktree, self._policy)
+        policy = self._policy
+        if "scoped_paths" in values:
+            # The runner resolves commands by name; give it the derived focused argv.
+            policy = policy.model_copy(
+                update={
+                    "commands": tuple(
+                        command if item.name == command.name else item for item in policy.commands
+                    )
+                }
+            )
+        runner = self._factory.create(self._worktree, policy)
         request = RunCommandRequest(
             command_name=command.name,
             kind=command.kind,
@@ -380,7 +390,11 @@ class NamedCheckOperationAdapter(OperationAdapter):
             intent.kind != NAMED_CHECK_KIND
             or intent.request_schema_version != 1
             or set(intent.request_payload)
-            not in {frozenset(legacy_keys), frozenset(subscription_keys)}
+            not in {
+                frozenset(legacy_keys),
+                frozenset(subscription_keys),
+                frozenset(subscription_keys | {"scoped_paths"}),
+            }
             or canonical_digest(intent.request_payload) != intent.request_digest
         ):
             raise NamedCheckOperationError("named check request is invalid")
@@ -420,6 +434,17 @@ class NamedCheckOperationAdapter(OperationAdapter):
             command = next(
                 item for item in self._policy.commands if item.name == values["command_name"]
             )
+            if "scoped_paths" in values:
+                scoped = values["scoped_paths"]
+                if (
+                    command.path_scope is None
+                    or not isinstance(scoped, (list, tuple))
+                    or not all(isinstance(path, str) for path in scoped)
+                ):
+                    raise ValueError
+                command = scoped_command(command, tuple(scoped))
+            elif command.path_scope is not None:
+                raise ValueError  # a focused check always carries its selected paths
             if (
                 call_id.int == 0
                 or values["run_id"] != str(intent.run_id)

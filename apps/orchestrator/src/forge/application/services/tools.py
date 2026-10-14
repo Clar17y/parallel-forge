@@ -90,7 +90,7 @@ from forge.domain.operation import (
     canonical_payload,
 )
 from forge.domain.payload import validate_durable_payload
-from forge.domain.policy import JevPolicy, ProjectPolicy
+from forge.domain.policy import JevPolicy, ProjectPolicy, scoped_check_paths, scoped_command
 from forge.domain.resource import WorktreeIdentity
 from forge.domain.run import RunSnapshot, RunState
 from forge.domain.subscription import LogicalTaskContract, SpecialistPurpose
@@ -1469,9 +1469,38 @@ class ControlledToolService:
                 command = next(
                     item for item in policy.commands if item.name == normalized["command_name"]
                 )
+                scoped_paths: tuple[str, ...] = ()
+                if command.path_scope is not None:
+                    # A focused check runs only the task's owned paths under its
+                    # scope. Forge selects them; with none it refuses rather than
+                    # running the unscoped (full) argv.
+                    try:
+                        scoped_paths = scoped_check_paths(
+                            command,
+                            subscription_contract.owned_paths
+                            if subscription_contract is not None
+                            else (),
+                        )
+                    except ValueError:
+                        scoped_paths = ()
+                    if not scoped_paths:
+                        return await self._record_write_denial(
+                            work,
+                            context,
+                            request,
+                            run,
+                            (
+                                ToolErrorCode.INVALID_REQUEST,
+                                "focused check has no owned paths in its scope",
+                            ),
+                            started_at=datetime.now(UTC),
+                            started=started,
+                        )
                 environment = self._named_environment(command.environment_keys)
                 payload: dict[str, object] = {
-                    "command_digest": command_spec_digest(command),
+                    "command_digest": command_spec_digest(
+                        scoped_command(command, scoped_paths) if scoped_paths else command
+                    ),
                     "command_name": command.name,
                     "environment_keys_digest": hashlib.sha256(
                         "\n".join(sorted(environment)).encode()
@@ -1485,6 +1514,8 @@ class ControlledToolService:
                     "tool_call_id": str(call_id),
                     "worktree_id": context.worktree_id,
                 }
+                if scoped_paths:
+                    payload["scoped_paths"] = list(scoped_paths)
                 if isinstance(context, SubscriptionToolAuthorizationContext):
                     payload.update(
                         authority_schema_version=2,

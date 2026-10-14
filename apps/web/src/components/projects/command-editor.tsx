@@ -26,5 +26,11 @@ export function CommandEditor({ value, onChange, errors = {} }: {
     <label><input type="checkbox" checked={value.network_enabled} onChange={event => onChange({ ...value, network_enabled: event.target.checked })} />Allow network for this command</label>
     <Field label="Allowed environment keys" multiline value={value.environment_keys.join('\n')}
       onChange={text => onChange({ ...value, environment_keys: text.split(/\r?\n/) })} error={errors.environment_keys} />
+    <label><input type="checkbox" checked={!!value.path_scope}
+      onChange={event => onChange({ ...value, path_scope: event.target.checked ? { prefixes: ['tests/'], max_paths: 64 } : null })} />
+      Run only the task&apos;s owned paths under these prefixes (focused check)</label>
+    {value.path_scope && <Field label="Focused path prefixes" multiline value={value.path_scope.prefixes.join('\n')}
+      onChange={text => onChange({ ...value, path_scope: { ...value.path_scope!, prefixes: text.split(/\r?\n/) } })}
+      error={errors['path_scope.prefixes'] ?? errors.path_scope} />}
   </>;
 }

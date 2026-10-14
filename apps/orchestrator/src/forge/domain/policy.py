@@ -67,6 +67,51 @@ class StepKind(StrEnum):
     CUSTOM = "custom_named"
 
 
+_SCOPED_PATH = re.compile(r"[A-Za-z0-9_.][A-Za-z0-9_./-]*")
+
+
+def _safe_relative_path(value: str) -> bool:
+    return (
+        bool(value)
+        and _SCOPED_PATH.fullmatch(value) is not None
+        and not value.startswith(("/", "-", "./"))
+        and ".." not in value.split("/")
+        and "//" not in value
+    )
+
+
+class CommandPathScope(BaseModel):
+    """Run a command only on the task's owned paths under these prefixes.
+
+    Forge appends the selected paths to the command's argv; agents still choose
+    only the command name.  No matching owned path refuses the check, so a
+    focused command never silently runs its unscoped (full) argv.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    prefixes: tuple[str, ...] = Field(min_length=1, max_length=16)
+    max_paths: int = Field(default=64, ge=1, le=256)
+
+    @field_validator("prefixes")
+    @classmethod
+    def prefixes_must_be_relative_directories(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        normalized: list[str] = []
+        for prefix in value:
+            stripped = prefix.rstrip("/") if isinstance(prefix, str) else ""
+            if not _safe_relative_path(stripped):
+                raise ValueError("path scope prefixes must be safe relative directories")
+            normalized.append(stripped + "/")
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("path scope prefixes must be unique")
+        return tuple(normalized)
+
+    def covers(self, path: str) -> bool:
+        return _safe_relative_path(path) and any(
+            path.startswith(prefix) or path + "/" == prefix for prefix in self.prefixes
+        )
+
+
 class CommandSpec(BaseModel):
     """One exact argv vector in the project's command registry.
 
@@ -83,6 +128,7 @@ class CommandSpec(BaseModel):
     required: bool = True
     network_enabled: bool = False
     environment_keys: tuple[str, ...] = ()
+    path_scope: CommandPathScope | None = None
 
     @field_validator("name")
     @classmethod
@@ -117,6 +163,38 @@ class CommandSpec(BaseModel):
         if any(not _ENVIRONMENT_KEY.fullmatch(key) for key in value):
             raise ValueError("environment_keys must contain environment variable names")
         return value
+
+
+def scoped_check_paths(command: CommandSpec, owned_paths: Iterable[str]) -> tuple[str, ...]:
+    """Return the owned paths a focused command covers, sorted; empty when none."""
+    scope = command.path_scope
+    if scope is None:
+        raise ValueError("command has no path scope")
+    selected = tuple(
+        sorted({path for path in owned_paths if isinstance(path, str) and scope.covers(path)})
+    )
+    if len(selected) > scope.max_paths:
+        raise ValueError("focused check covers more owned paths than its scope allows")
+    return selected
+
+
+def scoped_command(command: CommandSpec, paths: Iterable[str]) -> CommandSpec:
+    """Derive the exact command a focused check runs for these Forge-selected paths."""
+    scope = command.path_scope
+    selected = tuple(paths)
+    if (
+        scope is None
+        or not selected
+        or len(selected) > scope.max_paths
+        or len(set(selected)) != len(selected)
+        or list(selected) != sorted(selected)
+        or not all(scope.covers(path) for path in selected)
+    ):
+        raise ValueError("focused check paths are outside its scope")
+    # Re-validate: the derived argv passes the same checks as any policy command.
+    return CommandSpec.model_validate(
+        {**command.model_dump(), "argv": (*command.argv, *selected), "path_scope": None}
+    )
 
 
 class AgentModelPolicy(BaseModel):

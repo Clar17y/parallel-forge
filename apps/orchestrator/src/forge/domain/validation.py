@@ -57,8 +57,12 @@ def command_spec_digest(spec: CommandSpec) -> str:
 
     if not isinstance(spec, CommandSpec):
         raise TypeError("command digest requires a command specification")
+    values = spec.model_dump(mode="json")
+    if values.get("path_scope") is None:
+        # Unscoped commands keep the digest they had before path scopes existed.
+        values.pop("path_scope", None)
     payload = json.dumps(
-        spec.model_dump(mode="json"),
+        values,
         ensure_ascii=False,
         separators=(",", ":"),
         sort_keys=True,
