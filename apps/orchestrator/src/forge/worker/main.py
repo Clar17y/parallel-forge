@@ -227,6 +227,24 @@ async def run_worker(
             async def subscription_readiness_supplier() -> tuple[SubscriptionRouteReadiness, ...]:
                 return await enricher.enrich(subscription_readiness)
 
+        capacity = getattr(settings, "subscription_capacity", None)
+        if capacity is not None:
+            from forge.persistence.repositories.scheduling import PostgresSchedulingRepository
+            from forge.worker.scheduler_capacity import apply_capacity_setting
+
+            async with factory() as session:
+                applied = await apply_capacity_setting(
+                    PostgresSchedulingRepository(session), capacity
+                )
+                await session.commit()
+            if applied is not None:
+                logger.info(
+                    "Subscription scheduler capacity policy v%s: global %s, run %s, provider %s",
+                    applied.version,
+                    applied.global_limit,
+                    applied.run_limit,
+                    applied.provider_limit,
+                )
         commands = PostgresCommandRepository(factory)
         operations = PostgresOperationRepository(factory)
         recovery = RecoveryService(operations)

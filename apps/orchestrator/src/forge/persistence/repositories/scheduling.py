@@ -160,6 +160,9 @@ class PostgresSchedulingRepository:
         )
         await self._session.execute(stmt)
 
+    async def current_capacity_policy(self) -> SchedulerCapacityPolicy:
+        return await self._current_policy()
+
     async def configure_capacity(self, policy: SchedulerCapacityPolicy) -> None:
         """Trusted operator/deployment configuration; tasks never supply limits."""
         existing = await self._session.get(

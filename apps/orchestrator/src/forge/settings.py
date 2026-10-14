@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Literal
 
 from platformdirs import user_data_path
-from pydantic import Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from forge.application.ports.provider_credentials import validate_provider_secret_reference
@@ -17,6 +17,16 @@ from forge.domain.subscription_installations import (
 from forge.domain.subscription_quota import QuotaPolicy
 from forge.domain.validation import validate_runner_image_reference
 from forge.release.credentials import validate_github_credential_reference
+
+
+class SubscriptionCapacityLimits(BaseModel):
+    """Owner-editable scheduler ceilings (FORGE_SUBSCRIPTION_CAPACITY, JSON)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    global_limit: int = Field(ge=1, le=256, strict=True)
+    run_limit: int = Field(ge=1, le=256, strict=True)
+    provider_limit: int = Field(ge=1, le=256, strict=True)
 
 
 class Settings(BaseSettings):
@@ -54,6 +64,8 @@ class Settings(BaseSettings):
         )
     )
     subscription_worker_concurrency: int = Field(default=3, ge=1, le=64, strict=True)
+    # Omitted keeps the stored scheduler capacity policy (3/3/3 when none exists).
+    subscription_capacity: SubscriptionCapacityLimits | None = None
     # Advisory search ranking. "shadow" measures without changing agent input;
     # "on" also collapses the low-relevance tail. Both require TYPESAFE_API_KEY
     # in the process environment and degrade to "off" without it. Enabling
