@@ -35,6 +35,17 @@ from forge.domain.tool import (
 _CALL_KEY = re.compile(r"\A[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,254}\Z")
 
 
+_READ_ONLY_TOOLS = frozenset(
+    {
+        ToolName.REPOSITORY_LIST_FILES,
+        ToolName.REPOSITORY_READ_FILE,
+        ToolName.REPOSITORY_SEARCH,
+        ToolName.REPOSITORY_SEARCH_SEMANTIC,
+        ToolName.REPOSITORY_READ_INSTRUCTIONS,
+    }
+)
+
+
 class BrokerDenied(PermissionError):
     """Stable callback denial; deliberately contains no provider input."""
 
@@ -206,7 +217,13 @@ class SubscriptionToolBroker:
             await self._reconcile_effect(effect_lease)
             raise
         except BaseException:  # noqa: BLE001 - effect failures cannot leak provider details
-            await self._reconcile_effect(effect_lease)
+            if tool_name in _READ_ONLY_TOOLS:
+                # A failed repository read changed nothing, so there is nothing
+                # to reconcile; leaving it unsettled would wedge the task, the
+                # run and any epic resume that waits for quiescence.
+                await self._reject_effect(effect_lease)
+            else:
+                await self._reconcile_effect(effect_lease)
             raise BrokerDenied() from None
         if not isinstance(tool_result, ToolResult) or tool_result.tool_name is not tool_name:
             await self._reconcile_effect(effect_lease)
@@ -313,6 +330,11 @@ class SubscriptionToolBroker:
     async def _reconcile_effect(self, effect: TaskEffectLease) -> None:
         async with self._work_factory() as work:
             await work.scheduler.reconcile_effect(effect)
+            await work.commit()
+
+    async def _reject_effect(self, effect: TaskEffectLease) -> None:
+        async with self._work_factory() as work:
+            await work.scheduler.settle_effect(effect, accepted=False)
             await work.commit()
 
 

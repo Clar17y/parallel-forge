@@ -10046,6 +10046,17 @@
           "security": {
             "$ref": "#/components/schemas/SecuritySection"
           },
+          "stall_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stall Reason"
+          },
           "subscription_recovery_attention": {
             "default": false,
             "title": "Subscription Recovery Attention",

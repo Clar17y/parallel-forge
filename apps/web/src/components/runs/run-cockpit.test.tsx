@@ -63,6 +63,15 @@ test('saved workflow result attention stays visible on Overview and opens task r
   expect(screen.getByRole('region', { name: 'Task recovery details' })).toBeVisible();
 });
 
+test('a stalled run explains what it is waiting on', () => {
+  const reason = 'Waiting for the epic execution, which is resume requested.';
+  const { unmount } = render(<RunCockpit initial={projection()} />);
+  expect(screen.queryByRole('alert', { name: 'Run is waiting' })).not.toBeInTheDocument();
+  unmount();
+  render(<RunCockpit initial={projection({ stall_reason: reason })} />);
+  expect(screen.getByRole('alert', { name: 'Run is waiting' })).toHaveTextContent(reason);
+});
+
 test('cockpit exposes checks and review without inferring release authority', async () => {
   vi.mocked(api).mockResolvedValue({ items: [], truncated: false });
   render(<RunCockpit initial={projection()} />);

@@ -387,6 +387,7 @@ class DashboardQuery:
                     await session.scalar(select(startup_intervention_hold(run_id)))
                 ),
                 "subscription_recovery_attention": bool(await current_attention(session, run_id)),
+                "stall_reason": await _stall_reason(session, run_id, snapshot.state),
                 "teardown_eligible": (
                     snapshot.state in TEARDOWN_STATES
                     and (has_removable_resources(snapshot) or branch_retained)
@@ -395,6 +396,53 @@ class DashboardQuery:
                 "available_commands": [],
                 "next_gate": run.pending_gate,
             }
+
+
+async def _stall_reason(session: AsyncSession, run_id: UUID, state: RunState) -> str | None:
+    """Explain a non-terminal run that is waiting on something the operator can fix."""
+    from forge.domain.run_stall import RunStallFacts, run_stall_reason
+    from forge.persistence.models.epic_run_bridge import EpicExecutionControl, EpicItemAttempt
+    from forge.persistence.models.scheduling import SubscriptionScheduledTask
+    from forge.persistence.models.subscription import SubscriptionAttempt
+    from forge.persistence.models.subscription_results import SubscriptionAttemptResult
+
+    tasks = list(
+        await session.scalars(
+            select(SubscriptionScheduledTask).where(SubscriptionScheduledTask.run_id == run_id)
+        )
+    )
+    primary = max(
+        (task for task in tasks if task.parent_task_id is None),
+        key=lambda task: task.created_at,
+        default=None,
+    )
+    failure = None
+    if primary is not None and primary.state == "terminal":
+        payload = await session.scalar(
+            select(SubscriptionAttemptResult.result_payload)
+            .join(SubscriptionAttempt, SubscriptionAttempt.id == SubscriptionAttemptResult.attempt_id)
+            .where(SubscriptionAttempt.task_row_id == primary.id)
+            .order_by(SubscriptionAttempt.attempt_number.desc())
+            .limit(1)
+        )
+        detail = payload.get("failure_detail") if isinstance(payload, dict) else None
+        failure = _text(detail) if isinstance(detail, str) else None
+    control = await session.scalar(
+        select(EpicExecutionControl)
+        .join(EpicItemAttempt, EpicItemAttempt.execution_id == EpicExecutionControl.execution_id)
+        .where(EpicItemAttempt.run_id == run_id)
+        .limit(1)
+    )
+    return run_stall_reason(
+        RunStallFacts(
+            state=state,
+            execution_state=control.state if control is not None else None,
+            execution_blocker=control.blocker_code if control is not None else None,
+            primary_task_state=primary.state if primary is not None else None,
+            primary_failure=failure,
+            reconciling_tasks=sum(task.state == "reconciling" for task in tasks),
+        )
+    )
 
 
 async def _owned_retained_branch(

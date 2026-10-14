@@ -378,3 +378,50 @@ async def test_concurrent_terminal_receipt_replay_preserves_exclusive_fence(tool
         ) for _ in range(2)])
     assert results[0] == results[1]
     assert len(scheduler.settled) == 1
+
+
+@pytest.mark.parametrize(
+    ("tool", "arguments", "reconciled"),
+    [
+        (ToolName.REPOSITORY_SEARCH_SEMANTIC, {"query": "policy"}, False),
+        (ToolName.REPOSITORY_WRITE_FILE, {"path": "a", "content": "b"}, True),
+    ],
+)
+def test_failed_read_only_effect_settles_instead_of_waiting_for_reconciliation(
+    tool, arguments, reconciled
+):
+    """A repository read has no side effect to reconcile, so it must not wedge the task."""
+    run_id, task_id, attempt_id = uuid4(), uuid4(), uuid4()
+    lease = TaskLease(
+        run_id=run_id,
+        task_id=task_id,
+        owner="worker",
+        generation=1,
+        expires_at=datetime.now(UTC) + timedelta(seconds=10),
+    )
+    auth = BrokerAuthorizationBinding(
+        run_id=run_id,
+        task_id=task_id,
+        attempt_id=attempt_id,
+        worktree_id="forge-test",
+        role=SpecialistPurpose.ROUTINE_IMPLEMENTATION,
+        policy_version=1,
+        permitted_tools=frozenset({tool}),
+        broker_token="opaque",
+    )
+    subscription, scheduler = Subscription(), Scheduler()
+
+    async def effect(_operation_id, _name, _arguments):
+        raise RuntimeError("semantic index unavailable")
+
+    broker = SubscriptionToolBroker(
+        lambda: Work(subscription, scheduler), lease=lease, authority=auth, effect=effect
+    )
+    with pytest.raises(BrokerDenied):
+        asyncio.run(
+            broker.invoke(
+                token="opaque", provider_call_key="call-1", tool_name=tool, arguments=arguments
+            )
+        )
+    assert hasattr(scheduler, "reconciled") is reconciled
+    assert scheduler.settled == ([] if reconciled else [(scheduler.admitted[0], False)])

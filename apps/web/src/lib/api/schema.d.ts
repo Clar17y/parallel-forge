@@ -5631,6 +5631,8 @@ export interface components {
             review: components["schemas"]["ReviewSection"];
             run: components["schemas"]["RunResponse"];
             security: components["schemas"]["SecuritySection"];
+            /** Stall Reason */
+            stall_reason?: string | null;
             /**
              * Subscription Recovery Attention
              * @default false
