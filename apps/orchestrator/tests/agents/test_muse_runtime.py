@@ -1359,3 +1359,15 @@ async def test_muse_runtime_cleanup_failure_retains_uncertainty_and_retry(
     original_cleanup(prepared[0])
     assert prepared[0]._identity is None
 
+
+
+def test_primary_guidance_says_how_to_start_work_and_what_wait_may_name() -> None:
+    """Muse primaries returned `wait` on their own task instead of delegating."""
+    from forge.agents.muse_runtime import _decision_guidance
+    from forge.domain.subscription import SpecialistPurpose
+
+    primary = _decision_guidance(SpecialistPurpose.PRIMARY)
+    assert "do not return a task handoff" in primary
+    assert "delegate" in primary
+    assert "never your own task_id" in primary
+    assert "delegate" not in _decision_guidance(SpecialistPurpose.ROUTINE_IMPLEMENTATION)

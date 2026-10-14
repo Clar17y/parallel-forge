@@ -83,6 +83,10 @@ _PRIMARY_DECISION_GUIDANCE = """
 The primary coordinates the run: do not return a task handoff. In planning,
 return the plan; in work phases, choose a primary decision permitted by the
 supplied schema. A plan for future implementation is not completed work.
+When a work phase starts and known_tasks lists no child of your task, return
+delegate to create the worker tasks that do the approved work; nothing runs
+until you do. wait may only list task IDs of existing direct children from
+known_tasks, never your own task_id.
 """
 
 
