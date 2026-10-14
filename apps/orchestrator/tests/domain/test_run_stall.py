@@ -13,6 +13,7 @@ def facts(**values: object) -> RunStallFacts:
         "primary_task_state": "leased",
         "primary_failure": None,
         "reconciling_tasks": 0,
+        "active_tasks": 0,
     }
     base.update(values)
     return RunStallFacts(**base)  # type: ignore[arg-type]
@@ -52,3 +53,39 @@ def test_reconciling_task_is_reported() -> None:
     reason = run_stall_reason(facts(primary_task_state="reconciling", reconciling_tasks=1))
     assert reason is not None
     assert "reconcil" in reason
+
+
+@pytest.mark.parametrize("state", [RunState.IMPLEMENTING, RunState.VALIDATING, RunState.REVIEWING])
+def test_work_phase_whose_primary_failed_with_nothing_running_is_reported(state: RunState) -> None:
+    reason = run_stall_reason(
+        facts(state=state, primary_task_state="terminal", primary_failure="Muse attempt protocol")
+    )
+    assert reason is not None
+    assert "Muse attempt protocol" in reason and "nothing is running" in reason
+
+
+def test_successful_or_still_active_work_is_not_reported_as_stalled() -> None:
+    assert (
+        run_stall_reason(facts(state=RunState.IMPLEMENTING, primary_task_state="terminal")) is None
+    )
+    assert (
+        run_stall_reason(
+            facts(
+                state=RunState.IMPLEMENTING,
+                primary_task_state="terminal",
+                primary_failure="Muse attempt protocol",
+                active_tasks=1,
+            )
+        )
+        is None
+    )
+    assert (
+        run_stall_reason(
+            facts(
+                state=RunState.AWAITING_PR_APPROVAL,
+                primary_task_state="terminal",
+                primary_failure="x",
+            )
+        )
+        is None
+    )

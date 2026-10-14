@@ -441,6 +441,7 @@ async def _stall_reason(session: AsyncSession, run_id: UUID, state: RunState) ->
             primary_task_state=primary.state if primary is not None else None,
             primary_failure=failure,
             reconciling_tasks=sum(task.state == "reconciling" for task in tasks),
+            active_tasks=sum(task.state in ("queued", "leased", "blocked") for task in tasks),
         )
     )
 

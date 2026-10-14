@@ -232,7 +232,7 @@ def test_muse_route_effort_is_exact_and_model_is_bound(tmp_path: Path) -> None:
 
 
 def test_muse_toolset_uses_the_names_muse_exposes_for_dotted_mcp_tools(tmp_path: Path) -> None:
-    """Muse 1.4.7 exposes MCP tool `repository.read_file` as `..._repository_read_file`."""
+    """Muse 1.4.7 maps every character outside [A-Za-z0-9_] in an MCP tool name to `_`."""
     from forge.agents.muse_runtime import muse_launch_spec
 
     fake = tmp_path / "client.exe"
@@ -248,12 +248,17 @@ def test_muse_toolset_uses_the_names_muse_exposes_for_dotted_mcp_tools(tmp_path:
         spec = muse_launch_spec(
             installation, home, mcp_name="forge",
             mcp_server={"transport": "stdio", "command": "test", "args": [], "env": {}},
-            tools=("repository.list_files", "repository.read_file"), duration=1,
+            tools=("repository.list_files", "repository.read_file", "validation-results.read"),
+            duration=1,
         )
         toolset = json.loads(
             next(v.removeprefix("run.toolset=") for v in spec.argv if v.startswith("run.toolset="))
         )
-        assert toolset == ["mcp__forge__repository_list_files", "mcp__forge__repository_read_file"]
+        assert toolset == [
+            "mcp__forge__repository_list_files",
+            "mcp__forge__repository_read_file",
+            "mcp__forge__validation_results_read",
+        ]
         policy = json.loads((home.path / "approval-policy.json").read_text(encoding="utf-8"))
         assert policy["tools"] == toolset
     finally:

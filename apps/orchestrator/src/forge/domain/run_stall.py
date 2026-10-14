@@ -7,6 +7,13 @@ from dataclasses import dataclass
 from forge.domain.run import RunState
 
 _TERMINAL_RUN_STATES = frozenset({RunState.COMPLETED, RunState.FAILED, RunState.CANCELLED})
+_WORK_PHASES = {
+    RunState.PLANNING: "planning",
+    RunState.IMPLEMENTING: "implementation",
+    RunState.VALIDATING: "validation",
+    RunState.REVIEWING: "review",
+    RunState.REMEDIATING: "remediation",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -19,6 +26,7 @@ class RunStallFacts:
     primary_task_state: str | None
     primary_failure: str | None
     reconciling_tasks: int
+    active_tasks: int = 0
 
 
 def run_stall_reason(facts: RunStallFacts) -> str | None:
@@ -42,11 +50,17 @@ def run_stall_reason(facts: RunStallFacts) -> str | None:
             "An attempt is waiting for its tool operations to be reconciled before any "
             "new work can start. Inspect the attempt in Tasks."
         )
-    if facts.state is RunState.PLANNING and facts.primary_task_state == "terminal":
-        failure = f": {facts.primary_failure}" if facts.primary_failure else ""
+    phase = _WORK_PHASES.get(facts.state)
+    if (
+        phase is not None
+        and facts.primary_task_state == "terminal"
+        and facts.primary_failure
+        and not facts.active_tasks
+    ):
+        outcome = "ended without a plan" if facts.state is RunState.PLANNING else "ended"
         return (
-            f"The planning attempt ended without a plan{failure}. Retry it from Tasks, "
-            "or cancel the run and launch it again."
+            f"The {phase} attempt {outcome} ({facts.primary_failure}) and nothing is "
+            "running. Retry it from Tasks if offered, or cancel the run and launch it again."
         )
     return None
 

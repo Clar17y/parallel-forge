@@ -115,15 +115,19 @@ def resolve_muse_executable(executable: str) -> tuple[str, str]:
     return str(path.resolve(strict=True)), digest
 
 
+_MUSE_TOOL_NAME = re.compile(r"[^A-Za-z0-9_]")
+
 def muse_launch_spec(
     installation: MuseInstallation, home: MuseAttemptHome | MuseAuthoringHome,
     *, mcp_name: str, mcp_server: Mapping[str, object], tools: tuple[str, ...], duration: float,
 ) -> ClientLaunchSpec:
     """Bind the installed client, configured account home, and exact Forge toolset."""
-    # Muse exposes an MCP tool such as `repository.read_file` under its
-    # normalized name `mcp__<server>__repository_read_file`; the dotted form is
-    # rejected as an unknown tool, so the toolset and hook use Muse's names.
-    tools = tuple(name.replace(".", "_") for name in tools)
+    # Muse exposes an MCP tool such as `repository.read_file` or
+    # `validation-results.read` under a normalized name in which every character
+    # outside [A-Za-z0-9_] becomes `_` (`mcp__<server>__validation_results_read`).
+    # The original spelling is rejected as an unknown tool, so the toolset and
+    # permission hook use Muse's names.
+    tools = tuple(_MUSE_TOOL_NAME.sub("_", name) for name in tools)
     info = home.path.lstat()
     if (
         home._identity != (info.st_dev, info.st_ino)
