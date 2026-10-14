@@ -273,17 +273,12 @@ async def test_delayed_diagnostics_cannot_follow_process_settlement(
         assert stored.diagnostics["events"][-1]["kind"] == "provider_wait"
 
     release = asyncio.Event()
-    cancelled = asyncio.Event()
     callback = None
 
     async def delayed(kind: str, **fields: object) -> None:
         nonlocal callback
         callback = asyncio.current_task()
-        try:
-            await release.wait()
-        except asyncio.CancelledError:
-            cancelled.set()
-            await release.wait()
+        await release.wait()
         await lifecycle.diagnostic(kind, **fields)
 
     tools = AuthoringTools(
@@ -291,8 +286,9 @@ async def test_delayed_diagnostics_cannot_follow_process_settlement(
         10, AuthoringUsage(), diagnostic=delayed,
     )
     try:
+        # The protocol does not wait for a slow write, and the write is kept,
+        # not cancelled; the writer itself refuses it once the process settled.
         await asyncio.wait_for(tools.record("proposal_received"), 1)
-        await asyncio.wait_for(cancelled.wait(), 1)
         assert callback is not None and not callback.done()
         await asyncio.wait_for(lifecycle.finished(
             receipt, replace(result, return_code=0, outcome="exited", stop_confirmed=True),
@@ -307,7 +303,7 @@ async def test_delayed_diagnostics_cannot_follow_process_settlement(
     finally:
         release.set()
         if callback is not None:
-            await asyncio.wait_for(callback, 1)
+            await asyncio.wait_for(asyncio.shield(tools._diagnostic_tail), 1)
     for kind in (
         "tool_started", "tool_completed", "tool_failed", "provider_wait",
         "provider_retry", "provider_error", "proposal_received", "settlement_started",
