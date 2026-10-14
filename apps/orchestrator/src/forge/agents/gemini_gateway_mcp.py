@@ -102,6 +102,10 @@ class GeminiMcpBridge:
                 await writer.drain()
         except asyncio.CancelledError:
             raise
+        except (ConnectionResetError, BrokenPipeError):
+            # An exiting client proxy closes its socket abruptly on Windows
+            # (WinError 64); that is a disconnect, not a transport failure.
+            pass
         except Exception:  # noqa: BLE001 - never expose frames or authentication material
             if admitted and not self._closing:
                 self._failed.set()

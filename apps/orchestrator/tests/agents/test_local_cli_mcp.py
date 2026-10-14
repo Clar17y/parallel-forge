@@ -245,3 +245,33 @@ async def test_invalid_diff_scope_can_be_corrected_before_broker_dispatch():
     )
     assert response["result"]["isError"] is False
     assert len(broker.calls) == 1 and mcp.calls == 2 and mcp.checks == 0
+
+
+async def test_broker_denied_call_returns_tool_error_and_keeps_the_session_usable():
+    """One refused callback must not tear down the whole provider attempt."""
+    from forge.application.services.subscription_broker import BrokerDenied
+
+    allowed = _Broker()
+    refusals = []
+
+    async def broker(call):
+        if call.arguments.get("path") == "denied.md":
+            refusals.append(call)
+            raise BrokerDenied()
+        return await allowed(call)
+
+    mcp = LocalCliMcp(request(), broker)
+    await initialize(mcp)
+    denied = await mcp._handle({
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "repository.read_file", "arguments": {"path": "denied.md"}},
+    })
+    assert denied["result"]["isError"] is True
+    assert "refused" in denied["result"]["content"][0]["text"]
+    assert refusals and mcp.calls == 1
+    ok = await mcp._handle({
+        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": {"name": "repository.read_file", "arguments": {"path": "README.md"}},
+    })
+    assert ok["result"]["isError"] is False
+    assert len(allowed.calls) == 1 and mcp.calls == 2

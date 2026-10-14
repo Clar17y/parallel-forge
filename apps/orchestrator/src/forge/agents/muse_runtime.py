@@ -120,6 +120,10 @@ def muse_launch_spec(
     *, mcp_name: str, mcp_server: Mapping[str, object], tools: tuple[str, ...], duration: float,
 ) -> ClientLaunchSpec:
     """Bind the installed client, configured account home, and exact Forge toolset."""
+    # Muse exposes an MCP tool such as `repository.read_file` under its
+    # normalized name `mcp__<server>__repository_read_file`; the dotted form is
+    # rejected as an unknown tool, so the toolset and hook use Muse's names.
+    tools = tuple(name.replace(".", "_") for name in tools)
     info = home.path.lstat()
     if (
         home._identity != (info.st_dev, info.st_ino)

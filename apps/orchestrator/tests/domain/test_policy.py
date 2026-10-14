@@ -339,3 +339,45 @@ def test_automatic_model_identity_preserves_custom_provider_and_raw_text(
     assert policy.provider == provider
     assert policy.model == model
     assert policy.reasoning_effort is None
+
+
+def _stored_document(**models: dict[str, object]) -> dict[str, object]:
+    document = make_policy().model_dump(mode="json")
+    document.update(models)
+    return document
+
+
+@pytest.mark.parametrize(
+    ("stored_model", "stored_effort", "expected_model", "expected_effort"),
+    [
+        ("gemini-3.8-flash-medium", None, "gemini-3.8-flash", "medium"),
+        ("gemini-3.8-flash-low", None, "gemini-3.8-flash", "low"),
+        ("gemini-3.8-flash-high", "low", "gemini-3.8-flash", "low"),
+        ("gemini-3.8-flash-xhigh", None, "gemini-3.8-flash", None),
+    ],
+)
+def test_stored_policy_with_legacy_cli_composite_model_still_loads(
+    stored_model: str, stored_effort: str | None, expected_model: str, expected_effort: str | None
+) -> None:
+    role = {"provider": "google", "model": stored_model, "reasoning_effort": stored_effort}
+    document = _stored_document(developer_model=role, reviewer_model=dict(role))
+
+    policy = ProjectPolicy.model_validate(document)
+
+    for loaded in (policy.developer_model, policy.reviewer_model):
+        assert loaded.model == expected_model
+        assert loaded.reasoning_effort == expected_effort
+    assert document["developer_model"]["model"] == stored_model  # type: ignore[index]
+
+
+def test_stored_policy_normalization_keeps_other_validation_errors() -> None:
+    document = _stored_document(
+        developer_model={"provider": "google", "model": "gemini-3.8-flash-medium", "max_tool_calls": -1}
+    )
+    with pytest.raises(ValidationError):
+        ProjectPolicy.model_validate(document)
+
+
+def test_stored_policy_without_composite_ids_loads_unchanged() -> None:
+    policy = make_policy()
+    assert ProjectPolicy.model_validate(policy.model_dump(mode="json")) == policy

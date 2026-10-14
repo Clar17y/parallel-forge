@@ -195,7 +195,23 @@ class LocalCliMcp:
                 raise ProtocolError("tool budget exhausted")
             self.calls += 1
             self.checks += int(check)
-            receipt = freeze_context(await self.broker(call))
+            try:
+                receipt = freeze_context(await self.broker(call))
+            except PermissionError:
+                # The broker refused or could not complete this one callback
+                # (and reconciled any admitted effect). Report it to the client
+                # as a failed tool call instead of tearing down the attempt; the
+                # call still counts against the tool budget and gets no receipt.
+                return {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Forge refused this tool call. Use another permitted "
+                            "tool or narrower arguments, or continue without it.",
+                        }
+                    ],
+                    "isError": True,
+                }
             self._receipts[key] = (call, receipt)
         return {
             "content": [{"type": "text", "text": json.dumps(json_value(receipt), allow_nan=False)}],

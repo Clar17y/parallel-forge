@@ -231,6 +231,35 @@ def test_muse_route_effort_is_exact_and_model_is_bound(tmp_path: Path) -> None:
         MuseInstallation(**common, effort="minimal")
 
 
+def test_muse_toolset_uses_the_names_muse_exposes_for_dotted_mcp_tools(tmp_path: Path) -> None:
+    """Muse 1.4.7 exposes MCP tool `repository.read_file` as `..._repository_read_file`."""
+    from forge.agents.muse_runtime import muse_launch_spec
+
+    fake = tmp_path / "client.exe"
+    fake.write_bytes(b"dummy")
+    installation = MuseInstallation(
+        executable=str(fake.resolve()), cwd=str(tmp_path.resolve()),
+        home=str(tmp_path.resolve()), model="muse-wonder-1.0", effort="medium",
+        executable_digest=hashlib.sha256(fake.read_bytes()).hexdigest(),
+    )
+    home = MuseAuthoringHome(installation, uuid4())
+    home.prepare("prompt", {"type": "object"})
+    try:
+        spec = muse_launch_spec(
+            installation, home, mcp_name="forge",
+            mcp_server={"transport": "stdio", "command": "test", "args": [], "env": {}},
+            tools=("repository.list_files", "repository.read_file"), duration=1,
+        )
+        toolset = json.loads(
+            next(v.removeprefix("run.toolset=") for v in spec.argv if v.startswith("run.toolset="))
+        )
+        assert toolset == ["mcp__forge__repository_list_files", "mcp__forge__repository_read_file"]
+        policy = json.loads((home.path / "approval-policy.json").read_text(encoding="utf-8"))
+        assert policy["tools"] == toolset
+    finally:
+        home.cleanup()
+
+
 @pytest.mark.parametrize("tools", [(), ("read_file",)])
 def test_muse_launch_rejects_unprepared_or_replaced_private_home(
     tmp_path: Path, tools: tuple[str, ...],

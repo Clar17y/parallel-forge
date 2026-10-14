@@ -12,7 +12,12 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
 from forge.domain.paths import normalize_policy_paths, union_policy_paths
-from forge.domain.reasoning import gemini_cli_composite_error, reasoning_effort_error
+from forge.domain.reasoning import (
+    SUPPORTED_EFFORTS,
+    gemini_cli_composite_error,
+    parse_gemini_cli_composite_id,
+    reasoning_effort_error,
+)
 from forge.domain.review import FindingSeverity, ReviewFinding
 
 _SHELL_META = re.compile(r"[\r\n;&|$`()<>`]")
@@ -268,6 +273,38 @@ class ProjectPolicy(BaseModel):
     merge_blocking_severities: frozenset[FindingSeverity] = frozenset(
         {FindingSeverity.BLOCKER, FindingSeverity.MAJOR}
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_legacy_cli_composite_models(cls, data: object) -> object:
+        """Keep stored versions saved before composite IDs were rejected readable.
+
+        Authoring requests validate ``AgentModelPolicy`` directly and still reject
+        composite IDs; only whole stored policy documents are normalized here, in
+        memory, without changing the persisted record.
+        """
+        if not isinstance(data, dict):
+            return data
+        normalized: dict[str, object] | None = None
+        for field in ("planner_model", "developer_model", "reviewer_model"):
+            role = data.get(field)
+            if not isinstance(role, dict) or role.get("provider", "google") != "google":
+                continue
+            composite = parse_gemini_cli_composite_id(role.get("model"))  # type: ignore[arg-type]
+            if composite is None:
+                continue
+            base_model, suffix = composite
+            repaired = {**role, "model": base_model}
+            effort = suffix.lower()
+            if (
+                repaired.get("reasoning_effort") is None
+                and effort in SUPPORTED_EFFORTS
+                and reasoning_effort_error("google", base_model, effort) is None
+            ):
+                repaired["reasoning_effort"] = effort
+            normalized = normalized if normalized is not None else dict(data)
+            normalized[field] = repaired
+        return data if normalized is None else normalized
 
     @field_validator("repository_path")
     @classmethod

@@ -181,3 +181,38 @@ async def test_second_authenticated_connection_cannot_replace_current_peer():
         other.close()
         await asyncio.gather(writer.wait_closed(), other.wait_closed())
         await bridge.close()
+
+
+async def test_peer_connection_reset_after_authentication_is_a_normal_disconnect(monkeypatch):
+    """Windows reports an exiting MCP proxy as a reset (WinError 64), not EOF."""
+
+    async def handler(frame):
+        return {"jsonrpc": "2.0", "id": frame["id"], "result": {}}
+
+    original = asyncio.StreamReader.readline
+    calls = 0
+
+    async def reset_after_first_frame(self):
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            raise ConnectionResetError(22, "The specified network name is no longer available")
+        return await original(self)
+
+    bridge = GeminiMcpBridge("fixture-bridge-secret", handler)
+    await bridge.start()
+    monkeypatch.setattr(asyncio.StreamReader, "readline", reset_after_first_frame)
+    reader, writer = await asyncio.open_connection("127.0.0.1", bridge.port)
+    try:
+        writer.write(b'fixture-bridge-secret\n{"jsonrpc":"2.0","id":1,"method":"ping"}\n')
+        await writer.drain()
+        assert json.loads(await asyncio.wait_for(original(reader), 1))["id"] == 1
+        for _ in range(50):
+            if not bridge._peers:
+                break
+            await asyncio.sleep(0.02)
+        assert not bridge._peers
+        assert not bridge._failed.is_set()
+    finally:
+        writer.close()
+        await bridge.close()

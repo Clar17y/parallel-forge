@@ -1175,3 +1175,25 @@ def test_web_listener_uses_configured_ipv6_host(tmp_path, monkeypatch):
     web = next(p for p in runner.spawned if p.name == "web")
     assert web.cmd[-2:] == ["--hostname", "::1"]
     assert web.env["PORT"] == "3002"
+
+
+def test_warns_when_process_environment_shadows_a_different_dotenv_value(tmp_path: Path) -> None:
+    (tmp_path / ".env").write_text(
+        "FORGE_SUBSCRIPTION_INSTALLATIONS_PATH=C:/new/installations.json\n"
+        "FORGE_API_PORT=8000\n"
+        "# FORGE_DATA_ROOT=ignored\n",
+        encoding="utf-8",
+    )
+    output = StringIO()
+    supervisor = DevSupervisor(tmp_path, runner=FakeCommandRunner(), stdout=output)
+    supervisor.warn_shadowed_dotenv(
+        {
+            "FORGE_SUBSCRIPTION_INSTALLATIONS_PATH": "C:/old/installations.json",
+            "FORGE_API_PORT": "8000",
+            "FORGE_DATA_ROOT": "C:/elsewhere",
+        }
+    )
+    text = output.getvalue()
+    assert "FORGE_SUBSCRIPTION_INSTALLATIONS_PATH" in text
+    assert "C:/old" not in text and "C:/new" not in text
+    assert "FORGE_API_PORT" not in text and "FORGE_DATA_ROOT" not in text
