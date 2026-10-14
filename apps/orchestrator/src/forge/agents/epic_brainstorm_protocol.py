@@ -262,6 +262,10 @@ class AuthoringUsage:
         )
 
 
+# Bound for queued diagnostic writes to land when authoring tools close.
+_DIAGNOSTIC_FLUSH_SECONDS = 5.0
+
+
 class AuthoringTools:
     """Read-only calls with worker reauthorization, bounded replies and replay checks."""
 
@@ -271,6 +275,7 @@ class AuthoringTools:
     ):
         self.reader, self.budget, self.usage = reader, budget, usage
         self.diagnostic = diagnostic
+        self._diagnostic_tail: asyncio.Future[None] | None = None
         self.closed = False
         self._replies: dict[str, tuple[str, str, dict[str, object]]] = {}
         self.bridge = GeminiMcpBridge(secrets.token_urlsafe(32), self.mcp)
@@ -345,19 +350,26 @@ class AuthoringTools:
     async def record(self, kind: str, **fields: object) -> None:
         if self.diagnostic is None:
             return
-        diagnostic: asyncio.Future[None] = asyncio.ensure_future(
-            self.diagnostic(kind, **fields)
-        )
+        write, previous = self.diagnostic, self._diagnostic_tail
+
+        async def ordered() -> None:
+            if previous is not None:
+                await asyncio.wait((previous,))
+            await write(kind, **fields)
+
+        diagnostic: asyncio.Future[None] = asyncio.ensure_future(ordered())
         diagnostic.add_done_callback(
             lambda done: done.exception() if not done.cancelled() else None
         )
+        self._diagnostic_tail = diagnostic
         try:
-            done, _ = await asyncio.wait((diagnostic,), timeout=0.1)
+            # Never hold the protocol on diagnostics. A slow write is not dropped:
+            # it finishes in order behind earlier ones (close flushes the tail),
+            # and the writer itself refuses once the attempt has settled.
+            await asyncio.wait((diagnostic,), timeout=0.1)
         except asyncio.CancelledError:
             diagnostic.cancel()
             raise
-        if not done:
-            diagnostic.cancel()
 
     async def mcp(self, frame: Mapping[str, object]) -> Mapping[str, object] | None:
         if self.closed or frame.get("jsonrpc") != "2.0":
@@ -435,6 +447,15 @@ class AuthoringTools:
             if self._failure is not None:
                 self._failure.cancel()
                 await asyncio.gather(self._failure, return_exceptions=True)
+            await self.flush_diagnostics()
+
+    async def flush_diagnostics(self) -> None:
+        """Let queued diagnostic writes land, within a bound, before settlement."""
+        tail = self._diagnostic_tail
+        if tail is not None:
+            _, pending = await asyncio.wait((tail,), timeout=_DIAGNOSTIC_FLUSH_SECONDS)
+            if pending:
+                tail.cancel()
 
 
 async def codex_exchange(

@@ -606,6 +606,10 @@ def _observe_task_error(task: asyncio.Task[Any]) -> None:
         task.exception()
 
 
+# Bound for the owner to read frames a client printed just before it exited.
+_EXIT_DRAIN_SECONDS = 2.0
+
+
 class ClientProcessSession:
     """One interactive attempt with a single deadline and exactly one settlement."""
 
@@ -625,6 +629,8 @@ class ClientProcessSession:
         self._settlement_started = settlement_started
         self._queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
         self._frames: list[Mapping[str, Any]] = []
+        self._unread = 0
+        self._read_progress = asyncio.Event()
         self._settlement_task: asyncio.Task[None] | None = None
         self._send_lock = asyncio.Lock()
         self._close_task: asyncio.Task[ClientProcessResult] | None = None
@@ -668,7 +674,26 @@ class ClientProcessSession:
         if self._close_task is None:
             self._close_task = asyncio.create_task(self._finish(outcome))
             self._close_task.add_done_callback(_observe_task_error)
+            self._read_progress.set()
         return self._close_task
+
+    async def _await_unread_frames(self) -> None:
+        """Give the owner a bounded chance to read frames emitted just before exit.
+
+        A client may print its final frames and exit at once. Settling then would
+        fence the owner's handling of those frames (for example recording the
+        proposal it just received) behind settlement.
+        """
+        loop = asyncio.get_running_loop()
+        limit = min(self.deadline, loop.time() + _EXIT_DRAIN_SECONDS)
+        if self._tasks:
+            await asyncio.wait((self._tasks[0],), timeout=max(0, limit - loop.time()))
+        while self._unread and self._close_task is None and loop.time() < limit:
+            self._read_progress.clear()
+            try:
+                await asyncio.wait_for(self._read_progress.wait(), max(0, limit - loop.time()))
+            except TimeoutError:
+                return
 
     async def _watch_exit(self) -> None:
         try:
@@ -677,6 +702,7 @@ class ClientProcessSession:
                 observe_exit or self.process.wait,
                 max(0, self.deadline - asyncio.get_running_loop().time()),
             )
+            await self._await_unread_frames()
             self._settle("exited")
         except TimeoutError:
             self._failure = ClientProcessTimeout("official client exceeded its duration limit")
@@ -808,6 +834,7 @@ class ClientProcessSession:
         except RecursionError:
             raise ClientProtocolError("client frame is not bounded JSON") from None
         self._frames.append(decoded)
+        self._unread += 1
         self._queue.put_nowait(queued)
 
     async def _stderr_reader(self) -> None:
@@ -869,6 +896,9 @@ class ClientProcessSession:
         except asyncio.CancelledError:
             await asyncio.shield(self._settle("cancelled"))
             raise
+        if item is not None:
+            self._unread -= 1
+            self._read_progress.set()
         if self._failure is not None:
             await asyncio.shield(self._settle("protocol_error"))
             raise self._failure
