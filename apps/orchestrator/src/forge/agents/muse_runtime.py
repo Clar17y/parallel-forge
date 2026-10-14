@@ -239,6 +239,13 @@ def _muse_environment(installation: MuseInstallation) -> dict[str, str]:
     return env
 
 
+def _protocol_detail(error: Exception) -> str:
+    # Forge-authored ProtocolError text names the step that broke; any other
+    # exception's message may carry client output, so only its type is kept.
+    cause = str(error)[:200] if isinstance(error, ProtocolError) else type(error).__name__
+    return f"Muse attempt protocol: {cause or type(error).__name__}"
+
+
 async def muse_root_terminal(
     receive: Callable[[], Awaitable[Mapping[str, object] | None]],
 ) -> Mapping[str, object]:
@@ -589,8 +596,8 @@ class MuseGateway:
                 failed(SubscriptionFailure.UNCERTAIN),
                 launch_proof=terminal_launch_proof(exc.result),
             )
-        except Exception:  # noqa: BLE001
-            result = failed(SubscriptionFailure.PROTOCOL)
+        except Exception as error:  # noqa: BLE001
+            result = failed(SubscriptionFailure.PROTOCOL, _protocol_detail(error))
         finally:
 
             async def settle() -> None:

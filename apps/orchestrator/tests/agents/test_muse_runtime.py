@@ -1449,3 +1449,28 @@ def test_muse_launch_lets_the_model_see_whole_forge_tool_results(tmp_path: Path)
         assert int(cap) == MAX_FRAME_BYTES
     finally:
         home.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_muse_stream_ending_without_terminal_names_the_cause(tmp_path: Path) -> None:
+    """A protocol failure must say what broke instead of only "Muse attempt protocol"."""
+    import sys
+
+    from forge.application.ports.subscription_gateway import SubscriptionFailure
+
+    peer = tmp_path / "no_terminal.py"
+    peer.write_text(
+        "import json\nprint(json.dumps(" + repr(_linked()) + "), flush=True)\n",
+        encoding="utf-8",
+    )
+    executable = Path(sys.executable)
+    installation = MuseInstallation(
+        executable=str(executable), script=(str(peer),), cwd=str(tmp_path.resolve()),
+        home=str(tmp_path.resolve()), model="muse-wonder-1.0", effort="medium",
+        executable_digest=hashlib.sha256(executable.read_bytes()).hexdigest(),
+    )
+    result = await MuseGateway(installation, broker=_Broker(), lifecycle=_Lifecycle()).execute(_muse_request())
+    assert result.failure is SubscriptionFailure.PROTOCOL
+    assert result.failure_detail is not None
+    assert result.failure_detail != "Muse attempt protocol"
+    assert result.failure_detail.startswith("Muse attempt protocol: ")
