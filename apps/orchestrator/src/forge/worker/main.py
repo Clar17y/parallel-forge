@@ -558,7 +558,17 @@ async def _poll_invocations(
     poll_interval: float,
 ) -> None:
     while not stop_event.is_set():
-        if await worker.run_once(stop_event=stop_event) is None:
+        try:
+            result = await worker.run_once(stop_event=stop_event)
+        except Exception as error:  # noqa: BLE001 - one attempt must not stop the worker
+            # The attempt result and its decision are already durable; decision
+            # recovery classifies and retries or surfaces it for the operator.
+            logger.warning(
+                "Subscription invocation polling failed (%s); retrying durable work",
+                type(error).__name__,
+            )
+            result = None
+        if result is None:
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=poll_interval)
             except TimeoutError:
