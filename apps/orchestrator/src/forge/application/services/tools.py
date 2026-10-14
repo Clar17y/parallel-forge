@@ -368,7 +368,9 @@ class ControlledToolService:
             if artifact_store is not None
             else None
         )
-        self._redactor = redactor or Redactor(policy=_RESULT_REDACTION_POLICY)
+        # Callers share the worker's observability redactor (4 KiB strings), which
+        # silently cut read_file content; tool results keep their own wider bound.
+        self._redactor = (redactor or Redactor()).with_minimum_policy(_RESULT_REDACTION_POLICY)
         self._worktree = worktree
         self._git_completions: dict[UUID, asyncio.Task[ToolResult]] = {}
         self._runner_factory = runner_factory

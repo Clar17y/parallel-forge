@@ -107,3 +107,29 @@ def test_collection_marker_does_not_overwrite_a_caller_key() -> None:
     assert result["__forge_truncated__"] == "caller-value"
     assert 3 in result.values()
     assert len(result) == 2
+
+
+def test_with_minimum_policy_keeps_secrets_and_only_raises_bounds() -> None:
+    from forge.observability.redaction import RedactionPolicy, Redactor
+
+    base = Redactor(secrets=["s3cr3t-token-value"])
+    raised = base.with_minimum_policy(RedactionPolicy(max_string_bytes=64 * 1024))
+    assert raised.policy.max_string_bytes == 64 * 1024
+    assert raised.policy.max_collection_items == base.policy.max_collection_items
+    assert "s3cr3t-token-value" not in str(raised.redact({"text": "x s3cr3t-token-value y"}))
+    long_text = "a" * 10_000
+    assert raised.redact(long_text) == long_text
+    larger = Redactor(policy=RedactionPolicy(max_string_bytes=128 * 1024))
+    assert larger.with_minimum_policy(RedactionPolicy(max_string_bytes=64 * 1024)).policy == (
+        larger.policy
+    )
+
+
+def test_tool_service_keeps_its_result_bound_with_the_shared_worker_redactor() -> None:
+    """The worker passed its 4 KiB observability redactor, truncating read_file results."""
+    from forge.application.services.tools import ControlledToolService
+    from forge.observability.redaction import Redactor
+
+    service = ControlledToolService(lambda: None, redactor=Redactor(secrets=["k3y-value-123"]))  # type: ignore[arg-type,return-value]
+    assert service._redactor.policy.max_string_bytes >= 64 * 1024
+    assert "k3y-value-123" not in str(service._redactor.redact("k3y-value-123"))
