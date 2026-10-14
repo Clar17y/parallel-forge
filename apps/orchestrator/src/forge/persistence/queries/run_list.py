@@ -37,7 +37,7 @@ class RunListQuery:
             observed_at = await session.scalar(select(func.current_timestamp()))
             if not isinstance(observed_at, datetime):
                 raise TypeError("run projection timestamp unavailable")
-            predicates = []
+            predicates: list[ColumnElement[bool]] = []
             if states:
                 predicates.append(Run.state.in_(states))
             if q and q.strip():

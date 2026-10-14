@@ -19,6 +19,7 @@ import signal
 import stat
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
@@ -32,6 +33,12 @@ from forge.domain.subscription_launch import SubscriptionLaunchTerminalProof
 from forge.observability.redaction import Redactor
 
 _SHA256 = re.compile(r"\A[0-9a-f]{64}\Z", re.ASCII)
+
+
+def _waitpid_lock(process: subprocess.Popen[bytes]) -> threading.Lock:
+    """Return the private lock POSIX ``Popen`` holds while it reaps its child."""
+    lock: threading.Lock = process._waitpid_lock  # type: ignore[attr-defined]
+    return lock
 
 
 def _json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -500,7 +507,7 @@ class _PosixProcess:
             return
         deadline = time.monotonic() + max(0, seconds)
         while True:
-            if not self.process._waitpid_lock.acquire(timeout=max(0, deadline - time.monotonic())):
+            if not _waitpid_lock(self.process).acquire(timeout=max(0, deadline - time.monotonic())):
                 raise TimeoutError("process settlement deadline")
             try:
                 if self.process.returncode is not None:
@@ -515,7 +522,7 @@ class _PosixProcess:
                 if status is not None:
                     return
             finally:
-                self.process._waitpid_lock.release()
+                _waitpid_lock(self.process).release()
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError("process settlement deadline")
@@ -526,7 +533,7 @@ class _PosixProcess:
             return None
         # Popen.wait and poll reap under this lock. Keep the child PID pinned
         # through both signals so a concurrent reaper cannot expose it for reuse.
-        with self.process._waitpid_lock:
+        with _waitpid_lock(self.process):
             if self.process.returncode is not None:
                 return None
             root_signalled = False
