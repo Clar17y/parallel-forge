@@ -20,6 +20,10 @@ from test_claude_supervised import (
     _Verifier,
 )
 
+# Windows client launches receive the OS loader paths read from the system
+# (client_process_win32.system_environment), never from the ambient environment.
+WINDOWS_SYSTEM = frozenset({"SystemRoot", "SystemDrive", "ProgramData"} if os.name == "nt" else ())
+
 
 @pytest.fixture(autouse=True)
 def _supported_isolation_platform(monkeypatch):
@@ -370,7 +374,7 @@ async def test_claude_launch_uses_only_the_verified_client_home(tmp_path, monkey
     assert "CLAUDE_CODE_MANAGED_SETTINGS_PATH" not in environment
     assert launches[0].executable_digest == installation.executable_digest
     assert set(environment) == {"CLAUDE_CONFIG_DIR", "CLAUDE_CODE_ENTRYPOINT"} | (
-        {"SystemRoot"} if os.name == "nt" else set()
+        WINDOWS_SYSTEM
     )
     assert not {
         "ANTHROPIC_API_KEY",

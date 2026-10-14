@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import os
 from dataclasses import replace
 from pathlib import Path
 
@@ -27,6 +28,10 @@ from forge.agents.codex_verification import (
 )
 from forge.domain.capability_evidence import capability_home_digest
 from forge.domain.subscription_launch import SubscriptionLaunchTerminalProof
+
+# Windows client launches receive the OS loader paths read from the system
+# (client_process_win32.system_environment), never from the ambient environment.
+WINDOWS_SYSTEM = frozenset({"SystemRoot", "SystemDrive", "ProgramData"} if os.name == "nt" else ())
 
 
 def _proof(certain=True):
@@ -308,8 +313,8 @@ async def test_success_binds_exact_observations_protocol_and_isolated_environmen
     )
     assert (o.verifier_id, o.verifier_version) == (CODEX_VERIFIER_ID, CODEX_VERIFIER_VERSION)
     spec = supervisor.specs[0]
-    assert set(spec.environment) <= {"CODEX_HOME", "SystemRoot"}
-    assert spec.allowed_environment <= {"CODEX_HOME", "SystemRoot"}
+    assert set(spec.environment) <= {"CODEX_HOME", *WINDOWS_SYSTEM}
+    assert spec.allowed_environment <= {"CODEX_HOME", *WINDOWS_SYSTEM}
     assert spec.environment["CODEX_HOME"] == i.client_home
     assert not {"OPENAI_API_KEY", "OPENAI_AUTH_TOKEN", "PATH"} & set(spec.environment)
     assert supervisor.session.close_calls == 1

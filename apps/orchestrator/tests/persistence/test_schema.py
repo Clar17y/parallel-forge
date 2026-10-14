@@ -26,7 +26,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.sql.sqltypes import Enum as SqlEnum
 from sqlalchemy.sql.sqltypes import Integer, String, Uuid
 
-CURRENT_REVISION = "20261010_0039"
+CURRENT_REVISION = "20261012_0041"
 V01_TABLES = {
     "recovery_barrier",
     "api_mutations",
@@ -64,6 +64,7 @@ EXPECTED_TABLES = V01_TABLES | {
     "task_usage_baselines",
     "task_usage_checkpoints",
     "task_usage_owner_commands",
+    "task_usage_subject_admissions",
     "epics",
     "epic_brief_revisions",
     "epic_graph_revisions",
@@ -731,11 +732,13 @@ def test_models_define_exact_tables_primary_keys_and_jsonb_contracts() -> None:
         ("task_usage_baselines", "frozen_payload"),
         ("task_usage_owner_commands", "warnings"),
         ("task_usage_owner_commands", "command_payload"),
+        ("task_usage_subject_admissions", "configured_route_members"),
         ("epic_brainstorm_jobs", "snapshot"),
         ("epic_brainstorm_jobs", "proposal"),
         ("epic_brainstorm_attempts", "terminal_proof"),
         ("epic_brainstorm_attempts", "usage"),
         ("epic_brainstorm_attempts", "reservation"),
+        ("epic_brainstorm_attempts", "diagnostics"),
         ("epic_brainstorm_receipts", "response"),
         ("epic_brainstorm_audit", "detail"),
         ("epic_brainstorm_budget_ledgers", "ceiling"),
@@ -775,6 +778,11 @@ def test_models_define_exact_tables_primary_keys_and_jsonb_contracts() -> None:
     alternate_primary_keys = {
         "task_usage_policy_revisions": {"project_id": Uuid, "revision": Integer},
         "task_usage_baselines": {"work_unit_id": Uuid},
+        "task_usage_subject_admissions": {
+            "project_id": Uuid,
+            "subject_kind": String,
+            "subject_id": Uuid,
+        },
         "epic_execution_controls": {"execution_id": Uuid},
         "epic_child_budget_holds": {"attempt_id": Uuid},
         "epic_admission_scan_cursor": {"id": Integer},

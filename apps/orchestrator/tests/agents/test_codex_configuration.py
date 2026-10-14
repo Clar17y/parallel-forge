@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 import re
 import tomllib
 from dataclasses import replace
@@ -15,6 +16,10 @@ from forge.domain.local_cli import LocalCliTrust
 from forge.domain.subscription import ReasoningEffort
 from test_codex_gateway import _Broker, _gateway, _report
 from test_subscription_protocol import _request
+
+# Windows client launches receive the OS loader paths read from the system
+# (client_process_win32.system_environment), never from the ambient environment.
+WINDOWS_SYSTEM = frozenset({"SystemRoot", "SystemDrive", "ProgramData"} if os.name == "nt" else ())
 
 
 def _launched_configuration(spec, script_length):
@@ -90,9 +95,9 @@ async def test_launch_selects_the_trusted_home_without_inheriting_ambient_creden
     assert result.failure is None
     assert len(launches) == 1
     assert launches[0].environment["CODEX_HOME"] == str(Path.cwd())
-    assert set(launches[0].environment) <= {"CODEX_HOME", "SystemRoot"}
+    assert set(launches[0].environment) <= {"CODEX_HOME", *WINDOWS_SYSTEM}
     assert "CODEX_HOME" in launches[0].allowed_environment
-    assert launches[0].allowed_environment <= {"CODEX_HOME", "SystemRoot"}
+    assert launches[0].allowed_environment <= {"CODEX_HOME", *WINDOWS_SYSTEM}
 
 
 async def test_server_and_thread_receive_fixed_controls_for_native_and_hosted_tools():
