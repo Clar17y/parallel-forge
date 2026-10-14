@@ -18,7 +18,7 @@ from uuid import UUID, uuid5
 from forge.agents.subscription_protocol import ProviderToolCall
 from forge.application.ports.tool_schemas import arguments_match_schema
 from forge.application.ports.unit_of_work import UnitOfWork
-from forge.domain.operation import canonical_digest, thaw_payload
+from forge.domain.operation import OperationStatus, canonical_digest, thaw_payload
 from forge.domain.paths import normalize_policy_path
 from forge.domain.scheduling import TaskEffectLease, TaskLease
 from forge.domain.subscription import BrokerAuthorizationBinding, ToolCallBinding
@@ -44,6 +44,9 @@ _READ_ONLY_TOOLS = frozenset(
         ToolName.REPOSITORY_READ_INSTRUCTIONS,
     }
 )
+
+
+_TERMINAL_OPERATION_STATES = frozenset({OperationStatus.SUCCEEDED, OperationStatus.FAILED})
 
 
 class BrokerDenied(PermissionError):
@@ -214,7 +217,9 @@ class SubscriptionToolBroker:
                 stored.durable_operation_id, tool_name, request.arguments
             )
         except asyncio.CancelledError:
-            await self._reconcile_effect(effect_lease)
+            await self._settle_cancelled_effect(
+                effect_lease, tool_name, stored.durable_operation_id
+            )
             raise
         except BaseException:  # noqa: BLE001 - effect failures cannot leak provider details
             if tool_name in _READ_ONLY_TOOLS:
@@ -331,6 +336,28 @@ class SubscriptionToolBroker:
         async with self._work_factory() as work:
             await work.scheduler.reconcile_effect(effect)
             await work.commit()
+
+    async def _settle_cancelled_effect(
+        self, effect: TaskEffectLease, tool_name: ToolName, operation_id: UUID
+    ) -> None:
+        """Reject a cancelled check whose operation already settled; else reconcile.
+
+        A named check joins its own settlement before cancellation propagates,
+        so a terminal intent proves the container is gone and the result was
+        never delivered. Leaving that effect ``reconciling`` wedged the task.
+        """
+        if tool_name is ToolName.BUILD_RUN_NAMED_CHECK:
+            async with self._work_factory() as work:
+                operations = getattr(work, "operations", None)
+                try:
+                    intent = await operations.get(operation_id) if operations else None
+                except Exception:  # noqa: BLE001 - unknown state stays reconciling
+                    intent = None
+                if intent is not None and intent.status in _TERMINAL_OPERATION_STATES:
+                    await work.scheduler.settle_effect(effect, accepted=False)
+                    await work.commit()
+                    return
+        await self._reconcile_effect(effect)
 
     async def _reject_effect(self, effect: TaskEffectLease) -> None:
         async with self._work_factory() as work:

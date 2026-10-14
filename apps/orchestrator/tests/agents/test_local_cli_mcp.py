@@ -276,3 +276,100 @@ async def test_broker_denied_call_returns_tool_error_and_keeps_the_session_usabl
     })
     assert ok["result"]["isError"] is False
     assert len(allowed.calls) == 1 and mcp.calls == 2
+
+
+def _named_check_request():
+    from test_gemini_gateway import _google_request
+
+    return _google_request(tools=frozenset({ToolName.BUILD_RUN_NAMED_CHECK}))
+
+
+def _check_call(ident):
+    return {
+        "jsonrpc": "2.0",
+        "id": ident,
+        "method": "tools/call",
+        "params": {"name": "build.run_named_check", "arguments": {"command_name": "unit"}},
+    }
+
+
+async def test_slow_named_check_outlives_the_client_call_and_is_joined_not_rerun():
+    """A client tool timeout must not cancel a long check or start a second one."""
+    import asyncio
+
+    release = asyncio.Event()
+    calls = []
+
+    async def broker(call):
+        calls.append(call)
+        await release.wait()
+        return {"status": "succeeded", "operation_id": "op-1"}
+
+    mcp = LocalCliMcp(_named_check_request(), broker, named_check_wait_seconds=0.05)
+    await initialize(mcp)
+    first = await mcp._handle(_check_call(1))
+    assert first["result"]["isError"] is True
+    assert "still running" in first["result"]["content"][0]["text"]
+    second = await mcp._handle(_check_call(2))
+    assert second["result"]["isError"] is True
+    assert len(calls) == 1 and mcp.calls == 1 and mcp.checks == 1
+
+    release.set()
+    joined = await mcp._handle(_check_call(3))
+    assert joined["result"]["isError"] is False
+    assert "op-1" in joined["result"]["content"][0]["text"]
+    assert len(calls) == 1
+
+    rerun = await mcp._handle(_check_call(4))
+    assert rerun["result"]["isError"] is False
+    assert len(calls) == 2 and mcp.calls == 2 and mcp.checks == 2
+
+
+async def test_close_cancels_and_awaits_an_in_flight_named_check():
+    import asyncio
+
+    started, settled = asyncio.Event(), asyncio.Event()
+
+    async def broker(call):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await asyncio.sleep(0.05)  # stopping the container and settling the effect
+            settled.set()
+            raise
+
+    mcp = LocalCliMcp(_named_check_request(), broker, named_check_wait_seconds=0.01)
+    await mcp.start()
+    await initialize(mcp)
+    await mcp._handle(_check_call(1))
+    assert started.is_set()
+    await mcp.close()
+    assert settled.is_set()
+
+
+async def test_close_reports_a_check_that_does_not_settle_in_time():
+    import asyncio
+
+    released = asyncio.Event()
+
+    async def broker(call):
+        while not released.is_set():
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                continue  # does not settle until the test releases it
+        return {"status": "cancelled"}
+
+    mcp = LocalCliMcp(
+        _named_check_request(), broker, named_check_wait_seconds=0.01, settle_seconds=0.1
+    )
+    await mcp.start()
+    await initialize(mcp)
+    await mcp._handle(_check_call(1))
+    with pytest.raises(TimeoutError):
+        await mcp.close()
+    released.set()
+    for task in list(mcp._inflight.values()):
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)

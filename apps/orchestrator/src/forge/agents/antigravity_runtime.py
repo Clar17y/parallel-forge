@@ -697,7 +697,7 @@ class AntigravityGateway:
                 except Exception:  # noqa: BLE001 - still stop the client after a callback cleanup error
                     uncertain = True
                 try:
-                    async with asyncio.timeout(2):
+                    async with asyncio.timeout(mcp.close_seconds):
                         await mcp.close()
                 except Exception:  # noqa: BLE001 - transport failure must not skip process settlement
                     uncertain = True

@@ -425,3 +425,59 @@ def test_failed_read_only_effect_settles_instead_of_waiting_for_reconciliation(
         )
     assert hasattr(scheduler, "reconciled") is reconciled
     assert scheduler.settled == ([] if reconciled else [(scheduler.admitted[0], False)])
+
+
+@pytest.mark.parametrize(("status", "reconciled"), [("failed", False), ("succeeded", False), ("pending", True)])
+def test_cancelled_named_check_settles_once_its_operation_is_terminal(status, reconciled):
+    """A check cancelled after its container stopped must not wedge the task as reconciling."""
+    from types import SimpleNamespace
+
+    from forge.domain.operation import OperationStatus
+
+    run_id, task_id, attempt_id = uuid4(), uuid4(), uuid4()
+    lease = TaskLease(
+        run_id=run_id,
+        task_id=task_id,
+        owner="worker",
+        generation=1,
+        expires_at=datetime.now(UTC) + timedelta(seconds=10),
+    )
+    auth = BrokerAuthorizationBinding(
+        run_id=run_id,
+        task_id=task_id,
+        attempt_id=attempt_id,
+        worktree_id="forge-test",
+        role=SpecialistPurpose.ROUTINE_IMPLEMENTATION,
+        policy_version=1,
+        permitted_tools=frozenset({ToolName.BUILD_RUN_NAMED_CHECK}),
+        broker_token="opaque",
+    )
+    subscription, scheduler = Subscription(), Scheduler()
+    looked_up = []
+
+    class Operations:
+        async def get(self, intent_id):
+            looked_up.append(intent_id)
+            return SimpleNamespace(status=OperationStatus(status))
+
+    class OperationWork(Work):
+        operations = Operations()
+
+    async def effect(_operation_id, _name, _arguments):
+        raise asyncio.CancelledError()
+
+    broker = SubscriptionToolBroker(
+        lambda: OperationWork(subscription, scheduler), lease=lease, authority=auth, effect=effect
+    )
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(
+            broker.invoke(
+                token="opaque",
+                provider_call_key="call-1",
+                tool_name=ToolName.BUILD_RUN_NAMED_CHECK,
+                arguments={"command_name": "unit"},
+            )
+        )
+    assert looked_up == [subscription.binding.durable_operation_id]
+    assert hasattr(scheduler, "reconciled") is reconciled
+    assert scheduler.settled == ([] if reconciled else [(scheduler.admitted[0], False)])
