@@ -1371,3 +1371,55 @@ def test_primary_guidance_says_how_to_start_work_and_what_wait_may_name() -> Non
     assert "delegate" in primary
     assert "never your own task_id" in primary
     assert "delegate" not in _decision_guidance(SpecialistPurpose.ROUTINE_IMPLEMENTATION)
+
+
+def test_muse_decision_schema_is_keyed_by_kind_so_any_branch_can_be_chosen() -> None:
+    """Muse emits object keys alphabetically; a leading "kind" left only `wait` reachable."""
+    from forge.agents.muse_runtime import _keyed_decision_schema, _unkey_decision
+
+    schema = {
+        "type": "object",
+        "properties": {
+            "decision": {
+                "anyOf": [
+                    {
+                        "type": "object",
+                        "properties": {
+                            "kind": {"const": "wait", "type": "string"},
+                            "reason": {"type": "string"},
+                        },
+                        "required": ["reason", "kind"],
+                        "additionalProperties": False,
+                    },
+                    {
+                        "type": "object",
+                        "properties": {
+                            "kind": {"const": "delegate", "type": "string"},
+                            "children": {"type": "array"},
+                            "rationale": {"type": "string"},
+                        },
+                        "required": ["kind", "rationale", "children"],
+                        "additionalProperties": False,
+                    },
+                ]
+            }
+        },
+        "required": ["decision"],
+        "additionalProperties": False,
+    }
+    keyed = _keyed_decision_schema(schema)
+    branches = keyed["properties"]["decision"]["anyOf"]
+    assert [list(branch["properties"]) for branch in branches] == [["wait"], ["delegate"]]
+    assert all(branch["required"] == list(branch["properties"]) for branch in branches)
+    delegate = branches[1]["properties"]["delegate"]
+    assert "kind" not in delegate["properties"] and "kind" not in delegate["required"]
+    assert schema["properties"]["decision"]["anyOf"][1]["properties"]["kind"]  # input untouched
+
+    assert _unkey_decision({"delegate": {"children": [], "rationale": "r"}}) == {
+        "kind": "delegate",
+        "children": [],
+        "rationale": "r",
+    }
+    assert _unkey_decision({"kind": "wait", "reason": "x"}) == {"kind": "wait", "reason": "x"}
+    assert _unkey_decision({"wait": {"kind": "accept"}}) == {"wait": {"kind": "accept"}}
+    assert _unkey_decision({"wait": {}, "delegate": {}}) == {"wait": {}, "delegate": {}}

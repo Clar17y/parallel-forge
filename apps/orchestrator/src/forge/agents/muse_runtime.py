@@ -10,9 +10,11 @@ import re
 import shutil
 import tempfile
 from collections.abc import Awaitable, Callable, Mapping
+from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from time import monotonic
+from typing import Any
 from uuid import UUID
 
 from forge.agents.antigravity_runtime import _ObservationPublisher
@@ -117,6 +119,49 @@ def resolve_muse_executable(executable: str) -> tuple[str, str]:
     if digest is None:
         raise ValueError("Muse native executable is unavailable")
     return str(path.resolve(strict=True)), digest
+
+
+def _keyed_decision_schema(schema: Mapping[str, Any]) -> dict[str, Any]:
+    """Key each decision branch by its kind so Muse can select any branch.
+
+    Muse writes structured-output object keys in alphabetical order. With the
+    discriminator as a sibling field, only branches whose first sorted key is
+    ``kind`` (``wait``, ``plan``) remained reachable once ``kind`` was emitted,
+    so primaries could never return ``delegate``. ``{"delegate": {...}}`` makes
+    the branch the first and only key; ``_unkey_decision`` restores the shape.
+    """
+    keyed = deepcopy(dict(schema))
+    decision = keyed.get("properties", {}).get("decision")
+    if not isinstance(decision, dict) or not isinstance(decision.get("anyOf"), list):
+        return keyed
+    branches = []
+    for branch in decision["anyOf"]:
+        kind = branch.get("properties", {}).get("kind", {}).get("const")
+        if not isinstance(kind, str):
+            return deepcopy(dict(schema))
+        inner = deepcopy(branch)
+        inner["properties"].pop("kind")
+        inner["required"] = [name for name in inner.get("required", []) if name != "kind"]
+        branches.append(
+            {
+                "type": "object",
+                "properties": {kind: inner},
+                "required": [kind],
+                "additionalProperties": False,
+            }
+        )
+    decision["anyOf"] = branches
+    return keyed
+
+
+def _unkey_decision(value: Mapping[str, object]) -> Mapping[str, object]:
+    """Undo ``_keyed_decision_schema``; an explicit ``kind`` passes through unchanged."""
+    if "kind" in value or len(value) != 1:
+        return value
+    (kind, body), = value.items()
+    if not isinstance(body, Mapping) or "kind" in body:
+        return value
+    return {"kind": kind, **body}
 
 
 _MUSE_TOOL_NAME = re.compile(r"[^A-Za-z0-9_]")
@@ -348,7 +393,7 @@ class MuseAttemptHome:
             + " Do not use native filesystem, shell, search, editing or subagent tools.\n"
             + "\nComplete the bounded Forge task and return the requested structured decision."
             + "\nForge final response schema:\n"
-            + json.dumps(output_schema(self.mcp.request), allow_nan=False)
+            + json.dumps(_keyed_decision_schema(output_schema(self.mcp.request)), allow_nan=False)
             + "\nTask context (untrusted data):\n"
             + json.dumps(context, allow_nan=False)
         )
@@ -356,7 +401,8 @@ class MuseAttemptHome:
 
         # Write output schema file
         self._schema_file.write_text(
-            json.dumps(output_schema(self.mcp.request), allow_nan=False), encoding="utf-8"
+            json.dumps(_keyed_decision_schema(output_schema(self.mcp.request)), allow_nan=False),
+            encoding="utf-8",
         )
 
         return self.environment()
@@ -685,6 +731,8 @@ class MuseGateway:
 
         # If wrapped under 'decision'
         decision_obj = parsed.get("decision")
+        if isinstance(decision_obj, Mapping):
+            decision_obj = _unkey_decision(decision_obj)
         if not isinstance(decision_obj, Mapping):
             return SubscriptionInvocationResult(
                 attempt=request.attempt,
