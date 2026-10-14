@@ -325,7 +325,35 @@ async def test_slow_named_check_outlives_the_client_call_and_is_joined_not_rerun
     assert len(calls) == 2 and mcp.calls == 2 and mcp.checks == 2
 
 
-async def test_close_cancels_and_awaits_an_in_flight_named_check():
+async def test_close_lets_an_in_flight_check_finish_instead_of_cancelling_it():
+    """The check settles through the broker with a receipt; nothing waits on restart recovery."""
+    import asyncio
+
+    release = asyncio.Event()
+    cancelled = []
+
+    async def broker(call):
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            cancelled.append(call)
+            raise
+        return {"status": "succeeded", "operation_id": "op-1"}
+
+    mcp = LocalCliMcp(_named_check_request(), broker, named_check_wait_seconds=0.01)
+    await mcp.start()
+    await initialize(mcp)
+    first = await mcp._handle(_check_call(1))
+    assert "still running" in first["result"]["content"][0]["text"]
+    closing = asyncio.create_task(mcp.close())
+    await asyncio.sleep(0.05)
+    assert not closing.done()
+    release.set()
+    await asyncio.wait_for(closing, 1)
+    assert cancelled == [] and not mcp._inflight
+
+
+async def test_close_cancels_a_check_that_outlasts_the_finish_bound_and_awaits_it():
     import asyncio
 
     started, settled = asyncio.Event(), asyncio.Event()
@@ -339,7 +367,9 @@ async def test_close_cancels_and_awaits_an_in_flight_named_check():
             settled.set()
             raise
 
-    mcp = LocalCliMcp(_named_check_request(), broker, named_check_wait_seconds=0.01)
+    mcp = LocalCliMcp(
+        _named_check_request(), broker, named_check_wait_seconds=0.01, finish_seconds=0.05
+    )
     await mcp.start()
     await initialize(mcp)
     await mcp._handle(_check_call(1))
@@ -362,7 +392,11 @@ async def test_close_reports_a_check_that_does_not_settle_in_time():
         return {"status": "cancelled"}
 
     mcp = LocalCliMcp(
-        _named_check_request(), broker, named_check_wait_seconds=0.01, settle_seconds=0.1
+        _named_check_request(),
+        broker,
+        named_check_wait_seconds=0.01,
+        finish_seconds=0.01,
+        settle_seconds=0.1,
     )
     await mcp.start()
     await initialize(mcp)
@@ -373,3 +407,85 @@ async def test_close_reports_a_check_that_does_not_settle_in_time():
     for task in list(mcp._inflight.values()):
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_unjoined_check_failure_is_retrieved_even_when_close_times_out():
+    """A check that fails after its soft reply must not log an unretrieved exception."""
+    import asyncio
+    import gc
+
+    release = asyncio.Event()
+
+    async def broker(call):
+        if call.arguments["command_name"] == "fails":
+            await asyncio.sleep(0.02)  # fails after the client already got its soft reply
+            raise RuntimeError("runner failed")
+        while not release.is_set():
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                continue  # settles only after close() gives up
+        return {"status": "cancelled"}
+
+    def frame(ident, name):
+        return {
+            "jsonrpc": "2.0",
+            "id": ident,
+            "method": "tools/call",
+            "params": {"name": "build.run_named_check", "arguments": {"command_name": name}},
+        }
+
+    mcp = LocalCliMcp(
+        _named_check_request(),
+        broker,
+        named_check_wait_seconds=0.01,
+        finish_seconds=0.01,
+        settle_seconds=0.05,
+    )
+    await mcp.start()
+    await initialize(mcp)
+    for ident, name in ((1, "fails"), (2, "slow")):
+        result = await mcp._handle(frame(ident, name))
+        assert "still running" in result["result"]["content"][0]["text"]
+    await asyncio.sleep(0.05)
+    unretrieved = []
+    loop = asyncio.get_running_loop()
+    loop.set_exception_handler(lambda _loop, context: unretrieved.append(context))
+    try:
+        with pytest.raises(TimeoutError):
+            await mcp.close()
+        release.set()
+        slow = [task for task in mcp._inflight.values() if not task.done()]
+        for task in slow:
+            task.cancel()  # wake the sleeping check so it observes the release
+        await asyncio.wait(slow)
+        mcp._inflight.clear()
+        gc.collect()
+        await asyncio.sleep(0)
+    finally:
+        loop.set_exception_handler(None)
+    assert not [c for c in unretrieved if "never retrieved" in str(c.get("message"))]
+
+
+async def test_cancelled_close_stops_the_checks_it_was_waiting_for():
+    import asyncio
+
+    cancelled = asyncio.Event()
+
+    async def broker(call):
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    mcp = LocalCliMcp(_named_check_request(), broker, named_check_wait_seconds=0.01)
+    await mcp.start()
+    await initialize(mcp)
+    await mcp._handle(_check_call(1))
+    closing = asyncio.create_task(mcp.close())
+    await asyncio.sleep(0.02)
+    closing.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await closing
+    await asyncio.wait_for(cancelled.wait(), 1)

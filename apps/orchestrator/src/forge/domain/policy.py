@@ -23,6 +23,7 @@ from forge.domain.review import FindingSeverity, ReviewFinding
 _SHELL_META = re.compile(r"[\r\n;&|$`()<>`]")
 _ENVIRONMENT_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _SECRET_REFERENCE = re.compile(r"^secret://[A-Za-z0-9][A-Za-z0-9._/-]*$")
+MAX_COMMAND_TIMEOUT_SECONDS = 7200
 _KNOWN_MERGE_METHODS = frozenset({"merge", "squash", "rebase"})
 _SHELL_WRAPPERS = frozenset(
     {
@@ -124,7 +125,7 @@ class CommandSpec(BaseModel):
     kind: StepKind
     name: str = Field(min_length=1)
     argv: tuple[str, ...] = Field(min_length=1)
-    timeout_seconds: int = Field(ge=1, le=7200)
+    timeout_seconds: int = Field(ge=1, le=MAX_COMMAND_TIMEOUT_SECONDS)
     required: bool = True
     network_enabled: bool = False
     environment_keys: tuple[str, ...] = ()
@@ -477,11 +478,15 @@ def _reject_shell_text(value: str, field_name: str) -> None:
 
 
 __all__ = [
+    "MAX_COMMAND_TIMEOUT_SECONDS",
     "AgentModelPolicy",
+    "CommandPathScope",
     "CommandSpec",
     "DatabaseProvisioningPolicy",
     "JevPolicy",
     "ProjectPolicy",
     "RunnerMode",
     "StepKind",
+    "scoped_check_paths",
+    "scoped_command",
 ]

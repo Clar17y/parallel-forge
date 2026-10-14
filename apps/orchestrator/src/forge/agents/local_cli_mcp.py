@@ -20,13 +20,18 @@ from forge.agents.subscription_protocol import (
 )
 from forge.application.ports.subscription_gateway import SubscriptionInvocationRequest
 from forge.application.ports.tool_schemas import arguments_match_schema
+from forge.domain.policy import MAX_COMMAND_TIMEOUT_SECONDS
 from forge.domain.tool import ToolName
 
 # A named check can outlive a client's MCP tool-call timeout (Muse gives up after
 # about ten minutes). The call returns after this soft wait while the check keeps
 # running in a task owned here; an identical later call joins the same run.
 _NAMED_CHECK_WAIT_SECONDS = 90.0
-# Bound for stopping and settling in-flight checks when the connection closes.
+# A check still running when the connection closes is left to finish (its own
+# command timeout bounds it), so its effect settles with a receipt instead of
+# waiting for restart recovery. Only a check that outlasts this is cancelled.
+_NAMED_CHECK_FINISH_SECONDS = float(MAX_COMMAND_TIMEOUT_SECONDS + 60)
+# Bound for a cancelled check to stop its container and settle.
 _NAMED_CHECK_SETTLE_SECONDS = 120.0
 
 
@@ -37,10 +42,12 @@ class LocalCliMcp:
         broker: ToolBroker | None,
         *,
         named_check_wait_seconds: float = _NAMED_CHECK_WAIT_SECONDS,
+        finish_seconds: float = _NAMED_CHECK_FINISH_SECONDS,
         settle_seconds: float = _NAMED_CHECK_SETTLE_SECONDS,
     ):
         self.request, self.broker = request, broker
         self._named_check_wait = named_check_wait_seconds
+        self._finish_seconds = finish_seconds
         self._settle_seconds = settle_seconds
         self._inflight: dict[str, asyncio.Task[Mapping[str, object]]] = {}
         self.name = "forge_" + request.attempt.attempt_id.hex
@@ -89,7 +96,7 @@ class LocalCliMcp:
     @property
     def close_seconds(self) -> float:
         """Upper bound a caller should allow ``close`` before treating it as uncertain."""
-        return self._settle_seconds + 5
+        return self._finish_seconds + self._settle_seconds + 5
 
     async def close(self) -> None:
         self._closed = True
@@ -104,20 +111,24 @@ class LocalCliMcp:
                     await asyncio.gather(self._failure, return_exceptions=True)
 
     async def _settle_inflight(self) -> None:
-        """Stop in-flight checks and wait until each has settled, or raise."""
+        """Let in-flight checks finish, cancel any that outlast the bound, or raise."""
         tasks = tuple(self._inflight.values())
         if not tasks:
             return
-        for task in tasks:
-            if not task.done():
+        try:
+            _, pending = await asyncio.wait(tasks, timeout=self._finish_seconds)
+            for task in pending:
                 task.cancel()
-        _, pending = await asyncio.wait(tasks, timeout=self._settle_seconds)
+            if pending:
+                _, pending = await asyncio.wait(pending, timeout=self._settle_seconds)
+        except asyncio.CancelledError:
+            # The attempt itself is being stopped: stop its checks too.
+            for task in tasks:
+                task.cancel()
+            raise
         if pending:
             raise TimeoutError("named check did not settle after the connection closed")
         self._inflight.clear()
-        for task in tasks:
-            if not task.cancelled():
-                task.exception()  # retrieved: the attempt is ending
 
     async def _handle(self, frame: Mapping[str, object]) -> Mapping[str, object] | None:
         if self._closed or frame.get("jsonrpc") != "2.0":
@@ -264,6 +275,9 @@ class LocalCliMcp:
             self.calls += 1
             self.checks += 1
             task = asyncio.create_task(self._dispatch(call))
+            # The failure may land after the soft reply with no later join; mark
+            # it retrieved now. A join still re-raises it from ``task.result()``.
+            task.add_done_callback(_retrieve_exception)
             self._inflight[run_key] = task
         done, _ = await asyncio.wait({task}, timeout=self._named_check_wait)
         if not done:
@@ -294,6 +308,11 @@ class LocalCliMcp:
     async def _dispatch(self, call: ProviderToolCall) -> Mapping[str, object]:
         assert self.broker is not None
         return freeze_context(await self.broker(call))
+
+
+def _retrieve_exception(task: asyncio.Task[Mapping[str, object]]) -> None:
+    if not task.cancelled():
+        task.exception()
 
 
 def _budget_exhausted() -> dict[str, object]:

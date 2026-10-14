@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import logging
 import re
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import AbstractAsyncContextManager
@@ -18,7 +19,7 @@ from uuid import UUID, uuid5
 from forge.agents.subscription_protocol import ProviderToolCall
 from forge.application.ports.tool_schemas import arguments_match_schema
 from forge.application.ports.unit_of_work import UnitOfWork
-from forge.domain.operation import OperationStatus, canonical_digest, thaw_payload
+from forge.domain.operation import canonical_digest, thaw_payload
 from forge.domain.paths import normalize_policy_path
 from forge.domain.scheduling import TaskEffectLease, TaskLease
 from forge.domain.subscription import BrokerAuthorizationBinding, ToolCallBinding
@@ -33,6 +34,7 @@ from forge.domain.tool import (
 )
 
 _CALL_KEY = re.compile(r"\A[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,254}\Z")
+logger = logging.getLogger(__name__)
 
 
 _READ_ONLY_TOOLS = frozenset(
@@ -44,9 +46,6 @@ _READ_ONLY_TOOLS = frozenset(
         ToolName.REPOSITORY_READ_INSTRUCTIONS,
     }
 )
-
-
-_TERMINAL_OPERATION_STATES = frozenset({OperationStatus.SUCCEEDED, OperationStatus.FAILED})
 
 
 class BrokerDenied(PermissionError):
@@ -123,6 +122,10 @@ class SubscriptionToolBroker:
             expected_candidate_epoch,
         )
         self._revoked = False
+        # Concurrent replays of one callback share its effect; only the last
+        # caller still running cleans it up, so a cancelled replay never fences
+        # the result another caller is about to accept.
+        self._callers: dict[UUID, int] = {}
 
     async def revoke(self) -> None:
         """Prevent further callback admission without disturbing fenced effects."""
@@ -212,14 +215,35 @@ class SubscriptionToolBroker:
             raise BrokerDenied() from None
         if receipt is not None:
             return _broker_receipt(stored, receipt)
+        operation_id = stored.durable_operation_id
+        self._callers[operation_id] = self._callers.get(operation_id, 0) + 1
+        try:
+            return await self._run_effect(
+                stored, effect_lease, tool_name, request, exclusive=exclusive
+            )
+        finally:
+            remaining = self._callers[operation_id] - 1
+            if remaining:
+                self._callers[operation_id] = remaining
+            else:
+                del self._callers[operation_id]
+
+    async def _run_effect(
+        self,
+        stored: ToolCallBinding,
+        effect_lease: TaskEffectLease,
+        tool_name: ToolName,
+        request: ToolRequest,
+        *,
+        exclusive: bool,
+    ) -> BrokerReceipt:
         try:
             tool_result = await self._effect(
                 stored.durable_operation_id, tool_name, request.arguments
             )
         except asyncio.CancelledError:
-            await self._settle_cancelled_effect(
-                effect_lease, tool_name, stored.durable_operation_id
-            )
+            if self._callers[stored.durable_operation_id] == 1:
+                await self._reconcile_cancelled_effect(effect_lease, stored)
             raise
         except BaseException:  # noqa: BLE001 - effect failures cannot leak provider details
             if tool_name in _READ_ONLY_TOOLS:
@@ -337,27 +361,31 @@ class SubscriptionToolBroker:
             await work.scheduler.reconcile_effect(effect)
             await work.commit()
 
-    async def _settle_cancelled_effect(
-        self, effect: TaskEffectLease, tool_name: ToolName, operation_id: UUID
+    async def _reconcile_cancelled_effect(
+        self, effect: TaskEffectLease, binding: ToolCallBinding
     ) -> None:
-        """Reject a cancelled check whose operation already settled; else reconcile.
+        """Leave a cancelled callback's effect for evidence-bound recovery.
 
-        A named check joins its own settlement before cancellation propagates,
-        so a terminal intent proves the container is gone and the result was
-        never delivered. Leaving that effect ``reconciling`` wedged the task.
+        Its tool record and receipt are settled by startup recovery from proved
+        terminal evidence, never here. A receipt means a replay of this callback
+        already settled the effect. Cleanup never replaces the cancellation: on
+        failure the effect stays admitted and fenced for that recovery.
         """
-        if tool_name is ToolName.BUILD_RUN_NAMED_CHECK:
+        try:
             async with self._work_factory() as work:
-                operations = getattr(work, "operations", None)
-                try:
-                    intent = await operations.get(operation_id) if operations else None
-                except Exception:  # noqa: BLE001 - unknown state stays reconciling
-                    intent = None
-                if intent is not None and intent.status in _TERMINAL_OPERATION_STATES:
-                    await work.scheduler.settle_effect(effect, accepted=False)
+                receipt = await work.subscription.operation_receipt(
+                    binding,
+                    run_id=self._authority.run_id,
+                    task_id=self._authority.task_id,
+                )
+                if receipt is None:
+                    await work.scheduler.reconcile_effect(effect)
                     await work.commit()
-                    return
-        await self._reconcile_effect(effect)
+        except Exception:  # keep the cancellation; the effect stays fenced
+            logger.warning(
+                "cancelled subscription callback left its effect for reconciliation",
+                exc_info=True,
+            )
 
     async def _reject_effect(self, effect: TaskEffectLease) -> None:
         async with self._work_factory() as work:
