@@ -29,6 +29,7 @@ from forge.agents.client_process import (
     terminal_launch_proof,
 )
 from forge.agents.codex_gateway import ToolBroker
+from forge.agents.gemini_gateway_mcp import MAX_FRAME_BYTES
 from forge.agents.local_cli_mcp import LocalCliMcp
 from forge.agents.muse_approval import permission_hook_settings
 from forge.agents.runtime_factory import RouteUnavailable
@@ -210,6 +211,10 @@ def muse_launch_spec(
         "--workspace", str(home.path), "--trust-workspace", "--model", installation.model,
         "--reasoning-effort", "max" if installation.effort == "maximum" else installation.effort,
         "--max-model-steps", str(installation.max_model_steps),
+        # Muse's default cap truncated ordinary read_file results (a 14 KB file),
+        # leaving workers unable to rewrite files with whole-file writes. Forge
+        # already bounds each result to one MCP frame.
+        "--max-tool-output-bytes", str(MAX_FRAME_BYTES),
         "--disable-shell", "--disable-write", "--disable-web-tools",
         "--approval-mode", "on-request", "--approval-judge", "off",
         "--no-foreign-personal-context", "--no-session-log", "--disable-reminders",

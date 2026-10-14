@@ -1423,3 +1423,29 @@ def test_muse_decision_schema_is_keyed_by_kind_so_any_branch_can_be_chosen() -> 
     assert _unkey_decision({"kind": "wait", "reason": "x"}) == {"kind": "wait", "reason": "x"}
     assert _unkey_decision({"wait": {"kind": "accept"}}) == {"wait": {"kind": "accept"}}
     assert _unkey_decision({"wait": {}, "delegate": {}}) == {"wait": {}, "delegate": {}}
+
+
+def test_muse_launch_lets_the_model_see_whole_forge_tool_results(tmp_path: Path) -> None:
+    """Muse truncated a 14 KB read_file result, so workers could not rewrite the file."""
+    from forge.agents.gemini_gateway_mcp import MAX_FRAME_BYTES
+    from forge.agents.muse_runtime import muse_launch_spec
+
+    fake = tmp_path / "client.exe"
+    fake.write_bytes(b"dummy")
+    installation = MuseInstallation(
+        executable=str(fake.resolve()), cwd=str(tmp_path.resolve()),
+        home=str(tmp_path.resolve()), model="muse-wonder-1.0", effort="medium",
+        executable_digest=hashlib.sha256(fake.read_bytes()).hexdigest(),
+    )
+    home = MuseAuthoringHome(installation, uuid4())
+    home.prepare("prompt", {"type": "object"})
+    try:
+        spec = muse_launch_spec(
+            installation, home, mcp_name="forge",
+            mcp_server={"transport": "stdio", "command": "test", "args": [], "env": {}},
+            tools=("repository.read_file",), duration=1,
+        )
+        cap = spec.argv[spec.argv.index("--max-tool-output-bytes") + 1]
+        assert int(cap) == MAX_FRAME_BYTES
+    finally:
+        home.cleanup()
