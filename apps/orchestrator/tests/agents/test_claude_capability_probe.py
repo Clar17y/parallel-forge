@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -35,6 +36,10 @@ from forge.agents.client_process import (
 )
 from forge.domain.capability_evidence import capability_home_digest
 from forge.domain.subscription_launch import SubscriptionLaunchTerminalProof
+
+# Windows client launches receive the OS loader paths read from the system
+# (client_process_win32.system_environment), never from the ambient environment.
+WINDOWS_SYSTEM = frozenset({"SystemRoot", "SystemDrive", "ProgramData"} if os.name == "nt" else ())
 
 
 def _digest(value="account-123"):
@@ -383,8 +388,8 @@ async def test_supervised_auth_exact_command_clean_environment_terminal_and_clos
     assert spec.protocol == "json_document"
     assert spec.stdout_max_bytes == 16 * 1024
     assert {key: spec.environment[key] for key in environment} == environment
-    assert set(spec.environment) <= {*environment, "SystemRoot"}
-    assert spec.allowed_environment <= frozenset({*environment, "SystemRoot"})
+    assert set(spec.environment) <= {*environment, *WINDOWS_SYSTEM}
+    assert spec.allowed_environment <= frozenset({*environment, *WINDOWS_SYSTEM})
     assert spec.duration_seconds == 1 and session.close_calls == 1
     assert session.stdin_closed is True
     assert session.closed_before_receive is True

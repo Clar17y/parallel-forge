@@ -10,9 +10,11 @@ import re
 import shutil
 import tempfile
 from collections.abc import Awaitable, Callable, Mapping
+from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from time import monotonic
+from typing import Any
 from uuid import UUID
 
 from forge.agents.antigravity_runtime import _ObservationPublisher
@@ -27,6 +29,7 @@ from forge.agents.client_process import (
     terminal_launch_proof,
 )
 from forge.agents.codex_gateway import ToolBroker
+from forge.agents.gemini_gateway_mcp import MAX_FRAME_BYTES
 from forge.agents.local_cli_mcp import LocalCliMcp
 from forge.agents.muse_approval import permission_hook_settings
 from forge.agents.runtime_factory import RouteUnavailable
@@ -83,6 +86,10 @@ _PRIMARY_DECISION_GUIDANCE = """
 The primary coordinates the run: do not return a task handoff. In planning,
 return the plan; in work phases, choose a primary decision permitted by the
 supplied schema. A plan for future implementation is not completed work.
+When a work phase starts and known_tasks lists no child of your task, return
+delegate to create the worker tasks that do the approved work; nothing runs
+until you do. wait may only list task IDs of existing direct children from
+known_tasks, never your own task_id.
 """
 
 
@@ -115,11 +122,62 @@ def resolve_muse_executable(executable: str) -> tuple[str, str]:
     return str(path.resolve(strict=True)), digest
 
 
+def _keyed_decision_schema(schema: Mapping[str, Any]) -> dict[str, Any]:
+    """Key each decision branch by its kind so Muse can select any branch.
+
+    Muse writes structured-output object keys in alphabetical order. With the
+    discriminator as a sibling field, only branches whose first sorted key is
+    ``kind`` (``wait``, ``plan``) remained reachable once ``kind`` was emitted,
+    so primaries could never return ``delegate``. ``{"delegate": {...}}`` makes
+    the branch the first and only key; ``_unkey_decision`` restores the shape.
+    """
+    keyed = deepcopy(dict(schema))
+    decision = keyed.get("properties", {}).get("decision")
+    if not isinstance(decision, dict) or not isinstance(decision.get("anyOf"), list):
+        return keyed
+    branches = []
+    for branch in decision["anyOf"]:
+        kind = branch.get("properties", {}).get("kind", {}).get("const")
+        if not isinstance(kind, str):
+            return deepcopy(dict(schema))
+        inner = deepcopy(branch)
+        inner["properties"].pop("kind")
+        inner["required"] = [name for name in inner.get("required", []) if name != "kind"]
+        branches.append(
+            {
+                "type": "object",
+                "properties": {kind: inner},
+                "required": [kind],
+                "additionalProperties": False,
+            }
+        )
+    decision["anyOf"] = branches
+    return keyed
+
+
+def _unkey_decision(value: Mapping[str, object]) -> Mapping[str, object]:
+    """Undo ``_keyed_decision_schema``; an explicit ``kind`` passes through unchanged."""
+    if "kind" in value or len(value) != 1:
+        return value
+    (kind, body), = value.items()
+    if not isinstance(body, Mapping) or "kind" in body:
+        return value
+    return {"kind": kind, **body}
+
+
+_MUSE_TOOL_NAME = re.compile(r"[^A-Za-z0-9_]")
+
 def muse_launch_spec(
     installation: MuseInstallation, home: MuseAttemptHome | MuseAuthoringHome,
     *, mcp_name: str, mcp_server: Mapping[str, object], tools: tuple[str, ...], duration: float,
 ) -> ClientLaunchSpec:
     """Bind the installed client, configured account home, and exact Forge toolset."""
+    # Muse exposes an MCP tool such as `repository.read_file` or
+    # `validation-results.read` under a normalized name in which every character
+    # outside [A-Za-z0-9_] becomes `_` (`mcp__<server>__validation_results_read`).
+    # The original spelling is rejected as an unknown tool, so the toolset and
+    # permission hook use Muse's names.
+    tools = tuple(_MUSE_TOOL_NAME.sub("_", name) for name in tools)
     info = home.path.lstat()
     if (
         home._identity != (info.st_dev, info.st_ino)
@@ -153,6 +211,10 @@ def muse_launch_spec(
         "--workspace", str(home.path), "--trust-workspace", "--model", installation.model,
         "--reasoning-effort", "max" if installation.effort == "maximum" else installation.effort,
         "--max-model-steps", str(installation.max_model_steps),
+        # Muse's default cap truncated ordinary read_file results (a 14 KB file),
+        # leaving workers unable to rewrite files with whole-file writes. Forge
+        # already bounds each result to one MCP frame.
+        "--max-tool-output-bytes", str(MAX_FRAME_BYTES),
         "--disable-shell", "--disable-write", "--disable-web-tools",
         "--approval-mode", "on-request", "--approval-judge", "off",
         "--no-foreign-personal-context", "--no-session-log", "--disable-reminders",
@@ -175,6 +237,13 @@ def _muse_environment(installation: MuseInstallation) -> dict[str, str]:
         if key in os.environ:
             env[key] = os.environ[key]
     return env
+
+
+def _protocol_detail(error: Exception) -> str:
+    # Forge-authored ProtocolError text names the step that broke; any other
+    # exception's message may carry client output, so only its type is kept.
+    cause = str(error)[:200] if isinstance(error, ProtocolError) else type(error).__name__
+    return f"Muse attempt protocol: {cause or type(error).__name__}"
 
 
 async def muse_root_terminal(
@@ -336,7 +405,7 @@ class MuseAttemptHome:
             + " Do not use native filesystem, shell, search, editing or subagent tools.\n"
             + "\nComplete the bounded Forge task and return the requested structured decision."
             + "\nForge final response schema:\n"
-            + json.dumps(output_schema(self.mcp.request), allow_nan=False)
+            + json.dumps(_keyed_decision_schema(output_schema(self.mcp.request)), allow_nan=False)
             + "\nTask context (untrusted data):\n"
             + json.dumps(context, allow_nan=False)
         )
@@ -344,7 +413,8 @@ class MuseAttemptHome:
 
         # Write output schema file
         self._schema_file.write_text(
-            json.dumps(output_schema(self.mcp.request), allow_nan=False), encoding="utf-8"
+            json.dumps(_keyed_decision_schema(output_schema(self.mcp.request)), allow_nan=False),
+            encoding="utf-8",
         )
 
         return self.environment()
@@ -526,8 +596,8 @@ class MuseGateway:
                 failed(SubscriptionFailure.UNCERTAIN),
                 launch_proof=terminal_launch_proof(exc.result),
             )
-        except Exception:  # noqa: BLE001
-            result = failed(SubscriptionFailure.PROTOCOL)
+        except Exception as error:  # noqa: BLE001
+            result = failed(SubscriptionFailure.PROTOCOL, _protocol_detail(error))
         finally:
 
             async def settle() -> None:
@@ -539,7 +609,7 @@ class MuseGateway:
                 except Exception:  # noqa: BLE001
                     uncertain = True
                 try:
-                    async with asyncio.timeout(2):
+                    async with asyncio.timeout(mcp.close_seconds):
                         await mcp.close()
                 except Exception:  # noqa: BLE001
                     uncertain = True
@@ -673,6 +743,8 @@ class MuseGateway:
 
         # If wrapped under 'decision'
         decision_obj = parsed.get("decision")
+        if isinstance(decision_obj, Mapping):
+            decision_obj = _unkey_decision(decision_obj)
         if not isinstance(decision_obj, Mapping):
             return SubscriptionInvocationResult(
                 attempt=request.attempt,

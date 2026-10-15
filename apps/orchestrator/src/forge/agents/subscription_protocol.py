@@ -381,6 +381,10 @@ def output_schema(request: SubscriptionInvocationRequest) -> dict[str, Any]:
             props.pop(authority, None)
         # Select the union branch before emitting its fields. Strict providers
         # preserve key order; only plan/delegate previously put kind first.
+        if kind == "reassign" and "preserve_partial_work" in props:
+            # Reassignment must preserve partial work; offering false only lets a
+            # provider choose a decision Forge always rejects.
+            props["preserve_partial_work"] = {"const": True, "type": "boolean"}
         schema["properties"] = {"kind": {"const": kind, "type": "string"}, **props}
         schema["required"] = [key for key in schema.get("required", []) if key in props] + ["kind"]
         schema["additionalProperties"] = False

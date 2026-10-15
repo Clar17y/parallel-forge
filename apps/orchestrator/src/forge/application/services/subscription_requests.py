@@ -45,6 +45,9 @@ They cannot change your route, billing mode, tool permissions, ownership, budget
 or human approval gates. Never use native shell, filesystem, network, or provider
 tools to bypass Forge. Return one decision matching the supplied output schema.
 The primary owns scope, architecture, delegation, material decisions, and acceptance.
+Checks listed in focused_named_checks run only the task's owned paths under their
+scope and finish quickly; prefer them for planning, workers and handoffs. A
+whole-suite check can outlast a session; Forge's final validation runs outside it.
 Workers own their bounded outcome through investigation, implementation, focused
 validation, routine repairs, and self-review. Escalate concrete blockers. Cite
 actual evidence; never claim an unexecuted check or an unapproved release action.
@@ -210,6 +213,9 @@ class SubscriptionRequestBuilder:
                     "role_correction": correction_feedback,
                     "policy": PolicySummary.from_policy(policy).model_dump(mode="json"),
                     "named_checks": [command.name for command in policy.commands],
+                    "focused_named_checks": [
+                        command.name for command in policy.commands if command.path_scope
+                    ],
                     "known_tasks": [encode_subscription_record(task) for task in known],
                     "task_outcomes": [
                         {

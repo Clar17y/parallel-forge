@@ -549,6 +549,27 @@ class DevSupervisor:
         self._check_cancelled()
         return res
 
+    def warn_shadowed_dotenv(self, environ: dict[str, str] | None = None) -> None:
+        """Warn when a process variable silently overrides a different .env value."""
+        dotenv_path = self.repo_root / ".env"
+        try:
+            lines = dotenv_path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return
+        environment = os.environ if environ is None else environ
+        for line in lines:
+            key, sep, value = line.strip().partition("=")
+            key = key.removeprefix("export ").strip()
+            if not sep or key.startswith("#") or not key.startswith("FORGE_"):
+                continue
+            current = environment.get(key)
+            if current is not None and current != value.strip().strip("\"'"):
+                # Names only: values can be credentials or private paths.
+                self.log(
+                    f"Warning: {key} is set in the process environment and overrides "
+                    "a different value in .env. Unset it to use the .env value."
+                )
+
     def verify_python_version(self, version_info: tuple[int, ...] | None = None) -> None:
         """Verify Python 3.14 runtime."""
         info = version_info or sys.version_info
@@ -850,6 +871,7 @@ class DevSupervisor:
         processes: list[ManagedProcess] = []
         try:
             self._check_cancelled()
+            self.warn_shadowed_dotenv()
             self.verify_prerequisites()
             self._check_cancelled()
             self.sync_dependencies()

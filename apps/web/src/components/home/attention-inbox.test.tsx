@@ -42,11 +42,12 @@ test('inbox shows who is waiting: approvals by task title, then other runs needi
   );
   render(<AttentionInbox />);
   expect(await screen.findByRole('heading', { name: 'Waiting for your approval' })).toBeInTheDocument();
+  // Headings render while their lists are still loading; wait for the rows.
+  expect(await screen.findByText('Add CSV export')).toBeInTheDocument();
   expect(requested).toContain('/run-projections?offset=0&limit=10&attention=true&exclude_pending_gate=true');
-  expect(screen.getByText('Add CSV export')).toBeInTheDocument();
   expect(screen.getByRole('link', { name: 'Review plan evidence' })).toHaveAttribute('href', '/runs/run-1');
   expect(await screen.findByRole('heading', { name: 'Runs needing attention' })).toBeInTheDocument();
-  expect(screen.getByRole('link', { name: 'Fix flaky checkout test' })).toHaveAttribute('href', '/runs/run-2');
+  expect(await screen.findByRole('link', { name: 'Fix flaky checkout test' })).toHaveAttribute('href', '/runs/run-2');
   expect(screen.getAllByText('Add CSV export')).toHaveLength(1);
   // Machine identifiers stay available, but demoted behind a disclosure.
   expect(screen.getByText('d'.repeat(64)).closest('details')).not.toBeNull();

@@ -80,6 +80,23 @@ class Redactor:
 
         return self._policy
 
+    def with_minimum_policy(self, minimum: RedactionPolicy) -> Redactor:
+        """Return a redactor with the same secrets and bounds at least ``minimum``."""
+
+        policy = RedactionPolicy(
+            max_string_bytes=max(self._policy.max_string_bytes, minimum.max_string_bytes),
+            max_collection_items=max(
+                self._policy.max_collection_items, minimum.max_collection_items
+            ),
+            max_depth=max(self._policy.max_depth, minimum.max_depth),
+            max_nodes=max(self._policy.max_nodes, minimum.max_nodes),
+        )
+        if policy == self._policy:
+            return self
+        widened = Redactor(policy=policy)
+        widened._secrets = self._secrets
+        return widened
+
     def redact(self, value: Any) -> Any:
         """Return a detached, bounded, JSON-compatible representation."""
 

@@ -159,6 +159,24 @@ async def test_authoring_tool_start_is_recorded_before_stuck_read_without_argume
     assert len(events) == 1
 
 
+
+@pytest.mark.asyncio
+async def test_slow_diagnostic_writes_are_kept_in_order_not_dropped() -> None:
+    """A slow database write must not lose the event; the protocol still never waits long."""
+    written: list[str] = []
+
+    async def record(kind: str, **_fields: object) -> None:
+        await asyncio.sleep(0.3 if kind == "first" else 0)
+        written.append(kind)
+
+    tools = AuthoringTools(object(), 2, AuthoringUsage(), diagnostic=record)
+    started = asyncio.get_running_loop().time()
+    await tools.record("first")
+    await tools.record("second")
+    assert asyncio.get_running_loop().time() - started < 0.29
+    await tools.close()
+    assert written == ["first", "second"]
+
 def _sleeping_codex_installation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
         CodexGateway, "_command", lambda self: ("-u", "-c", "import time;time.sleep(30)")

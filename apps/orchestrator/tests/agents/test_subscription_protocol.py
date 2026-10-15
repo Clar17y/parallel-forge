@@ -881,3 +881,16 @@ def test_wait_decoder_accepts_known_direct_child():
         {"kind": "wait", "waiting_on_task_ids": [str(child.task_id)], "reason": "Wait"}, request
     )
     assert result.decision.waiting_on_task_ids == (child.task_id,)
+
+
+def test_reassign_schema_advertises_the_only_accepted_preserve_partial_work_value() -> None:
+    """decode_final rejects false, so the schema must not offer it to the provider."""
+    from forge.agents.subscription_protocol import output_schema
+
+    request = _request(purpose=SpecialistPurpose.PRIMARY)
+    choices = output_schema(request)["properties"]["decision"]["anyOf"]
+    reassign = [c for c in choices if c["properties"]["kind"].get("const") == "reassign"]
+    if not reassign:
+        pytest.skip("reassign is not offered in this phase")
+    field = reassign[0]["properties"]["preserve_partial_work"]
+    assert field.get("const") is True and field.get("type") == "boolean"

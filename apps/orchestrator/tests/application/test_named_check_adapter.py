@@ -599,3 +599,94 @@ def test_candidate_receipt_codec_rejects_ambiguous_proof(change):
         payload["request_payload"] = {"authority_schema_version": 2.0}
     with pytest.raises(NamedCheckReceiptError):
         _decode_receipt(_encode_value(payload))
+
+
+def _scoped_adapter_and_intent(scoped_paths: list[str], *, digest_paths: list[str] | None = None):
+    from forge.domain.policy import CommandPathScope, scoped_command
+
+    project_id = uuid4()
+    run_id = uuid4()
+    identity = WorktreeIdentity.for_run(project_id, run_id, "forge/test", False)
+    worktree = ManagedWorktree(
+        identity=identity, path=Path("/managed/forge-test").resolve(), base_sha="a" * 40
+    )
+    command = CommandSpec(
+        kind=StepKind.TEST,
+        name="test-focused",
+        argv=("pytest", "-q"),
+        timeout_seconds=30,
+        path_scope=CommandPathScope(prefixes=("tests/",)),
+    )
+    policy = ProjectPolicy(
+        id=project_id,
+        version=1,
+        repository_path=str(Path("/repo").resolve()),
+        github_repository="owner/repo",
+        default_branch="main",
+        commands=(command,),
+    )
+    derived = scoped_command(command, tuple(digest_paths or scoped_paths))
+    payload: dict[str, object] = {
+        "authority_schema_version": 2,
+        "command_digest": command_spec_digest(derived),
+        "command_name": "test-focused",
+        "environment_keys_digest": _environment_keys_digest({}),
+        "head_sha": "b" * 40,
+        "kind": StepKind.TEST.value,
+        "policy_version": 1,
+        "project_id": str(project_id),
+        "protocol_version": 1,
+        "run_id": str(run_id),
+        "scoped_paths": scoped_paths,
+        "subscription_attempt_id": str(uuid4()),
+        "subscription_purpose": "routine_implementation",
+        "subscription_task_id": str(uuid4()),
+        "tool_call_id": str(uuid4()),
+        "worktree_id": identity.worktree_name,
+    }
+    intent = OperationIntent(
+        run_id=run_id,
+        kind=NAMED_CHECK_KIND,
+        idempotency_key=f"named-check:{uuid4().hex}",
+        request_digest=canonical_digest(payload),
+        request_payload=payload,
+    )
+    adapter = NamedCheckOperationAdapter(
+        worktree=worktree,
+        policy=policy,
+        controlled_git=_Unused(),
+        runner_factory=_Unused(),
+        environment={},
+        artifacts=_Unused(),
+        artifact_store=_Unused(),
+    )
+    return adapter, intent
+
+
+def test_focused_check_request_derives_the_exact_scoped_command() -> None:
+    adapter, intent = _scoped_adapter_and_intent(["tests/test_a.py", "tests/unit"])
+    _, command, _ = adapter._request(intent)
+    assert command.argv == ("pytest", "-q", "tests/test_a.py", "tests/unit")
+    assert command.path_scope is None
+
+
+@pytest.mark.parametrize(
+    ("scoped", "digest_paths"),
+    [
+        (["tests/test_a.py"], ["tests/test_b.py"]),  # digest bound to different paths
+        (["src/app.py"], ["tests/test_a.py"]),  # outside the scope
+        ([], ["tests/test_a.py"]),  # empty selection
+    ],
+)
+def test_focused_check_request_rejects_tampered_or_unscoped_paths(scoped, digest_paths) -> None:
+    adapter, intent = _scoped_adapter_and_intent(scoped, digest_paths=digest_paths)
+    with pytest.raises(NamedCheckOperationError):
+        adapter._request(intent)
+
+
+def test_scoped_paths_on_an_unscoped_command_are_rejected() -> None:
+    adapter, intent = _adapter_and_intent()
+    payload = {**intent.request_payload, "scoped_paths": ["tests/test_a.py"]}
+    tampered = replace(intent, request_payload=payload, request_digest=canonical_digest(payload))
+    with pytest.raises(NamedCheckOperationError):
+        adapter._request(tampered)

@@ -231,7 +231,9 @@ async def test_disabled_database_projection_is_complete_and_has_server_commands(
         "next_gate",
         "recovery_hold",
         "subscription_recovery_attention",
+        "stall_reason",
     }
+    assert projection["stall_reason"] is None
     assert projection["agents"]["reviewer"]["independent"] is None
     assert projection["run"]["subscription_profile"] is None
     assert projection["security"]["secret_paths"] == [".env", ".env.local", ".env.worker"]

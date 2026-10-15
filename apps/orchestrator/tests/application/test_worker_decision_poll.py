@@ -85,7 +85,8 @@ async def test_decision_scan_failure_propagates(error):
     with pytest.raises(type(error)) as raised:
         await asyncio.wait_for(
             main._poll_decisions(SimpleNamespace(reconcile_all=fail), asyncio.Event(), 0.001),
-            0.1,
+            # A bound, not a speed target: a garbage-collection pause can exceed 0.1 s.
+            1,
         )
     assert raised.value is error
 
@@ -169,6 +170,8 @@ async def test_decision_poll_contains_recovery_database_failure_and_retries_sour
         record_success=operation("record_success"),
     )
 
+    run = SimpleNamespace(state=RunState.IMPLEMENTING, project_id=uuid4(), id=uuid4())
+
     @asynccontextmanager
     async def factory():
         nonlocal closed
@@ -178,7 +181,8 @@ async def test_decision_poll_contains_recovery_database_failure_and_retries_sour
             yield SimpleNamespace(
                 subscription_decisions=SimpleNamespace(pending_applications=pending),
                 subscription_recovery=diagnostics,
-                runs=SimpleNamespace(get=operation("run", SimpleNamespace(state=RunState.IMPLEMENTING))),
+                runs=SimpleNamespace(get=operation("run", run)),
+                task_usage_checkpoints=SimpleNamespace(active_for_subject=AsyncMock(return_value=None)),
                 rollback=AsyncMock(), commit=operation("commit"),
             )
         finally:
@@ -227,9 +231,12 @@ async def test_decision_poll_contains_recovery_database_failure_and_retries_sour
         peer_polling.cancel()
         await asyncio.gather(polling, peer_polling, return_exceptions=True)
     assert scans == 2 and active == 0 and closed >= 4 and peer_ticks > 1
-    expected_applications = (
-        1 if failure_stage in {"pending_applications", "due_version", "role_violation"} else 2
-    )
+    # The run and its usage checkpoint are read before the decision is applied,
+    # so a failure there, like the earlier lookups, prevents the first application.
+    before_application = {
+        "pending_applications", "due_version", "attempt_run_id", "run", "role_violation",
+    }
+    expected_applications = 1 if failure_stage in before_application else 2
     assert application.await_count == expected_applications
     assert all(call.args == (attempt_id,) for call in application.await_args_list)
     assert diagnostics.record_success.await_args.args == (attempt_id,)

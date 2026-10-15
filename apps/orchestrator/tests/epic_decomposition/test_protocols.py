@@ -135,6 +135,11 @@ class _ScriptedSession:
     async def wait_closed(self) -> None:
         self.settled = True
 
+    async def finish_completed(self) -> None:
+        # Mirrors ClientProcessSession: close stdin, then settle the process.
+        await self.close_stdin()
+        await self.wait_closed()
+
 
 def test_authoring_schema_kind() -> None:
     decomp_schema = authoring_schema("decomposition")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hmac
 import json
 import time
@@ -530,6 +531,10 @@ class EpicBrainstormGateway:
                         await tools.close()
                     except asyncio.CancelledError, Exception:  # noqa: BLE001 - still stop client
                         cleanup_failed = True
+                else:
+                    # Diagnostics are refused once the process settles; land them first.
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await tools.flush_diagnostics()
                 if session is not None:
                     try:
                         receipt = await session.close(

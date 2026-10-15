@@ -12,12 +12,18 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
 from forge.domain.paths import normalize_policy_paths, union_policy_paths
-from forge.domain.reasoning import gemini_cli_composite_error, reasoning_effort_error
+from forge.domain.reasoning import (
+    SUPPORTED_EFFORTS,
+    gemini_cli_composite_error,
+    parse_gemini_cli_composite_id,
+    reasoning_effort_error,
+)
 from forge.domain.review import FindingSeverity, ReviewFinding
 
 _SHELL_META = re.compile(r"[\r\n;&|$`()<>`]")
 _ENVIRONMENT_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _SECRET_REFERENCE = re.compile(r"^secret://[A-Za-z0-9][A-Za-z0-9._/-]*$")
+MAX_COMMAND_TIMEOUT_SECONDS = 7200
 _KNOWN_MERGE_METHODS = frozenset({"merge", "squash", "rebase"})
 _SHELL_WRAPPERS = frozenset(
     {
@@ -62,6 +68,51 @@ class StepKind(StrEnum):
     CUSTOM = "custom_named"
 
 
+_SCOPED_PATH = re.compile(r"[A-Za-z0-9_.][A-Za-z0-9_./-]*")
+
+
+def _safe_relative_path(value: str) -> bool:
+    return (
+        bool(value)
+        and _SCOPED_PATH.fullmatch(value) is not None
+        and not value.startswith(("/", "-", "./"))
+        and ".." not in value.split("/")
+        and "//" not in value
+    )
+
+
+class CommandPathScope(BaseModel):
+    """Run a command only on the task's owned paths under these prefixes.
+
+    Forge appends the selected paths to the command's argv; agents still choose
+    only the command name.  No matching owned path refuses the check, so a
+    focused command never silently runs its unscoped (full) argv.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    prefixes: tuple[str, ...] = Field(min_length=1, max_length=16)
+    max_paths: int = Field(default=64, ge=1, le=256)
+
+    @field_validator("prefixes")
+    @classmethod
+    def prefixes_must_be_relative_directories(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        normalized: list[str] = []
+        for prefix in value:
+            stripped = prefix.rstrip("/") if isinstance(prefix, str) else ""
+            if not _safe_relative_path(stripped):
+                raise ValueError("path scope prefixes must be safe relative directories")
+            normalized.append(stripped + "/")
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("path scope prefixes must be unique")
+        return tuple(normalized)
+
+    def covers(self, path: str) -> bool:
+        return _safe_relative_path(path) and any(
+            path.startswith(prefix) or path + "/" == prefix for prefix in self.prefixes
+        )
+
+
 class CommandSpec(BaseModel):
     """One exact argv vector in the project's command registry.
 
@@ -74,10 +125,11 @@ class CommandSpec(BaseModel):
     kind: StepKind
     name: str = Field(min_length=1)
     argv: tuple[str, ...] = Field(min_length=1)
-    timeout_seconds: int = Field(ge=1, le=7200)
+    timeout_seconds: int = Field(ge=1, le=MAX_COMMAND_TIMEOUT_SECONDS)
     required: bool = True
     network_enabled: bool = False
     environment_keys: tuple[str, ...] = ()
+    path_scope: CommandPathScope | None = None
 
     @field_validator("name")
     @classmethod
@@ -112,6 +164,38 @@ class CommandSpec(BaseModel):
         if any(not _ENVIRONMENT_KEY.fullmatch(key) for key in value):
             raise ValueError("environment_keys must contain environment variable names")
         return value
+
+
+def scoped_check_paths(command: CommandSpec, owned_paths: Iterable[str]) -> tuple[str, ...]:
+    """Return the owned paths a focused command covers, sorted; empty when none."""
+    scope = command.path_scope
+    if scope is None:
+        raise ValueError("command has no path scope")
+    selected = tuple(
+        sorted({path for path in owned_paths if isinstance(path, str) and scope.covers(path)})
+    )
+    if len(selected) > scope.max_paths:
+        raise ValueError("focused check covers more owned paths than its scope allows")
+    return selected
+
+
+def scoped_command(command: CommandSpec, paths: Iterable[str]) -> CommandSpec:
+    """Derive the exact command a focused check runs for these Forge-selected paths."""
+    scope = command.path_scope
+    selected = tuple(paths)
+    if (
+        scope is None
+        or not selected
+        or len(selected) > scope.max_paths
+        or len(set(selected)) != len(selected)
+        or list(selected) != sorted(selected)
+        or not all(scope.covers(path) for path in selected)
+    ):
+        raise ValueError("focused check paths are outside its scope")
+    # Re-validate: the derived argv passes the same checks as any policy command.
+    return CommandSpec.model_validate(
+        {**command.model_dump(), "argv": (*command.argv, *selected), "path_scope": None}
+    )
 
 
 class AgentModelPolicy(BaseModel):
@@ -269,6 +353,38 @@ class ProjectPolicy(BaseModel):
         {FindingSeverity.BLOCKER, FindingSeverity.MAJOR}
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_legacy_cli_composite_models(cls, data: object) -> object:
+        """Keep stored versions saved before composite IDs were rejected readable.
+
+        Authoring requests validate ``AgentModelPolicy`` directly and still reject
+        composite IDs; only whole stored policy documents are normalized here, in
+        memory, without changing the persisted record.
+        """
+        if not isinstance(data, dict):
+            return data
+        normalized: dict[str, object] | None = None
+        for field in ("planner_model", "developer_model", "reviewer_model"):
+            role = data.get(field)
+            if not isinstance(role, dict) or role.get("provider", "google") != "google":
+                continue
+            composite = parse_gemini_cli_composite_id(role.get("model"))  # type: ignore[arg-type]
+            if composite is None:
+                continue
+            base_model, suffix = composite
+            repaired = {**role, "model": base_model}
+            effort = suffix.lower()
+            if (
+                repaired.get("reasoning_effort") is None
+                and effort in SUPPORTED_EFFORTS
+                and reasoning_effort_error("google", base_model, effort) is None
+            ):
+                repaired["reasoning_effort"] = effort
+            normalized = normalized if normalized is not None else dict(data)
+            normalized[field] = repaired
+        return data if normalized is None else normalized
+
     @field_validator("repository_path")
     @classmethod
     def repository_path_must_be_absolute(cls, value: str) -> str:
@@ -362,11 +478,15 @@ def _reject_shell_text(value: str, field_name: str) -> None:
 
 
 __all__ = [
+    "MAX_COMMAND_TIMEOUT_SECONDS",
     "AgentModelPolicy",
+    "CommandPathScope",
     "CommandSpec",
     "DatabaseProvisioningPolicy",
     "JevPolicy",
     "ProjectPolicy",
     "RunnerMode",
     "StepKind",
+    "scoped_check_paths",
+    "scoped_command",
 ]

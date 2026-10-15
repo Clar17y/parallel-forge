@@ -378,3 +378,190 @@ async def test_concurrent_terminal_receipt_replay_preserves_exclusive_fence(tool
         ) for _ in range(2)])
     assert results[0] == results[1]
     assert len(scheduler.settled) == 1
+
+
+@pytest.mark.parametrize(
+    ("tool", "arguments", "reconciled"),
+    [
+        (ToolName.REPOSITORY_SEARCH_SEMANTIC, {"query": "policy"}, False),
+        (ToolName.GIT_STATUS, {}, False),
+        (ToolName.GIT_DIFF, {"scope": "candidate"}, False),
+        (ToolName.VALIDATION_RESULTS_READ, {}, False),
+        (ToolName.REVIEW_ARTIFACTS_READ, {}, False),
+        (ToolName.REPOSITORY_WRITE_FILE, {"path": "a", "content": "b"}, True),
+    ],
+)
+def test_failed_read_only_effect_settles_instead_of_waiting_for_reconciliation(
+    tool, arguments, reconciled
+):
+    """A repository read has no side effect to reconcile, so it must not wedge the task."""
+    run_id, task_id, attempt_id = uuid4(), uuid4(), uuid4()
+    lease = TaskLease(
+        run_id=run_id,
+        task_id=task_id,
+        owner="worker",
+        generation=1,
+        expires_at=datetime.now(UTC) + timedelta(seconds=10),
+    )
+    auth = BrokerAuthorizationBinding(
+        run_id=run_id,
+        task_id=task_id,
+        attempt_id=attempt_id,
+        worktree_id="forge-test",
+        role=(
+            SpecialistPurpose.INDEPENDENT_REVIEW
+            if tool in {ToolName.VALIDATION_RESULTS_READ, ToolName.REVIEW_ARTIFACTS_READ}
+            else SpecialistPurpose.ROUTINE_IMPLEMENTATION
+        ),
+        policy_version=1,
+        permitted_tools=frozenset({tool}),
+        broker_token="opaque",
+    )
+    subscription, scheduler = Subscription(), Scheduler()
+
+    async def effect(_operation_id, _name, _arguments):
+        raise RuntimeError("semantic index unavailable")
+
+    broker = SubscriptionToolBroker(
+        lambda: Work(subscription, scheduler), lease=lease, authority=auth, effect=effect
+    )
+    with pytest.raises(BrokerDenied):
+        asyncio.run(
+            broker.invoke(
+                token="opaque", provider_call_key="call-1", tool_name=tool, arguments=arguments
+            )
+        )
+    assert hasattr(scheduler, "reconciled") is reconciled
+    assert scheduler.settled == ([] if reconciled else [(scheduler.admitted[0], False)])
+
+
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+@pytest.mark.parametrize(
+    ("tool", "arguments"),
+    [
+        (ToolName.BUILD_RUN_NAMED_CHECK, {"command_name": "unit"}),
+        (ToolName.REPOSITORY_WRITE_FILE, {"path": "a", "content": "b"}),
+    ],
+)
+def test_cancelled_callback_leaves_its_effect_for_evidence_bound_recovery(
+    tool, arguments, cleanup_fails
+):
+    """Startup recovery settles a cancelled effect from proved evidence; the broker never does."""
+    run_id, task_id, attempt_id = uuid4(), uuid4(), uuid4()
+    lease = TaskLease(
+        run_id=run_id,
+        task_id=task_id,
+        owner="worker",
+        generation=1,
+        expires_at=datetime.now(UTC) + timedelta(seconds=10),
+    )
+    auth = BrokerAuthorizationBinding(
+        run_id=run_id,
+        task_id=task_id,
+        attempt_id=attempt_id,
+        worktree_id="forge-test",
+        role=SpecialistPurpose.ROUTINE_IMPLEMENTATION,
+        policy_version=1,
+        permitted_tools=frozenset({tool}),
+        broker_token="opaque",
+    )
+
+    class CleanupScheduler(Scheduler):
+        async def reconcile_effect(self, effect):
+            if cleanup_fails:
+                raise RuntimeError("database unavailable")
+            await super().reconcile_effect(effect)
+
+    subscription, scheduler = Subscription(), CleanupScheduler()
+
+    async def effect(_operation_id, _name, _arguments):
+        raise asyncio.CancelledError()
+
+    broker = SubscriptionToolBroker(
+        lambda: Work(subscription, scheduler), lease=lease, authority=auth, effect=effect
+    )
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(
+            broker.invoke(
+                token="opaque", provider_call_key="call-1", tool_name=tool, arguments=arguments
+            )
+        )
+    assert getattr(scheduler, "reconciled", None) == (
+        None if cleanup_fails else scheduler.admitted[0]
+    )
+    assert scheduler.settled == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("survivor_first", [False, True])
+async def test_cancelled_concurrent_check_replay_leaves_the_effect_to_the_surviving_call(
+    survivor_first,
+):
+    """Cancelling one replay of a shared check must not fence the other caller's result."""
+    from forge.application.ports.scheduling import SchedulingConflict
+
+    class AdmittedOnlyScheduler(Scheduler):
+        def __init__(self):
+            super().__init__()
+            self.states = {}
+
+        async def admit_effect(self, lease, effect_id, **kwargs):
+            self.states.setdefault(effect_id, "admitted")
+            return await super().admit_effect(lease, effect_id, **kwargs)
+
+        async def settle_effect(self, effect, *, accepted):
+            if self.states[effect.effect_id] != "admitted":
+                raise SchedulingConflict("effect is not admitted")
+            self.states[effect.effect_id] = "settled" if accepted else "rejected"
+            return await super().settle_effect(effect, accepted=accepted)
+
+        async def reconcile_effect(self, effect):
+            if self.states[effect.effect_id] == "admitted":
+                self.states[effect.effect_id] = "reconciling"
+
+    run_id, task_id, attempt_id = uuid4(), uuid4(), uuid4()
+    lease = TaskLease(run_id=run_id, task_id=task_id, owner="worker", generation=1,
+                      expires_at=datetime.now(UTC) + timedelta(seconds=10))
+    auth = BrokerAuthorizationBinding(
+        run_id=run_id, task_id=task_id, attempt_id=attempt_id, worktree_id="forge-test",
+        role=SpecialistPurpose.ROUTINE_IMPLEMENTATION, policy_version=1,
+        permitted_tools=frozenset({ToolName.BUILD_RUN_NAMED_CHECK}), broker_token="opaque",
+    )
+    subscription, scheduler = Subscription(), AdmittedOnlyScheduler()
+    entered: list[int] = []
+    release = [asyncio.Event(), asyncio.Event()]
+
+    async def effect(_operation_id, name, _arguments):
+        index = len(entered)
+        entered.append(index)
+        await release[index].wait()
+        return ToolResult(tool_name=name, status=ToolCallStatus.SUCCEEDED)
+
+    broker = SubscriptionToolBroker(
+        lambda: Work(subscription, scheduler), lease=lease, authority=auth, effect=effect
+    )
+
+    def call():
+        return asyncio.create_task(broker.invoke(
+            token="opaque", provider_call_key="same",
+            tool_name=ToolName.BUILD_RUN_NAMED_CHECK, arguments={"command_name": "unit"},
+        ))
+
+    cancelled, survivor = call(), call()
+    async with asyncio.timeout(2):
+        while len(entered) < 2:
+            await asyncio.sleep(0)
+        if survivor_first:
+            release[1].set()
+            receipt = await survivor
+            cancelled.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await cancelled
+        else:
+            cancelled.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await cancelled
+            release[1].set()
+            receipt = await survivor
+    assert receipt.accepted is True
+    assert scheduler.states == {receipt.operation_id: "settled"}

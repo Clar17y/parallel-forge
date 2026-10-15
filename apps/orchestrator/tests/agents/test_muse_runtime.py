@@ -231,6 +231,40 @@ def test_muse_route_effort_is_exact_and_model_is_bound(tmp_path: Path) -> None:
         MuseInstallation(**common, effort="minimal")
 
 
+def test_muse_toolset_uses_the_names_muse_exposes_for_dotted_mcp_tools(tmp_path: Path) -> None:
+    """Muse 1.4.7 maps every character outside [A-Za-z0-9_] in an MCP tool name to `_`."""
+    from forge.agents.muse_runtime import muse_launch_spec
+
+    fake = tmp_path / "client.exe"
+    fake.write_bytes(b"dummy")
+    installation = MuseInstallation(
+        executable=str(fake.resolve()), cwd=str(tmp_path.resolve()),
+        home=str(tmp_path.resolve()), model="muse-wonder-1.0", effort="medium",
+        executable_digest=hashlib.sha256(fake.read_bytes()).hexdigest(),
+    )
+    home = MuseAuthoringHome(installation, uuid4())
+    home.prepare("prompt", {"type": "object"})
+    try:
+        spec = muse_launch_spec(
+            installation, home, mcp_name="forge",
+            mcp_server={"transport": "stdio", "command": "test", "args": [], "env": {}},
+            tools=("repository.list_files", "repository.read_file", "validation-results.read"),
+            duration=1,
+        )
+        toolset = json.loads(
+            next(v.removeprefix("run.toolset=") for v in spec.argv if v.startswith("run.toolset="))
+        )
+        assert toolset == [
+            "mcp__forge__repository_list_files",
+            "mcp__forge__repository_read_file",
+            "mcp__forge__validation_results_read",
+        ]
+        policy = json.loads((home.path / "approval-policy.json").read_text(encoding="utf-8"))
+        assert policy["tools"] == toolset
+    finally:
+        home.cleanup()
+
+
 @pytest.mark.parametrize("tools", [(), ("read_file",)])
 def test_muse_launch_rejects_unprepared_or_replaced_private_home(
     tmp_path: Path, tools: tuple[str, ...],
@@ -1325,3 +1359,118 @@ async def test_muse_runtime_cleanup_failure_retains_uncertainty_and_retry(
     original_cleanup(prepared[0])
     assert prepared[0]._identity is None
 
+
+
+def test_primary_guidance_says_how_to_start_work_and_what_wait_may_name() -> None:
+    """Muse primaries returned `wait` on their own task instead of delegating."""
+    from forge.agents.muse_runtime import _decision_guidance
+    from forge.domain.subscription import SpecialistPurpose
+
+    primary = _decision_guidance(SpecialistPurpose.PRIMARY)
+    assert "do not return a task handoff" in primary
+    assert "delegate" in primary
+    assert "never your own task_id" in primary
+    assert "delegate" not in _decision_guidance(SpecialistPurpose.ROUTINE_IMPLEMENTATION)
+
+
+def test_muse_decision_schema_is_keyed_by_kind_so_any_branch_can_be_chosen() -> None:
+    """Muse emits object keys alphabetically; a leading "kind" left only `wait` reachable."""
+    from forge.agents.muse_runtime import _keyed_decision_schema, _unkey_decision
+
+    schema = {
+        "type": "object",
+        "properties": {
+            "decision": {
+                "anyOf": [
+                    {
+                        "type": "object",
+                        "properties": {
+                            "kind": {"const": "wait", "type": "string"},
+                            "reason": {"type": "string"},
+                        },
+                        "required": ["reason", "kind"],
+                        "additionalProperties": False,
+                    },
+                    {
+                        "type": "object",
+                        "properties": {
+                            "kind": {"const": "delegate", "type": "string"},
+                            "children": {"type": "array"},
+                            "rationale": {"type": "string"},
+                        },
+                        "required": ["kind", "rationale", "children"],
+                        "additionalProperties": False,
+                    },
+                ]
+            }
+        },
+        "required": ["decision"],
+        "additionalProperties": False,
+    }
+    keyed = _keyed_decision_schema(schema)
+    branches = keyed["properties"]["decision"]["anyOf"]
+    assert [list(branch["properties"]) for branch in branches] == [["wait"], ["delegate"]]
+    assert all(branch["required"] == list(branch["properties"]) for branch in branches)
+    delegate = branches[1]["properties"]["delegate"]
+    assert "kind" not in delegate["properties"] and "kind" not in delegate["required"]
+    assert schema["properties"]["decision"]["anyOf"][1]["properties"]["kind"]  # input untouched
+
+    assert _unkey_decision({"delegate": {"children": [], "rationale": "r"}}) == {
+        "kind": "delegate",
+        "children": [],
+        "rationale": "r",
+    }
+    assert _unkey_decision({"kind": "wait", "reason": "x"}) == {"kind": "wait", "reason": "x"}
+    assert _unkey_decision({"wait": {"kind": "accept"}}) == {"wait": {"kind": "accept"}}
+    assert _unkey_decision({"wait": {}, "delegate": {}}) == {"wait": {}, "delegate": {}}
+
+
+def test_muse_launch_lets_the_model_see_whole_forge_tool_results(tmp_path: Path) -> None:
+    """Muse truncated a 14 KB read_file result, so workers could not rewrite the file."""
+    from forge.agents.gemini_gateway_mcp import MAX_FRAME_BYTES
+    from forge.agents.muse_runtime import muse_launch_spec
+
+    fake = tmp_path / "client.exe"
+    fake.write_bytes(b"dummy")
+    installation = MuseInstallation(
+        executable=str(fake.resolve()), cwd=str(tmp_path.resolve()),
+        home=str(tmp_path.resolve()), model="muse-wonder-1.0", effort="medium",
+        executable_digest=hashlib.sha256(fake.read_bytes()).hexdigest(),
+    )
+    home = MuseAuthoringHome(installation, uuid4())
+    home.prepare("prompt", {"type": "object"})
+    try:
+        spec = muse_launch_spec(
+            installation, home, mcp_name="forge",
+            mcp_server={"transport": "stdio", "command": "test", "args": [], "env": {}},
+            tools=("repository.read_file",), duration=1,
+        )
+        cap = spec.argv[spec.argv.index("--max-tool-output-bytes") + 1]
+        assert int(cap) == MAX_FRAME_BYTES
+    finally:
+        home.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_muse_stream_ending_without_terminal_names_the_cause(tmp_path: Path) -> None:
+    """A protocol failure must say what broke instead of only "Muse attempt protocol"."""
+    import sys
+
+    from forge.application.ports.subscription_gateway import SubscriptionFailure
+
+    peer = tmp_path / "no_terminal.py"
+    peer.write_text(
+        "import json\nprint(json.dumps(" + repr(_linked()) + "), flush=True)\n",
+        encoding="utf-8",
+    )
+    executable = Path(sys.executable)
+    installation = MuseInstallation(
+        executable=str(executable), script=(str(peer),), cwd=str(tmp_path.resolve()),
+        home=str(tmp_path.resolve()), model="muse-wonder-1.0", effort="medium",
+        executable_digest=hashlib.sha256(executable.read_bytes()).hexdigest(),
+    )
+    result = await MuseGateway(installation, broker=_Broker(), lifecycle=_Lifecycle()).execute(_muse_request())
+    assert result.failure is SubscriptionFailure.PROTOCOL
+    assert result.failure_detail is not None
+    assert result.failure_detail != "Muse attempt protocol"
+    assert result.failure_detail.startswith("Muse attempt protocol: ")

@@ -2,6 +2,8 @@
 
 import asyncio
 import json
+import tempfile
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -45,6 +47,7 @@ from forge.domain.epic_run_bridge import (
     EpicLaunchConflict,
     LaunchRequest,
 )
+from forge.domain.policy import ProjectPolicy
 from forge.domain.subscription import (
     AuthMode,
     BillingMode,
@@ -104,18 +107,26 @@ async def setup(session_factory, bridge_factory, *, dependencies=False, deferred
     async with session_factory() as session, session.begin():
         project = Project(
             id=project_id,
-            canonical_path=str(repository_path) if repository_path is not None else f"/tmp/forge-{project_id}",
+            canonical_path=str(repository_path or Path(tempfile.gettempdir()) / f"forge-{project_id}"),
             github_repository=f"owner/repo-{project_id}",
             default_branch="main",
         )
         session.add(project)
+        # Run admission reads the stored policy, so it must be a loadable document.
+        document = ProjectPolicy(
+            id=project_id,
+            version=1,
+            repository_path=project.canonical_path,
+            github_repository=project.github_repository,
+            default_branch="main",
+        ).model_dump(mode="json")
         session.add(
             ProjectPolicyVersion(
                 project_id=project_id,
                 version=1,
                 policy_digest="a" * 64,
                 document_schema_version=1,
-                document={},
+                document=document,
             )
         )
         await session.flush()

@@ -69,6 +69,8 @@ from forge.persistence.repositories.epic_budget import PostgresEpicBudgetReposit
 from forge.persistence.repositories.subscription_budget import PostgresSubscriptionBudgetRepository
 from forge.persistence.repositories.subscription_quota import PostgresSubscriptionQuotaRepository
 
+# Advisory lock serializing capacity policy versioning across worker processes.
+_CAPACITY_POLICY_LOCK = 0x466F7267_43617031  # "ForgCap1"
 
 class UsageCheckpointLeaseRevoked(SchedulingLeaseRevoked):
     """No further provider work; an already completed result may still settle."""
@@ -159,6 +161,13 @@ class PostgresSchedulingRepository:
             .on_conflict_do_update(index_elements=["run_id"], set_={"admitted": True})
         )
         await self._session.execute(stmt)
+
+    async def lock_capacity_policy(self) -> None:
+        """Hold the capacity-configuration lock until this transaction ends."""
+        await self._session.execute(select(func.pg_advisory_xact_lock(_CAPACITY_POLICY_LOCK)))
+
+    async def current_capacity_policy(self) -> SchedulerCapacityPolicy:
+        return await self._current_policy()
 
     async def configure_capacity(self, policy: SchedulerCapacityPolicy) -> None:
         """Trusted operator/deployment configuration; tasks never supply limits."""

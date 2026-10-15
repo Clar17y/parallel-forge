@@ -1525,3 +1525,26 @@ async def test_close_stdin_sanitizes_error_and_settles_once() -> None:
         await session.close_stdin()
     assert "private" not in str(caught.value)
     await session.close()
+
+
+@pytest.mark.asyncio
+async def test_exit_right_after_final_frames_settles_only_after_the_owner_reads_them() -> None:
+    """Settling before the owner reads its last frames fenced the owner's handling of them."""
+    from forge.agents.client_process import ClientProcessSupervisor
+
+    settled = asyncio.Event()
+
+    async def settlement_started() -> None:
+        settled.set()
+
+    session = await ClientProcessSupervisor().start(
+        _spec('print(\'{"n": 1}\'); print(\'{"n": 2}\')'),
+        settlement_started=settlement_started,
+    )
+    await asyncio.sleep(0.5)  # the client has printed both frames and exited
+    assert not settled.is_set()
+    assert await session.receive() == {"n": 1}
+    assert await session.receive() == {"n": 2}
+    await asyncio.wait_for(settled.wait(), 5)
+    result = await session.wait_closed()
+    assert result.return_code == 0
