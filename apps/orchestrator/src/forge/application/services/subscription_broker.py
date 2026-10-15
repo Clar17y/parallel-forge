@@ -22,7 +22,11 @@ from forge.application.ports.unit_of_work import UnitOfWork
 from forge.domain.operation import canonical_digest, thaw_payload
 from forge.domain.paths import normalize_policy_path
 from forge.domain.scheduling import TaskEffectLease, TaskLease
-from forge.domain.subscription import BrokerAuthorizationBinding, ToolCallBinding
+from forge.domain.subscription import (
+    CANDIDATE_READ_TOOLS,
+    BrokerAuthorizationBinding,
+    ToolCallBinding,
+)
 from forge.domain.tool import (
     SubscriptionToolAuthorizationContext,
     ToolCallStatus,
@@ -37,15 +41,8 @@ _CALL_KEY = re.compile(r"\A[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,254}\Z")
 logger = logging.getLogger(__name__)
 
 
-_READ_ONLY_TOOLS = frozenset(
-    {
-        ToolName.REPOSITORY_LIST_FILES,
-        ToolName.REPOSITORY_READ_FILE,
-        ToolName.REPOSITORY_SEARCH,
-        ToolName.REPOSITORY_SEARCH_SEMANTIC,
-        ToolName.REPOSITORY_READ_INSTRUCTIONS,
-    }
-)
+# Every tool the domain classifies as a candidate read: a failed one changed nothing.
+_READ_ONLY_TOOLS = CANDIDATE_READ_TOOLS
 
 
 class BrokerDenied(PermissionError):

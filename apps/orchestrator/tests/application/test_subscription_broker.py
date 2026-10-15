@@ -384,6 +384,10 @@ async def test_concurrent_terminal_receipt_replay_preserves_exclusive_fence(tool
     ("tool", "arguments", "reconciled"),
     [
         (ToolName.REPOSITORY_SEARCH_SEMANTIC, {"query": "policy"}, False),
+        (ToolName.GIT_STATUS, {}, False),
+        (ToolName.GIT_DIFF, {"scope": "candidate"}, False),
+        (ToolName.VALIDATION_RESULTS_READ, {}, False),
+        (ToolName.REVIEW_ARTIFACTS_READ, {}, False),
         (ToolName.REPOSITORY_WRITE_FILE, {"path": "a", "content": "b"}, True),
     ],
 )
@@ -404,7 +408,11 @@ def test_failed_read_only_effect_settles_instead_of_waiting_for_reconciliation(
         task_id=task_id,
         attempt_id=attempt_id,
         worktree_id="forge-test",
-        role=SpecialistPurpose.ROUTINE_IMPLEMENTATION,
+        role=(
+            SpecialistPurpose.INDEPENDENT_REVIEW
+            if tool in {ToolName.VALIDATION_RESULTS_READ, ToolName.REVIEW_ARTIFACTS_READ}
+            else SpecialistPurpose.ROUTINE_IMPLEMENTATION
+        ),
         policy_version=1,
         permitted_tools=frozenset({tool}),
         broker_token="opaque",
