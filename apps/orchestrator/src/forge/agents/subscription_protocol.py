@@ -46,6 +46,16 @@ class ProtocolError(RuntimeError):
     """Malformed, foreign or inadmissible provider data; messages contain no payload."""
 
 
+def protocol_failure_detail(client: str, error: Exception) -> str:
+    """Name what broke without exposing client output.
+
+    Forge-authored ProtocolError text names the step that failed; any other
+    exception's message may carry client output, so only its type is kept.
+    """
+    cause = str(error)[:200] if isinstance(error, ProtocolError) else ""
+    return f"{client} attempt protocol: {cause or type(error).__name__}"
+
+
 class RoleDecisionError(ProtocolError):
     """A recognized decision kind is forbidden for the request's role or phase."""
 

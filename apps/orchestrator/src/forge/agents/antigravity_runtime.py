@@ -37,6 +37,7 @@ from forge.agents.subscription_protocol import (
     decode_final,
     json_value,
     output_schema,
+    protocol_failure_detail,
 )
 from forge.application.ports.subscription_gateway import (
     RoleDecisionRejection,
@@ -634,11 +635,11 @@ class AntigravityGateway:
         telemetry = AttemptTelemetry()
         interrupted = False
 
-        def failed(reason: SubscriptionFailure) -> SubscriptionInvocationResult:
+        def failed(reason: SubscriptionFailure, detail: str = "") -> SubscriptionInvocationResult:
             return SubscriptionInvocationResult(
                 attempt=request.attempt,
                 failure=reason,
-                failure_detail=f"Antigravity attempt {reason.value}",
+                failure_detail=detail or f"Antigravity attempt {reason.value}",
                 telemetry=telemetry,
                 launch_proof=None if result is None else result.launch_proof,
             )
@@ -684,8 +685,10 @@ class AntigravityGateway:
                 failed(SubscriptionFailure.UNCERTAIN),
                 launch_proof=terminal_launch_proof(exc.result),
             )
-        except Exception:  # noqa: BLE001 - client and callback errors must not expose credentials or payloads
-            result = failed(SubscriptionFailure.PROTOCOL)
+        except Exception as error:  # noqa: BLE001 - client and callback errors must not expose credentials or payloads
+            result = failed(
+                SubscriptionFailure.PROTOCOL, protocol_failure_detail("Antigravity", error)
+            )
         finally:
 
             async def settle() -> None:

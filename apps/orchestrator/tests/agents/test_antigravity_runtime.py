@@ -410,3 +410,12 @@ async def test_antigravity_failed_revoke_still_closes_transport_and_stops_child(
     assert result.launch_proof is not None
     assert result.launch_proof.outcome == "stop_uncertain"
     assert closed == [True]
+
+
+async def test_antigravity_protocol_failure_names_its_cause(tmp_path):
+    """A protocol failure used to read only "Antigravity attempt protocol"."""
+    runtime, _ = gateway(tmp_path, "bad_tool")
+    result = await runtime.execute(request())
+    assert result.failure is SubscriptionFailure.PROTOCOL
+    assert result.failure_detail is not None
+    assert result.failure_detail.startswith("Antigravity attempt protocol: ")
