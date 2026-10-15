@@ -9,6 +9,8 @@ from forge.settings import SubscriptionCapacityLimits
 
 
 class CapacityPolicyStore(Protocol):
+    async def lock_capacity_policy(self) -> None: ...
+
     async def current_capacity_policy(self) -> SchedulerCapacityPolicy: ...
 
     async def configure_capacity(self, policy: SchedulerCapacityPolicy) -> None: ...
@@ -20,6 +22,9 @@ async def apply_capacity_setting(
     """Version the configured limits when they differ; omission keeps the stored policy."""
     if limits is None:
         return None
+    # Serialize concurrent worker starts: each reads the current version only
+    # after the previous transaction has committed its new one.
+    await store.lock_capacity_policy()
     current = await store.current_capacity_policy()
     wanted = (limits.global_limit, limits.run_limit, limits.provider_limit)
     if (current.global_limit, current.run_limit, current.provider_limit) == wanted:
