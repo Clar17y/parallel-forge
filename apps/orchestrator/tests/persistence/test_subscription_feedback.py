@@ -2554,3 +2554,63 @@ async def test_feedback_survives_real_reassignment_without_resetting_budget(
         assert usage.consumed.provider_attempts == 2
         assert usage.consumed.repairs == 0
         assert row.state == "delivered"
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("stop_proved", [True, False])
+async def test_cancelled_run_releases_its_stopped_attempt_for_teardown(
+    session_factory, tmp_path, command_repository, stop_proved
+):
+    """Cancelling mid-attempt left the attempt reconciling forever, so teardown refused."""
+    import asyncio
+
+    from forge.application.services.subscription_run_end import RunEndAttemptSettlement
+    from forge.persistence.models import RunCommand
+    from test_subscription_counter_acceptance import CounterScript, prepared_counter_case
+
+    entered, gate = asyncio.Event(), asyncio.Event()
+
+    class GatedScript(CounterScript):
+        async def execute(self, request, broker):
+            if request.task.purpose is SpecialistPurpose.PRIMARY:
+                return await super().execute(request, broker)
+            # The worker is mid-attempt when the run is cancelled; its client then
+            # stops normally (terminal launch proof) and returns a late result.
+            entered.set()
+            await gate.wait()
+            if not stop_proved:
+                raise RuntimeError("client vanished without a terminal launch record")
+            return TaskHandoff(
+                run_id=request.attempt.run_id,
+                task_id=request.attempt.task_id,
+                attempt_id=request.attempt.attempt_id,
+                status=HandoffStatus.BLOCKED,
+                summary="Stopped because the run was cancelled.",
+            )
+
+    case = await prepared_counter_case(session_factory, tmp_path, script=GatedScript())
+    try:
+        attempt = asyncio.create_task(case.worker.run_once())
+        await asyncio.wait_for(entered.wait(), 20)
+        await _cancel_run(case.factory, command_repository, case.run.id, key="cancel-mid-attempt")
+        async with session_factory() as session:
+            cancel_id = await session.scalar(
+                select(RunCommand.id).where(
+                    RunCommand.run_id == case.run.id, RunCommand.command_type == "cancel"
+                )
+            )
+        await command_repository.complete(cancel_id, worker_id="cancel-mid-attempt")
+        gate.set()
+        await asyncio.wait_for(asyncio.gather(attempt, return_exceptions=True), 60)
+        async with case.factory() as work:
+            assert (await work.runs.get(case.run.id)).state is RunState.CANCELLED
+            assert not (await work.runs.prove_quiescent(case.run.id)).is_quiescent
+
+        settlement = RunEndAttemptSettlement(case.factory)
+        # Without a confirmed stop the attempt stays fenced: the process may live.
+        assert (await settlement.reconcile_all() >= 1) is stop_proved
+        async with case.factory() as work:
+            assert (await work.runs.prove_quiescent(case.run.id)).is_quiescent is stop_proved
+        assert await settlement.reconcile_all() == 0
+    finally:
+        await case.handlers.aclose()

@@ -35,6 +35,7 @@ from forge.application.services.subscription_decision_recovery import (
     is_transient_recovery_error,
 )
 from forge.application.services.subscription_effect_recovery import SubscriptionEffectRecovery
+from forge.application.services.subscription_run_end import RunEndAttemptSettlement
 from forge.application.services.task_usage_composition import compose_task_usage
 from forge.application.services.task_usage_monitor import RunTaskUsageMonitor
 from forge.application.services.terminal_recovery import TerminalMergeRecovery
@@ -74,6 +75,8 @@ from forge.worker.subscription_readiness import SubscriptionReadinessEnricher
 from forge.worker.subscription_status import SubscriptionRuntimeReporter
 
 logger = logging.getLogger(__name__)
+# How often ended runs are checked for attempts that can now be settled.
+_RUN_END_SETTLEMENT_SECONDS = 30.0
 _RECOVERY_HEARTBEAT_SECONDS = 10.0
 _RECOVERY_PERSIST_SECONDS = 3.0
 
@@ -284,6 +287,7 @@ async def run_worker(
                     else None
                 ),
             ).reconcile_all()
+            await RunEndAttemptSettlement(lambda: PostgresUnitOfWork(factory)).reconcile_all()
             if (
                 isinstance(effective_handlers, WorkerHandlers)
                 and effective_handlers.subscription_decision_recovery is not None
@@ -381,6 +385,15 @@ async def run_worker(
                         ).run(stop_event)
                     )
                 )
+        polls.append(
+            asyncio.create_task(
+                _poll_run_end_settlement(
+                    RunEndAttemptSettlement(lambda: PostgresUnitOfWork(factory)),
+                    stop_event,
+                    _RUN_END_SETTLEMENT_SECONDS,
+                )
+            )
+        )
         if (
             isinstance(effective_handlers, WorkerHandlers)
             and effective_handlers.subscription_decision_recovery is not None
@@ -516,6 +529,23 @@ async def _poll(worker: Worker, stop_event: asyncio.Event, poll_interval: float)
                 await asyncio.wait_for(stop_event.wait(), timeout=poll_interval)
             except TimeoutError:
                 pass
+
+
+async def _poll_run_end_settlement(
+    settlement: RunEndAttemptSettlement, stop_event: asyncio.Event, interval: float
+) -> None:
+    # A run cancelled mid-attempt is settled once its client's stop is proved,
+    # so its slot is freed and teardown can proceed without a worker restart.
+    while not stop_event.is_set():
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=interval)
+            return
+        except TimeoutError:
+            pass
+        try:
+            await settlement.reconcile_all()
+        except Exception:  # noqa: BLE001 - durable rows remain for the next sweep
+            logger.warning("Ended-run attempt settlement failed; retrying")
 
 
 async def _poll_epic_controls(
