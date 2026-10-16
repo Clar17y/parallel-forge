@@ -173,43 +173,41 @@ async def _assess_queue_diagnostics(
         return {}, None
 
     # Assess every current worker without reading historical reports.
-    workers = list(
+    current_workers = list(
         (
             await session.scalars(
-                select(SubscriptionWorkerStatus).where(
+                select(SubscriptionWorkerStatus)
+                .where(
                     SubscriptionWorkerStatus.stopped_at.is_(None),
                     SubscriptionWorkerStatus.last_seen_at <= now,
-                    SubscriptionWorkerStatus.last_seen_at > now - timedelta(seconds=RUNTIME_FRESH_SECONDS),
-                ).order_by(
-                    SubscriptionWorkerStatus.last_seen_at.desc()
+                    SubscriptionWorkerStatus.last_seen_at
+                    > now - timedelta(seconds=RUNTIME_FRESH_SECONDS),
                 )
+                .order_by(SubscriptionWorkerStatus.last_seen_at.desc())
             )
         ).all()
     )
 
-    current_workers = [
-        w
-        for w in workers
-        if w.stopped_at is None and 0 <= (now - w.last_seen_at).total_seconds() < RUNTIME_FRESH_SECONDS
+    # Keep every registration for readiness matching: workers can disagree about
+    # the same route. Only the displayed inventory is deduplicated and bounded.
+    registered_routes: list[dict[str, Any]] = [
+        route for worker in current_workers for route in _display_routes(worker.routes, stale=False)
     ]
-
-    # Collect unique available routes across current workers
     available_routes: list[dict[str, Any]] = []
     seen_route_keys: set[tuple[str, str, str, str, str, str]] = set()
-    for worker in current_workers:
-        display_routes = _display_routes(worker.routes, stale=False)
-        for r in display_routes:
-            key = (
-                str(r.get("provider", "")),
-                str(r.get("client", "")),
-                str(r.get("model", "")),
-                str(r.get("effort", "")),
-                str(r.get("auth_mode", "")),
-                str(r.get("billing_mode", "")),
-            )
-            if key not in seen_route_keys:
-                seen_route_keys.add(key)
-                available_routes.append(r)
+    for r in registered_routes:
+        key = (
+            str(r.get("provider", "")),
+            str(r.get("client", "")),
+            str(r.get("model", "")),
+            str(r.get("effort", "")),
+            str(r.get("auth_mode", "")),
+            str(r.get("billing_mode", "")),
+        )
+        if key not in seen_route_keys:
+            seen_route_keys.add(key)
+            available_routes.append(r)
+    available_routes_wire = [_route_wire(r) for r in available_routes[:64]]
 
     scheduled_by_id = {row[0].id: row[1] for row in task_rows}
     task_diags: dict[UUID, dict[str, Any] | None] = {}
@@ -222,7 +220,9 @@ async def _assess_queue_diagnostics(
 
         task_state = scheduled.state if scheduled is not None else task_row.state
         is_queued = task_state == "queued"
-        is_paused = task_row.pause_requested or (scheduled is not None and scheduled.pause_requested)
+        is_paused = task_row.pause_requested or (
+            scheduled is not None and scheduled.pause_requested
+        )
         is_cancelled = task_row.cancel_requested or (
             scheduled is not None and scheduled.cancel_requested
         )
@@ -247,14 +247,18 @@ async def _assess_queue_diagnostics(
         if task_route.client in ("antigravity_cli", "gemini_cli"):
             warnings.append(ReadinessWarning.APPROVED_TOOLS_UNPROVED.value)
 
-        available_routes_wire = [_route_wire(r) for r in available_routes[:64]]
+        common = {
+            "task_id": task_row.id,
+            "purpose": contract.purpose.value,
+            "route": route_wire,
+            "warnings": warnings,
+            "available_routes": available_routes_wire,
+        }
 
         if not current_workers:
             diag = {
-                "task_id": task_row.id,
-                "purpose": contract.purpose.value,
+                **common,
                 "status": "no_current_worker",
-                "route": route_wire,
                 "reason": None,
                 "message": (
                     f"Queued {contract.purpose.value} task requires {_route_label(task_route)}, "
@@ -266,28 +270,25 @@ async def _assess_queue_diagnostics(
                     "is loading the intended manifest (for example, verify "
                     "FORGE_SUBSCRIPTION_INSTALLATIONS_PATH if set in the worker's environment)."
                 ),
-                "warnings": warnings,
-                "available_routes": available_routes_wire,
             }
         else:
             # Check for matching routes among current workers
-            matching_routes: list[dict[str, Any]] = []
-            for worker in current_workers:
-                for r in _display_routes(worker.routes, stale=False):
-                    if _route_matches(task_route, r):
-                        matching_routes.append(r)
+            matching_routes = [
+                route for route in registered_routes if _route_matches(task_route, route)
+            ]
 
             if not matching_routes:
                 routes_summary = (
-                    " · ".join(f"{r['provider']} / {r['client']} / {r['model']}" for r in available_routes[:64])
+                    " · ".join(
+                        f"{r['provider']} / {r['client']} / {r['model']}"
+                        for r in available_routes[:64]
+                    )
                     if available_routes
                     else "None"
                 )
                 diag = {
-                    "task_id": task_row.id,
-                    "purpose": contract.purpose.value,
+                    **common,
                     "status": "no_matching_registered_route",
-                    "route": route_wire,
                     "reason": None,
                     "message": (
                         f"Queued {contract.purpose.value} task requires {_route_label(task_route)}, "
@@ -301,8 +302,6 @@ async def _assess_queue_diagnostics(
                         "check that the worker process is loading the intended manifest (for example, verify "
                         "FORGE_SUBSCRIPTION_INSTALLATIONS_PATH if set in the worker's environment)."
                     ),
-                    "warnings": warnings,
-                    "available_routes": available_routes_wire,
                 }
             else:
                 # Find if any matching route is ready/operator_trusted
@@ -324,10 +323,8 @@ async def _assess_queue_diagnostics(
                     ):
                         ready_warnings.append(ReadinessWarning.OPERATOR_TRUSTED.value)
                     diag = {
-                        "task_id": task_row.id,
-                        "purpose": contract.purpose.value,
+                        **common,
                         "status": "matching_ready",
-                        "route": route_wire,
                         "reason": eff_reason,
                         "message": (
                             f"A current worker has registered {_route_label(task_route)} "
@@ -338,25 +335,22 @@ async def _assess_queue_diagnostics(
                             "dependencies, quota, and capacity still apply."
                         ),
                         "warnings": ready_warnings,
-                        "available_routes": available_routes_wire,
                     }
                 else:
                     first_match = matching_routes[0]
-                    unavail_reason = first_match.get("effective_reason", ReadinessReason.UNKNOWN.value)
+                    unavail_reason = first_match.get(
+                        "effective_reason", ReadinessReason.UNKNOWN.value
+                    )
                     reason_desc = _REASON_DESCRIPTIONS.get(unavail_reason, unavail_reason)
                     diag = {
-                        "task_id": task_row.id,
-                        "purpose": contract.purpose.value,
+                        **common,
                         "status": "matched_unavailable",
-                        "route": route_wire,
                         "reason": unavail_reason,
                         "message": (
                             f"Queued {contract.purpose.value} task requires {_route_label(task_route)}. "
                             f"A current worker registered this route, but it is currently unavailable: {reason_desc}."
                         ),
                         "guidance": _guidance_for_reason(unavail_reason, task_route.client),
-                        "warnings": warnings,
-                        "available_routes": available_routes_wire,
                     }
 
         task_diags[task_row.id] = diag
@@ -366,6 +360,8 @@ async def _assess_queue_diagnostics(
     page_diag = primary_diag
     if page_diag is None:
         # Fall back to first unready diagnostic if no primary task had one
-        page_diag = next((d for d in task_diags.values() if d and d["status"] != "matching_ready"), None)
+        page_diag = next(
+            (d for d in task_diags.values() if d and d["status"] != "matching_ready"), None
+        )
 
     return task_diags, page_diag
