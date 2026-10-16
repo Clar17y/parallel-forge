@@ -196,7 +196,9 @@ class SubscriptionTaskQuery:
             if capacity is not None:
                 for index, provider in waiting.items():
                     tasks[index]["capacity_waits"] = capacity.waits(provider)
-            task_diags, page_queue_diagnostic = await assess_queue_diagnostics(session, run_id)
+            task_diags, page_queue_diagnostic = await assess_queue_diagnostics(
+                session, run_id, quota_policy=self._quota_policy
+            )
             for index, task_view in enumerate(tasks):
                 task_view["queue_diagnostic"] = task_diags.get(ids[index])
             return {

@@ -16,6 +16,7 @@ from forge.domain.subscription import (
     ReasoningEffort,
     RolePreference,
     RouteBinding,
+    RouteMapping,
     RouteSpec,
     SpecialistPurpose,
     TaskBudget,
@@ -33,6 +34,10 @@ from forge.persistence.models.subscription import (
     SubscriptionProfileVersion,
     SubscriptionTask,
 )
+from forge.persistence.models.subscription_quota import (
+    SubscriptionQuotaAdmission,
+    SubscriptionQuotaPool,
+)
 from forge.persistence.queries.subscription_queue_diagnostics import (
     assess_queue_diagnostics,
 )
@@ -41,7 +46,7 @@ from forge.persistence.repositories.subscription_runtime_status import (
     SubscriptionRuntimeStatusStore,
 )
 from forge.persistence.unit_of_work import PostgresUnitOfWork
-from sqlalchemy import delete
+from sqlalchemy import delete, func, select
 
 
 async def _clean_run(session_factory, run_id, profile_ids=()):
@@ -100,51 +105,146 @@ async def _create_test_run_with_task(
     state="queued",
     pause_requested=False,
     cancel_requested=False,
+    fallbacks=(),
+    effective_route=None,
+    contract_requested_route=None,
+    envelope_billing_mode=BillingMode.ALLOWANCE_ONLY,
 ):
-    binding = RouteBinding(requested=route, effective=route)
-    profile = OperatorProfile(
-        profile_id=uuid4(),
-        version=1,
-        preferences=(RolePreference(purpose=purpose, preferred_route=route),),
+    profile_id = uuid4()
+    eff = effective_route or route
+    req = contract_requested_route or route
+    mapping = None
+    if req != eff:
+        mapping = RouteMapping(
+            requested=req,
+            effective=eff,
+            approved_by=f"profile:{profile_id}",
+            approval_id="test",
+            reason="Confirmed quota exhaustion; frozen specialist fallback",
+        )
+    binding = RouteBinding(requested=req, effective=eff, mapping_applied=mapping)
+    env_binding = RouteBinding(requested=route, effective=route)
+
+    is_primary = purpose is SpecialistPurpose.PRIMARY
+    primary_route = GOOGLE_ROUTE
+    primary_binding = RouteBinding(requested=primary_route, effective=primary_route)
+
+    routes = (
+        ((SpecialistPurpose.PRIMARY, primary_binding),)
+        if is_primary
+        else (
+            (SpecialistPurpose.PRIMARY, primary_binding),
+            (purpose, env_binding),
+        )
     )
-    task = LogicalTaskContract(
+    prefs = [
+        RolePreference(
+            purpose=SpecialistPurpose.PRIMARY,
+            preferred_route=primary_route,
+        )
+    ]
+    if not is_primary:
+        prefs.append(
+            RolePreference(
+                purpose=purpose,
+                preferred_route=route,
+                fallback_routes=tuple(fallbacks),
+            )
+        )
+
+    profile = OperatorProfile(
+        profile_id=profile_id,
+        version=1,
+        preferences=tuple(prefs),
+    )
+
+    primary_id = uuid4()
+    child_id = uuid4() if not is_primary else None
+
+    primary_task = LogicalTaskContract(
         run_id=persisted_run.id,
-        task_id=uuid4(),
-        purpose=purpose,
-        route=binding,
+        task_id=primary_id,
+        purpose=SpecialistPurpose.PRIMARY,
+        route=primary_binding,
         budget=TaskBudget(),
         owned_paths=("src",),
     )
+    child_task = None
+    if not is_primary:
+        child_task = LogicalTaskContract(
+            run_id=persisted_run.id,
+            task_id=child_id,
+            parent_task_id=primary_id,
+            purpose=purpose,
+            route=binding,
+            budget=TaskBudget(),
+            owned_paths=("src",),
+        )
+
     async with PostgresUnitOfWork(session_factory) as work:
         await work.subscription.store_profile(profile)
         await work.subscription.freeze_envelope(
             ExecutionEnvelope(
-                run_id=task.run_id,
+                run_id=persisted_run.id,
                 profile_id=profile.profile_id,
                 profile_version=1,
                 safety_policy_version=1,
-                routes=((purpose, binding),),
+                routes=routes,
+                allowed_fallbacks=((purpose, tuple(fallbacks)),) if fallbacks else (),
+                billing_mode=envelope_billing_mode,
             )
         )
-        await work.subscription.create_task(task, idempotency_key=f"queue-diag-{task.task_id}")
+        await work.subscription.create_task(
+            primary_task, idempotency_key=f"queue-diag-{primary_task.task_id}"
+        )
+        if child_task is not None:
+            await work.subscription.create_task(
+                child_task, idempotency_key=f"queue-diag-{child_task.task_id}"
+            )
         await work.commit()
 
     async with session_factory() as session:
-        session.add(
-            SubscriptionScheduledTask(
-                id=uuid4(),
-                run_id=task.run_id,
-                task_id=task.task_id,
-                worktree_id="diag-worktree",
-                provider=route.provider,
-                state=state,
-                owned_paths=["src"],
-                pause_requested=pause_requested,
-                cancel_requested=cancel_requested,
+        if is_primary:
+            session.add(
+                SubscriptionScheduledTask(
+                    id=uuid4(),
+                    run_id=persisted_run.id,
+                    task_id=primary_task.task_id,
+                    worktree_id="diag-worktree",
+                    provider=eff.provider,
+                    state=state,
+                    owned_paths=["src"],
+                    pause_requested=pause_requested,
+                    cancel_requested=cancel_requested,
+                )
             )
-        )
+        else:
+            session.add(
+                SubscriptionScheduledTask(
+                    id=uuid4(),
+                    run_id=persisted_run.id,
+                    task_id=primary_task.task_id,
+                    worktree_id="diag-worktree",
+                    provider=primary_route.provider,
+                    state="terminal",
+                    owned_paths=["src"],
+                )
+            )
+            session.add(
+                SubscriptionScheduledTask(
+                    id=uuid4(),
+                    run_id=persisted_run.id,
+                    task_id=child_task.task_id,
+                    worktree_id="diag-worktree",
+                    provider=eff.provider,
+                    state=state,
+                    owned_paths=["src"],
+                    pause_requested=pause_requested,
+                    cancel_requested=cancel_requested,
+                )
+            )
         await session.commit()
-    return task, profile
+    return (child_task if child_task is not None else primary_task), profile
 
 
 @pytest.mark.integration
@@ -474,4 +574,473 @@ async def test_inventory_bound_does_not_hide_a_matching_worker(session_factory, 
     finally:
         await store.stop(other_worker)
         await store.stop(worker_id)
+        await _clean_run(session_factory, persisted_run.id, (profile.profile_id,))
+
+
+@pytest.mark.integration
+async def test_diagnostics_approved_quota_eligible_specialist_fallback(
+    session_factory, persisted_run
+):
+    """Specialist task requested Google Antigravity, but worker only registered Codex.
+    Since Codex is an approved quota-eligible frozen fallback, diagnostics show matching_ready."""
+    task, profile = await _create_test_run_with_task(
+        session_factory,
+        persisted_run,
+        route=GOOGLE_ROUTE,
+        purpose=SpecialistPurpose.ROUTINE_IMPLEMENTATION,
+        fallbacks=(CODEX_ROUTE,),
+    )
+    worker_id = uuid4()
+    store = SubscriptionRuntimeStatusStore(session_factory)
+    await store.report(
+        worker_id,
+        (
+            SubscriptionRouteReadiness(
+                CODEX_ROUTE, True, True, ReadinessReason.READY, quota=ReadinessQuota.ELIGIBLE
+            ),
+        ),
+    )
+    try:
+        query = SubscriptionTaskQuery(session_factory)
+        result = await query.tasks(persisted_run.id)
+        page = SubscriptionTaskPage.model_validate(result)
+
+        task_item = next(t for t in page.tasks if t.task_id == task.task_id)
+        assert task_item.queue_diagnostic is not None
+        diag = task_item.queue_diagnostic
+        assert diag.status == "matching_ready"
+        assert diag.route.provider == "openai"
+        assert diag.route.client == "codex_app_server"
+        assert "fallback" in diag.message.lower()
+        assert "codex" in diag.message.lower()
+    finally:
+        await store.stop(worker_id)
+        await _clean_run(session_factory, persisted_run.id, (profile.profile_id,))
+
+
+@pytest.mark.integration
+async def test_diagnostics_primary_task_refuses_fallback(
+    session_factory, persisted_run
+):
+    """Primary tasks and routes marked is_primary never fall back."""
+    task, profile = await _create_test_run_with_task(
+        session_factory,
+        persisted_run,
+        route=GOOGLE_ROUTE,
+        purpose=SpecialistPurpose.PRIMARY,
+    )
+    worker_id = uuid4()
+    store = SubscriptionRuntimeStatusStore(session_factory)
+    await store.report(
+        worker_id,
+        (
+            SubscriptionRouteReadiness(
+                CODEX_ROUTE, True, True, ReadinessReason.READY, quota=ReadinessQuota.ELIGIBLE
+            ),
+        ),
+    )
+    try:
+        query = SubscriptionTaskQuery(session_factory)
+        result = await query.tasks(persisted_run.id)
+        page = SubscriptionTaskPage.model_validate(result)
+
+        task_item = next(t for t in page.tasks if t.task_id == task.task_id)
+        assert task_item.queue_diagnostic is not None
+        diag = task_item.queue_diagnostic
+        # Primary task must refuse fallback and retain no_matching_registered_route
+        assert diag.status == "no_matching_registered_route"
+        assert diag.route.provider == "google"
+        assert "no current worker has registered this route" in diag.message
+    finally:
+        await store.stop(worker_id)
+        await _clean_run(session_factory, persisted_run.id, (profile.profile_id,))
+
+
+@pytest.mark.integration
+async def test_diagnostics_frozen_request_mismatch_refuses_fallback(
+    session_factory, persisted_run
+):
+    """When contract.route.requested differs from envelope preferred requested route, fallback is refused."""
+    task, profile = await _create_test_run_with_task(
+        session_factory,
+        persisted_run,
+        route=GOOGLE_ROUTE,
+        purpose=SpecialistPurpose.ROUTINE_IMPLEMENTATION,
+        fallbacks=(CODEX_ROUTE,),
+        contract_requested_route=MUSE_ROUTE,
+    )
+    worker_id = uuid4()
+    store = SubscriptionRuntimeStatusStore(session_factory)
+    await store.report(
+        worker_id,
+        (
+            SubscriptionRouteReadiness(
+                CODEX_ROUTE, True, True, ReadinessReason.READY, quota=ReadinessQuota.ELIGIBLE
+            ),
+        ),
+    )
+    try:
+        query = SubscriptionTaskQuery(session_factory)
+        result = await query.tasks(persisted_run.id)
+        page = SubscriptionTaskPage.model_validate(result)
+
+        task_item = next(t for t in page.tasks if t.task_id == task.task_id)
+        assert task_item.queue_diagnostic is not None
+        assert task_item.queue_diagnostic.status == "no_matching_registered_route"
+    finally:
+        await store.stop(worker_id)
+        await _clean_run(session_factory, persisted_run.id, (profile.profile_id,))
+
+
+@pytest.mark.integration
+async def test_diagnostics_auth_or_billing_mismatch_refuses_fallback(
+    session_factory, persisted_run
+):
+    """Fallback route with mismatched auth_mode or billing_mode is refused."""
+    mismatched_fallback = replace(CODEX_ROUTE, billing_mode=BillingMode.PAID_OPT_IN)
+    # Using a run and envelope that supports PAID_OPT_IN
+    task, profile = await _create_test_run_with_task(
+        session_factory,
+        persisted_run,
+        route=GOOGLE_ROUTE,  # ALLOWANCE_ONLY
+        purpose=SpecialistPurpose.ROUTINE_IMPLEMENTATION,
+        fallbacks=(mismatched_fallback,),
+        envelope_billing_mode=BillingMode.PAID_OPT_IN,
+    )
+    worker_id = uuid4()
+    store = SubscriptionRuntimeStatusStore(session_factory)
+    await store.report(
+        worker_id,
+        (
+            SubscriptionRouteReadiness(
+                mismatched_fallback, True, True, ReadinessReason.READY, quota=ReadinessQuota.ELIGIBLE
+            ),
+        ),
+    )
+    try:
+        query = SubscriptionTaskQuery(session_factory)
+        result = await query.tasks(persisted_run.id)
+        page = SubscriptionTaskPage.model_validate(result)
+
+        task_item = next(t for t in page.tasks if t.task_id == task.task_id)
+        assert task_item.queue_diagnostic is not None
+        # Mismatched billing mode cannot satisfy fallback -> missing worker warning retained
+        assert task_item.queue_diagnostic.status == "no_matching_registered_route"
+    finally:
+        await store.stop(worker_id)
+        await _clean_run(session_factory, persisted_run.id, (profile.profile_id,))
+
+
+@pytest.mark.integration
+async def test_diagnostics_fallback_quota_blocked_vs_unknown_and_eligible(
+    session_factory, persisted_run
+):
+    """Blocked fallback quota does not clear missing-worker warning; eligible/unknown quota does."""
+    now = datetime.now(UTC)
+    task, profile = await _create_test_run_with_task(
+        session_factory,
+        persisted_run,
+        route=GOOGLE_ROUTE,
+        purpose=SpecialistPurpose.ROUTINE_IMPLEMENTATION,
+        fallbacks=(CODEX_ROUTE,),
+    )
+    worker_id = uuid4()
+    store = SubscriptionRuntimeStatusStore(session_factory)
+    await store.report(
+        worker_id,
+        (
+            SubscriptionRouteReadiness(
+                CODEX_ROUTE, True, True, ReadinessReason.READY, quota=ReadinessQuota.ELIGIBLE
+            ),
+        ),
+    )
+
+    # 1. Block the fallback quota pool in the database
+    async with session_factory() as session:
+        session.add(
+            SubscriptionQuotaPool(
+                provider="openai",
+                account="local",
+                pool="subscription-allowance_only",
+                revision=1,
+                blocked=True,
+                next_eligible_at=now + timedelta(hours=1),
+                retry_basis="known_reset",
+            )
+        )
+        await session.commit()
+
+    try:
+        query = SubscriptionTaskQuery(session_factory)
+        result = await query.tasks(persisted_run.id)
+        page = SubscriptionTaskPage.model_validate(result)
+
+        task_item = next(t for t in page.tasks if t.task_id == task.task_id)
+        assert task_item.queue_diagnostic is not None
+        # Blocked quota pool on fallback means fallback cannot be used; warning not cleared
+        assert task_item.queue_diagnostic.status == "no_matching_registered_route"
+
+        # 2. Unblock the quota pool (eligible quota)
+        async with session_factory() as session:
+            pool_row = await session.get(
+                SubscriptionQuotaPool,
+                ("openai", "local", "subscription-allowance_only"),
+            )
+            assert pool_row is not None
+            pool_row.blocked = False
+            pool_row.next_eligible_at = None
+            await session.commit()
+
+        result_unblocked = await query.tasks(persisted_run.id)
+        page_unblocked = SubscriptionTaskPage.model_validate(result_unblocked)
+        task_unblocked = next(t for t in page_unblocked.tasks if t.task_id == task.task_id)
+        assert task_unblocked.queue_diagnostic is not None
+        assert task_unblocked.queue_diagnostic.status == "matching_ready"
+        assert task_unblocked.queue_diagnostic.route.provider == "openai"
+    finally:
+        async with session_factory() as session:
+            await session.execute(
+                delete(SubscriptionQuotaPool).where(
+                    SubscriptionQuotaPool.provider == "openai",
+                    SubscriptionQuotaPool.account == "local",
+                    SubscriptionQuotaPool.pool == "subscription-allowance_only",
+                )
+            )
+            await session.commit()
+        await store.stop(worker_id)
+        await _clean_run(session_factory, persisted_run.id, (profile.profile_id,))
+
+
+@pytest.mark.integration
+async def test_diagnostics_fallback_stale_or_stopped_worker_ignored(
+    session_factory, persisted_run
+):
+    """Fallback route on stale or stopped worker does not clear missing-worker warning."""
+    now = datetime(2026, 10, 16, 21, 0, 0, tzinfo=UTC)
+    task, profile = await _create_test_run_with_task(
+        session_factory,
+        persisted_run,
+        route=GOOGLE_ROUTE,
+        purpose=SpecialistPurpose.ROUTINE_IMPLEMENTATION,
+        fallbacks=(CODEX_ROUTE,),
+    )
+    clock = lambda: now
+    store = SubscriptionRuntimeStatusStore(session_factory, clock=clock)
+
+    # Worker 0: active but only registered MUSE_ROUTE (ensures current workers exist)
+    w0 = uuid4()
+    await store.report(
+        w0,
+        (
+            SubscriptionRouteReadiness(
+                MUSE_ROUTE, True, True, ReadinessReason.READY, quota=ReadinessQuota.ELIGIBLE
+            ),
+        ),
+    )
+
+    # Worker 1: stopped
+    w1 = uuid4()
+    await store.report(
+        w1,
+        (
+            SubscriptionRouteReadiness(
+                CODEX_ROUTE, True, True, ReadinessReason.READY, quota=ReadinessQuota.ELIGIBLE
+            ),
+        ),
+    )
+    await store.stop(w1)
+
+    # Worker 2: stale (60 seconds ago)
+    w2 = uuid4()
+    past_clock = lambda: now - timedelta(seconds=60)
+    past_store = SubscriptionRuntimeStatusStore(session_factory, clock=past_clock)
+    await past_store.report(
+        w2,
+        (
+            SubscriptionRouteReadiness(
+                CODEX_ROUTE, True, True, ReadinessReason.READY, quota=ReadinessQuota.ELIGIBLE
+            ),
+        ),
+    )
+
+    try:
+        result = await assess_queue_diagnostics(session_factory, persisted_run.id, now=now)
+        task_diags, _ = result
+        diag = task_diags[task.task_id]
+        assert diag is not None
+        # Stopped and stale fallback workers are ignored
+        assert diag["status"] == "no_matching_registered_route"
+
+        # Worker 3 arrives fresh and active
+        w3 = uuid4()
+        await store.report(
+            w3,
+            (
+                SubscriptionRouteReadiness(
+                    CODEX_ROUTE, True, True, ReadinessReason.READY, quota=ReadinessQuota.ELIGIBLE
+                ),
+            ),
+        )
+
+        res_active = await assess_queue_diagnostics(session_factory, persisted_run.id, now=now)
+        active_diags, _ = res_active
+        active_diag = active_diags[task.task_id]
+        assert active_diag is not None
+        assert active_diag["status"] == "matching_ready"
+        assert active_diag["route"]["provider"] == "openai"
+        await store.stop(w3)
+    finally:
+        await store.stop(w0)
+        await store.stop(w2)
+        await _clean_run(session_factory, persisted_run.id, (profile.profile_id,))
+
+
+@pytest.mark.integration
+async def test_diagnostics_recovered_preferred_route(
+    session_factory, persisted_run
+):
+    """When a specialist task previously switched to fallback, recovered preferred route is preferred."""
+    # effective_route is CODEX_ROUTE (fallback previously applied), but preferred in envelope is GOOGLE_ROUTE
+    task, profile = await _create_test_run_with_task(
+        session_factory,
+        persisted_run,
+        route=GOOGLE_ROUTE,
+        purpose=SpecialistPurpose.ROUTINE_IMPLEMENTATION,
+        fallbacks=(CODEX_ROUTE,),
+        effective_route=CODEX_ROUTE,
+    )
+    worker_id = uuid4()
+    store = SubscriptionRuntimeStatusStore(session_factory)
+    # Worker registers the recovered preferred route (Google)
+    await store.report(
+        worker_id,
+        (
+            SubscriptionRouteReadiness(
+                GOOGLE_ROUTE, True, True, ReadinessReason.READY, quota=ReadinessQuota.ELIGIBLE
+            ),
+        ),
+    )
+    try:
+        query = SubscriptionTaskQuery(session_factory)
+        result = await query.tasks(persisted_run.id)
+        page = SubscriptionTaskPage.model_validate(result)
+
+        task_item = next(t for t in page.tasks if t.task_id == task.task_id)
+        assert task_item.queue_diagnostic is not None
+        diag = task_item.queue_diagnostic
+        assert diag.status == "matching_ready"
+        assert diag.route.provider == "google"
+        assert diag.route.client == "antigravity_cli"
+        assert "recovered preferred route" in diag.message.lower()
+    finally:
+        await store.stop(worker_id)
+        await _clean_run(session_factory, persisted_run.id, (profile.profile_id,))
+
+
+@pytest.mark.integration
+async def test_diagnostics_read_only_no_data_mutation(
+    session_factory, persisted_run
+):
+    """Queue diagnostics query performs no DB writes, no quota pool inserts, and no locks."""
+    task, profile = await _create_test_run_with_task(
+        session_factory,
+        persisted_run,
+        route=GOOGLE_ROUTE,
+        purpose=SpecialistPurpose.ROUTINE_IMPLEMENTATION,
+        fallbacks=(CODEX_ROUTE,),
+    )
+    worker_id = uuid4()
+    store = SubscriptionRuntimeStatusStore(session_factory)
+    await store.report(
+        worker_id,
+        (
+            SubscriptionRouteReadiness(
+                CODEX_ROUTE, True, True, ReadinessReason.READY, quota=ReadinessQuota.ELIGIBLE
+            ),
+        ),
+    )
+
+    async with session_factory() as session:
+        pool_count_before = await session.scalar(
+            select(func.count()).select_from(SubscriptionQuotaPool)
+        )
+        admission_count_before = await session.scalar(
+            select(func.count()).select_from(SubscriptionQuotaAdmission)
+        )
+        task_row_before = await session.get(SubscriptionTask, task.task_id)
+        assert task_row_before is not None
+        payload_before = task_row_before.payload
+        version_before = task_row_before.version
+
+    try:
+        query = SubscriptionTaskQuery(session_factory)
+        result = await query.tasks(persisted_run.id)
+        page = SubscriptionTaskPage.model_validate(result)
+        task_item = next(t for t in page.tasks if t.task_id == task.task_id)
+        assert task_item.queue_diagnostic is not None
+        assert task_item.queue_diagnostic.status == "matching_ready"
+
+        async with session_factory() as session:
+            pool_count_after = await session.scalar(
+                select(func.count()).select_from(SubscriptionQuotaPool)
+            )
+            admission_count_after = await session.scalar(
+                select(func.count()).select_from(SubscriptionQuotaAdmission)
+            )
+            task_row_after = await session.get(SubscriptionTask, task.task_id)
+            assert task_row_after is not None
+
+            assert pool_count_before == pool_count_after
+            assert admission_count_before == admission_count_after
+            assert task_row_after.payload == payload_before
+            assert task_row_after.version == version_before
+    finally:
+        await store.stop(worker_id)
+        await _clean_run(session_factory, persisted_run.id, (profile.profile_id,))
+
+
+
+
+@pytest.mark.integration
+async def test_current_route_selection_does_not_require_loading_the_envelope(session_factory, persisted_run):
+    from unittest.mock import AsyncMock
+
+    from forge.persistence.repositories.subscription_quota import (
+        PostgresSubscriptionQuotaRepository,
+    )
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    task, profile = await _create_test_run_with_task(session_factory, persisted_run)
+    try:
+        async with session_factory() as session:
+            logical = await session.get(SubscriptionTask, task.task_id)
+        fake_session = AsyncMock(spec=AsyncSession)
+        fake_session.get.side_effect = AssertionError("current route must short-circuit envelope reads")
+        quota = PostgresSubscriptionQuotaRepository(fake_session)
+        quota.eligible = AsyncMock(return_value=True)
+        selected = await quota.route_for_task(logical, eligible_routes=frozenset({GOOGLE_ROUTE}))
+        assert selected == task.route
+        fake_session.get.assert_not_called()
+    finally:
+        await _clean_run(session_factory, persisted_run.id, (profile.profile_id,))
+
+
+@pytest.mark.integration
+async def test_route_candidates_preserve_current_then_frozen_preferred_order(session_factory, persisted_run):
+    from forge.domain.subscription import decode_subscription_record
+    from forge.domain.subscription_quota import task_candidate_routes
+
+    task, profile = await _create_test_run_with_task(
+        session_factory, persisted_run, route=GOOGLE_ROUTE,
+        purpose=SpecialistPurpose.ROUTINE_IMPLEMENTATION, fallbacks=(CODEX_ROUTE,),
+    )
+    try:
+        async with session_factory() as session:
+            stored = await session.get(SubscriptionEnvelope, persisted_run.id)
+            envelope = decode_subscription_record(stored.payload)
+        candidates = task_candidate_routes(task, envelope)
+        assert [(candidate.kind, candidate.route) for candidate in candidates] == [
+            ("current", GOOGLE_ROUTE), ("preferred", GOOGLE_ROUTE), ("fallback", CODEX_ROUTE),
+        ]
+    finally:
         await _clean_run(session_factory, persisted_run.id, (profile.profile_id,))

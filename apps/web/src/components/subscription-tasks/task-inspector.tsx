@@ -5,6 +5,7 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { Loader2 } from 'lucide-react';
 import { useApi } from '@/hooks/use-api';
+import { useSubscriptionTasks, useSubscriptionTasksContext, type SubscriptionTasksState } from '@/hooks/use-subscription-tasks';
 import { QuotaStatusCard, QuotaStatusList } from './quota-status';
 import { TaskControls, TaskControlSummary } from './task-controls';
 import { TaskFeedback } from './task-feedback';
@@ -21,11 +22,27 @@ const pageSize = 25;
 const unknown = (value: number | null | undefined) => value == null ? 'Unknown' : value.toLocaleString();
 const routeLabel = (route: Route) => `${route.provider} / ${route.client} / ${route.model} · ${route.effort} · ${route.auth_mode} · ${route.billing_mode}`;
 
-export function TaskInspector({ runId }: { runId: string }) {
-  const [offset, setOffset] = useState(0);
-  const [selected, setSelected] = useState<string | null>(null);
-  const tasks = useApi<TaskPage>(`/runs/${runId}/subscription-tasks?offset=${offset}&limit=${pageSize}`, { refreshIntervalMs: 5000, keepPreviousOnRefresh: true });
-  const movePage = (next: number) => { setSelected(null); setOffset(next); };
+export type TaskInspectorProps = {
+  runId: string;
+  controller?: SubscriptionTasksState;
+};
+
+export function TaskInspector({ runId, controller }: TaskInspectorProps) {
+  const context = useSubscriptionTasksContext();
+  const effective = controller ?? (context && context.runId === runId ? context : null);
+  if (effective) {
+    return <TaskInspectorView runId={runId} controller={effective} />;
+  }
+  return <StandaloneTaskInspector runId={runId} />;
+}
+
+function StandaloneTaskInspector({ runId }: { runId: string }) {
+  const controller = useSubscriptionTasks(runId);
+  return <TaskInspectorView runId={runId} controller={controller} />;
+}
+
+function TaskInspectorView({ runId, controller }: { runId: string; controller: SubscriptionTasksState }) {
+  const { offset, selected, setSelected, movePage, tasks } = controller;
   return <section id="subscription-tasks" aria-label="Run usage and subscription tasks" className="my-6 min-w-0 space-y-4 rounded-lg border border-slate-300 p-4">
     <div className="flex flex-wrap items-center justify-between gap-3">
       <h2 className="text-lg font-semibold">Run usage and subscription tasks</h2>

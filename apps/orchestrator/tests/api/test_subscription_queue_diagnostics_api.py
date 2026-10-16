@@ -127,3 +127,82 @@ async def test_queue_diagnostic_api_suppression(
     assert data["tasks"][0]["queue_diagnostic"] is None
     page = SubscriptionTaskPage.model_validate(data)
     assert page.queue_diagnostic is None
+
+
+@pytest.mark.asyncio
+async def test_queue_diagnostic_api_fallback_route_serialization(
+    task10_client, task10_route_context, route_headers
+):
+    run_id = uuid4()
+    task_id = uuid4()
+
+    fallback_route = {
+        "provider": "codex",
+        "client": "codex_cli",
+        "model": "gpt-5.4",
+        "effort": "medium",
+        "auth_mode": "subscription",
+        "billing_mode": "allowance_only",
+    }
+    preferred_route = ROUTE
+
+    diag = {
+        "task_id": str(task_id),
+        "purpose": "routine_implementation",
+        "status": "matching_ready",
+        "route": fallback_route,
+        "reason": "operator_trusted",
+        "message": (
+            "Specialist fallback route codex/codex_cli:gpt-5.4 is registered by an active worker "
+            "and quota-ready; preferred route google/antigravity_cli:gemini-3.8-flash-medium has "
+            "exhausted allowance quota."
+        ),
+        "guidance": "Worker will switch task execution to fallback route upon lease.",
+        "warnings": [],
+        "available_routes": [fallback_route],
+    }
+
+    class FallbackQuery:
+        async def tasks(self, *args, **kwargs):
+            return {
+                "run_id": run_id,
+                "subscription": True,
+                "tasks": [
+                    {
+                        "task_id": task_id,
+                        "parent_task_id": None,
+                        "dependency_task_ids": [],
+                        "purpose": "routine_implementation",
+                        "owned_paths": [],
+                        "state": "queued",
+                        "pause_requested": False,
+                        "cancel_requested": False,
+                        "version": 1,
+                        "repairs": None,
+                        "unsettled_effects": 0,
+                        "requested_route": preferred_route,
+                        "effective_route": fallback_route,
+                        "fallback_selected": True,
+                        "queue_diagnostic": diag,
+                    }
+                ],
+                "has_more": False,
+                "queue_diagnostic": diag,
+            }
+
+    task10_route_context.app.state.subscription_task_query = FallbackQuery()
+    response = await task10_client.get(
+        f"/api/runs/{run_id}/subscription-tasks",
+        headers={"Host": route_headers["Host"]},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["queue_diagnostic"]["status"] == "matching_ready"
+    assert data["queue_diagnostic"]["route"]["provider"] == "codex"
+    assert data["tasks"][0]["fallback_selected"] is True
+    assert data["tasks"][0]["effective_route"]["provider"] == "codex"
+
+    page = SubscriptionTaskPage.model_validate(data)
+    assert page.queue_diagnostic.status == "matching_ready"
+    assert page.queue_diagnostic.route.provider == "codex"
+    assert page.tasks[0].fallback_selected is True

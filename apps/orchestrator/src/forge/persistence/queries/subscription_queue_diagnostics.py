@@ -9,21 +9,32 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from forge.domain.run import RunState
 from forge.domain.subscription import (
+    ExecutionEnvelope,
     LogicalTaskContract,
     RouteSpec,
     SpecialistPurpose,
     decode_subscription_record,
 )
 from forge.domain.subscription_execution import run_allows_subscription_attempt
+from forge.domain.subscription_quota import (
+    QuotaPolicy,
+    task_candidate_routes,
+)
 from forge.domain.subscription_readiness import (
     ReadinessReason,
     ReadinessWarning,
 )
 from forge.persistence.models.run import Run
 from forge.persistence.models.scheduling import SubscriptionScheduledTask
-from forge.persistence.models.subscription import SubscriptionTask
+from forge.persistence.models.subscription import (
+    SubscriptionEnvelope,
+    SubscriptionTask,
+)
 from forge.persistence.models.subscription_runtime_status import (
     SubscriptionWorkerStatus,
+)
+from forge.persistence.repositories.subscription_quota import (
+    PostgresSubscriptionQuotaRepository,
 )
 from forge.persistence.repositories.subscription_runtime_status import (
     RUNTIME_FRESH_SECONDS,
@@ -128,11 +139,16 @@ async def assess_queue_diagnostics(
     run_id: UUID,
     *,
     now: datetime | None = None,
+    quota_policy: QuotaPolicy | None = None,
 ) -> tuple[dict[UUID, dict[str, Any] | None], dict[str, Any] | None]:
     if isinstance(session_or_factory, async_sessionmaker):
         async with session_or_factory() as session:
-            return await _assess_queue_diagnostics(session, run_id, now=now)
-    return await _assess_queue_diagnostics(session_or_factory, run_id, now=now)
+            return await _assess_queue_diagnostics(
+                session, run_id, now=now, quota_policy=quota_policy
+            )
+    return await _assess_queue_diagnostics(
+        session_or_factory, run_id, now=now, quota_policy=quota_policy
+    )
 
 
 async def _assess_queue_diagnostics(
@@ -140,6 +156,7 @@ async def _assess_queue_diagnostics(
     run_id: UUID,
     *,
     now: datetime | None = None,
+    quota_policy: QuotaPolicy | None = None,
 ) -> tuple[dict[UUID, dict[str, Any] | None], dict[str, Any] | None]:
     run = await session.get(Run, run_id)
     if run is None or run.state in (RunState.COMPLETED, RunState.CANCELLED, RunState.FAILED):
@@ -152,6 +169,20 @@ async def _assess_queue_diagnostics(
         now = db_now if isinstance(db_now, datetime) else datetime.now(UTC)
     if now.tzinfo is None:
         now = now.replace(tzinfo=UTC)
+
+    policy = quota_policy or QuotaPolicy()
+    quota_repo = PostgresSubscriptionQuotaRepository(
+        session, policy=policy, clock=lambda: now
+    )
+
+    stored_envelope = await session.get(SubscriptionEnvelope, run_id)
+    envelope = (
+        decode_subscription_record(stored_envelope.payload)
+        if stored_envelope is not None
+        else None
+    )
+    if not isinstance(envelope, ExecutionEnvelope):
+        envelope = None
 
     task_rows = list(
         (
@@ -272,86 +303,131 @@ async def _assess_queue_diagnostics(
                 ),
             }
         else:
-            # Check for matching routes among current workers
-            matching_routes = [
-                route for route in registered_routes if _route_matches(task_route, route)
-            ]
+            candidates = task_candidate_routes(contract, envelope)
+            diag = None
+            cand0_diagnostic = None
 
-            if not matching_routes:
-                routes_summary = (
-                    " · ".join(
-                        f"{r['provider']} / {r['client']} / {r['model']}"
-                        for r in available_routes[:64]
-                    )
-                    if available_routes
-                    else "None"
-                )
-                diag = {
-                    **common,
-                    "status": "no_matching_registered_route",
-                    "reason": None,
-                    "message": (
-                        f"Queued {contract.purpose.value} task requires {_route_label(task_route)}, "
-                        "but no current worker has registered this route."
-                    ),
-                    "guidance": (
-                        f"Current worker(s) registered: {routes_summary}. "
-                        + ("Showing the first 64 routes. " if len(available_routes) > 64 else "")
-                        + "Check your worker configuration "
-                        "and client setup. If you configured clients in .env or an installations manifest, "
-                        "check that the worker process is loading the intended manifest (for example, verify "
-                        "FORGE_SUBSCRIPTION_INSTALLATIONS_PATH if set in the worker's environment)."
-                    ),
-                }
-            else:
-                # Find if any matching route is ready/operator_trusted
+            for candidate in candidates:
+                cand_route = candidate.route
+                matching_routes = [
+                    route for route in registered_routes if _route_matches(cand_route, route)
+                ]
+
+                # Preserve report ordering while accepting both admitted readiness reasons.
                 ready_match = next(
-                    (
-                        r
-                        for r in matching_routes
-                        if r.get("effective_reason")
-                        in (ReadinessReason.READY.value, ReadinessReason.OPERATOR_TRUSTED.value)
-                    ),
+                    (r for r in matching_routes if r.get("effective_reason") in (
+                        ReadinessReason.READY.value, ReadinessReason.OPERATOR_TRUSTED.value
+                    )),
                     None,
                 )
-                if ready_match is not None:
+
+                pool_status = await quota_repo.status(policy.key_for(cand_route))
+                quota_eligible = pool_status.allows_attempt
+
+                if ready_match is not None and quota_eligible:
                     eff_reason = ready_match.get("effective_reason")
-                    ready_warnings = list(warnings)
+                    ready_warnings = []
+                    if cand_route.client in ("antigravity_cli", "gemini_cli"):
+                        ready_warnings.append(ReadinessWarning.APPROVED_TOOLS_UNPROVED.value)
                     if (
                         eff_reason == ReadinessReason.OPERATOR_TRUSTED.value
                         and ReadinessWarning.OPERATOR_TRUSTED.value not in ready_warnings
                     ):
                         ready_warnings.append(ReadinessWarning.OPERATOR_TRUSTED.value)
+
+                    if candidate.kind == "fallback":
+                        message = (
+                            f"A current worker has registered approved fallback route "
+                            f"{_route_label(cand_route)} and is ready to attempt."
+                        )
+                    elif candidate.kind == "preferred":
+                        message = (
+                            f"A current worker has registered recovered preferred route "
+                            f"{_route_label(cand_route)} and is ready to attempt."
+                        )
+                    else:
+                        message = (
+                            f"A current worker has registered {_route_label(cand_route)} "
+                            "and is ready to attempt."
+                        )
+
                     diag = {
                         **common,
                         "status": "matching_ready",
+                        "route": _route_wire(cand_route),
                         "reason": eff_reason,
-                        "message": (
-                            f"A current worker has registered {_route_label(task_route)} "
-                            "and is ready to attempt."
-                        ),
+                        "message": message,
                         "guidance": (
                             "Worker registration is satisfied. Other scheduler conditions, "
                             "dependencies, quota, and capacity still apply."
                         ),
                         "warnings": ready_warnings,
                     }
-                else:
-                    first_match = matching_routes[0]
-                    unavail_reason = first_match.get(
-                        "effective_reason", ReadinessReason.UNKNOWN.value
-                    )
-                    reason_desc = _REASON_DESCRIPTIONS.get(unavail_reason, unavail_reason)
-                    diag = {
-                        **common,
-                        "status": "matched_unavailable",
-                        "reason": unavail_reason,
-                        "message": (
-                            f"Queued {contract.purpose.value} task requires {_route_label(task_route)}. "
-                            f"A current worker registered this route, but it is currently unavailable: {reason_desc}."
-                        ),
-                        "guidance": _guidance_for_reason(unavail_reason, task_route.client),
-                    }
+                    break
+
+                if candidate.kind == "current":
+                    if not matching_routes:
+                        routes_summary = (
+                            " · ".join(
+                                f"{r['provider']} / {r['client']} / {r['model']}"
+                                for r in available_routes[:64]
+                            )
+                            if available_routes
+                            else "None"
+                        )
+                        cand0_diagnostic = {
+                            **common,
+                            "status": "no_matching_registered_route",
+                            "reason": None,
+                            "message": (
+                                f"Queued {contract.purpose.value} task requires {_route_label(task_route)}, "
+                                "but no current worker has registered this route."
+                            ),
+                            "guidance": (
+                                f"Current worker(s) registered: {routes_summary}. "
+                                + (
+                                    "Showing the first 64 routes. "
+                                    if len(available_routes) > 64
+                                    else ""
+                                )
+                                + "Check your worker configuration "
+                                "and client setup. If you configured clients in .env or an installations manifest, "
+                                "check that the worker process is loading the intended manifest (for example, verify "
+                                "FORGE_SUBSCRIPTION_INSTALLATIONS_PATH if set in the worker's environment)."
+                            ),
+                        }
+                    elif ready_match is not None and not quota_eligible:
+                        unavail_reason = ReadinessReason.QUOTA_EXHAUSTED.value
+                        reason_desc = _REASON_DESCRIPTIONS.get(unavail_reason, unavail_reason)
+                        cand0_diagnostic = {
+                            **common,
+                            "status": "matched_unavailable",
+                            "reason": unavail_reason,
+                            "message": (
+                                f"Queued {contract.purpose.value} task requires {_route_label(task_route)}. "
+                                f"A current worker registered this route, but it is currently unavailable: {reason_desc}."
+                            ),
+                            "guidance": _guidance_for_reason(unavail_reason, task_route.client),
+                        }
+                    else:
+                        first_match = matching_routes[0]
+                        unavail_reason = first_match.get(
+                            "effective_reason", ReadinessReason.UNKNOWN.value
+                        )
+                        reason_desc = _REASON_DESCRIPTIONS.get(unavail_reason, unavail_reason)
+                        cand0_diagnostic = {
+                            **common,
+                            "status": "matched_unavailable",
+                            "reason": unavail_reason,
+                            "message": (
+                                f"Queued {contract.purpose.value} task requires {_route_label(task_route)}. "
+                                f"A current worker registered this route, but it is currently unavailable: {reason_desc}."
+                            ),
+                            "guidance": _guidance_for_reason(unavail_reason, task_route.client),
+                        }
+
+            if diag is None:
+                diag = cand0_diagnostic
 
         task_diags[task_row.id] = diag
         if contract.purpose is SpecialistPurpose.PRIMARY:
