@@ -5963,6 +5963,32 @@ export interface components {
             /** Label */
             label: string;
         };
+        /** SubscriptionQueueDiagnosticView */
+        SubscriptionQueueDiagnosticView: {
+            /** Available Routes */
+            available_routes?: components["schemas"]["AttemptRoute"][];
+            /** Guidance */
+            guidance?: string | null;
+            /** Message */
+            message: string;
+            /** Purpose */
+            purpose: string;
+            /** Reason */
+            reason?: string | null;
+            route: components["schemas"]["AttemptRoute"];
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "no_current_worker" | "no_matching_registered_route" | "matched_unavailable" | "matching_ready";
+            /**
+             * Task Id
+             * Format: uuid
+             */
+            task_id: string;
+            /** Warnings */
+            warnings?: string[];
+        };
         /** SubscriptionRuntimeRouteView */
         SubscriptionRuntimeRouteView: {
             /** Admitted */
@@ -6079,6 +6105,7 @@ export interface components {
             capacity?: components["schemas"]["SubscriptionCapacityView"] | null;
             /** Has More */
             has_more: boolean;
+            queue_diagnostic?: components["schemas"]["SubscriptionQueueDiagnosticView"] | null;
             /** Quota Statuses */
             quota_statuses?: components["schemas"]["QuotaStatusResponse"][];
             /**
@@ -6133,6 +6160,7 @@ export interface components {
             pause_requested: boolean;
             /** Purpose */
             purpose: string;
+            queue_diagnostic?: components["schemas"]["SubscriptionQueueDiagnosticView"] | null;
             quota_status?: components["schemas"]["QuotaStatusResponse"] | null;
             /**
              * Recovery Attention

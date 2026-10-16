@@ -33,6 +33,7 @@ from forge.persistence.models.subscription import (
 from forge.persistence.models.subscription_feedback import SubscriptionTaskFeedback
 from forge.persistence.models.subscription_recovery import SubscriptionApplicationDiagnostic
 from forge.persistence.queries.subscription_capacity import capacity_observation
+from forge.persistence.queries.subscription_queue_diagnostics import assess_queue_diagnostics
 from forge.persistence.queries.subscription_recovery_attention import current_attention
 from forge.persistence.queries.subscription_task_controls import (
     control_view,
@@ -195,6 +196,11 @@ class SubscriptionTaskQuery:
             if capacity is not None:
                 for index, provider in waiting.items():
                     tasks[index]["capacity_waits"] = capacity.waits(provider)
+            task_diags, page_queue_diagnostic = await assess_queue_diagnostics(
+                session, run_id, quota_policy=self._quota_policy
+            )
+            for index, task_view in enumerate(tasks):
+                task_view["queue_diagnostic"] = task_diags.get(ids[index])
             return {
                 "run_id": run_id,
                 "subscription": envelope is not None,
@@ -211,6 +217,7 @@ class SubscriptionTaskQuery:
                 "has_more": has_more,
                 "recovery_attention": recovery_attention,
                 "quota_statuses": [_quota_status(value) for value in quota_statuses],
+                "queue_diagnostic": page_queue_diagnostic,
             }
 
     async def attempts(
