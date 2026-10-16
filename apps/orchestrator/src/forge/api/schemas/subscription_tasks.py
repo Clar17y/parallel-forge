@@ -94,6 +94,24 @@ class SubscriptionTaskView(ProjectionModel):
     capacity_waits: list[Literal["host", "run", "provider"]] = Field(
         default_factory=list, max_length=3
     )
+    queue_diagnostic: SubscriptionQueueDiagnosticView | None = None
+
+
+class SubscriptionQueueDiagnosticView(ProjectionModel):
+    task_id: UUID
+    purpose: str
+    status: Literal[
+        "no_current_worker",
+        "no_matching_registered_route",
+        "matched_unavailable",
+        "matching_ready",
+    ]
+    route: AttemptRoute
+    reason: str | None = None
+    message: str
+    guidance: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+    available_routes: list[AttemptRoute] = Field(default_factory=list, max_length=64)
 
 
 class CapacityLimitView(ProjectionModel):
@@ -127,6 +145,7 @@ class SubscriptionTaskPage(ProjectionModel):
     recovery_attention: bool = False
     quota_statuses: list[QuotaStatusResponse] = Field(default_factory=list, max_length=100)
     capacity: SubscriptionCapacityView | None = None
+    queue_diagnostic: SubscriptionQueueDiagnosticView | None = None
 
 
 class SubscriptionAttemptView(ProjectionModel):

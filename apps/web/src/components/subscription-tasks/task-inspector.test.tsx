@@ -201,3 +201,58 @@ test('shows attention for primary and child task and navigates to the affected a
   expect(screen.getByText(/Next retry: 2026-09-28T10:02:00Z/)).toBeInTheDocument();
   expect(screen.getAllByText(/last completed tool/).length).toBeGreaterThan(0);
 });
+
+test('renders queue diagnostic on page and task cards when unready, and omits when matching_ready', async () => {
+  const unreadyDiagnostic = {
+    status: 'no_matching_registered_route' as const,
+    reason: 'no_matching_route_registered',
+    message: 'Primary task is queued for google / antigravity_cli / gemini-3.8-flash-medium / medium, but no worker has registered a matching route.',
+    guidance: 'Check that a worker with the antigravity_cli client is running and configured.',
+    documentation_url: '/subscription-profiles#client-setup',
+    antigravity_warning: true,
+  };
+
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async input => new Response(JSON.stringify(
+    String(input).includes('/usage-checkpoint') ? { checkpoint: null, report: null } : {
+      run_id: 'run-queue-diag', subscription: true,
+      queue_diagnostic: unreadyDiagnostic,
+      tasks: [
+        {
+          task_id: 'task-unready', parent_task_id: null, dependency_task_ids: [],
+          purpose: 'primary', owned_paths: [], state: 'queued',
+          pause_requested: false, cancel_requested: false, version: 1, repairs: 0, unsettled_effects: 0,
+          queue_diagnostic: unreadyDiagnostic,
+        },
+        {
+          task_id: 'task-ready', parent_task_id: 'task-unready', dependency_task_ids: [],
+          purpose: 'routine_implementation', owned_paths: ['src'], state: 'queued',
+          pause_requested: false, cancel_requested: false, version: 1, repairs: 0, unsettled_effects: 0,
+          queue_diagnostic: {
+            status: 'matching_ready' as const,
+            reason: 'matching_worker_available',
+            message: 'Worker is available to attempt task.',
+            guidance: null,
+            documentation_url: '/subscription-profiles#client-setup',
+            antigravity_warning: false,
+          },
+        },
+      ],
+      has_more: false, quota_statuses: [],
+    }
+  )));
+
+  render(<TaskInspector runId="run-queue-diag" />);
+
+  // Banner should render
+  expect(await screen.findByRole('alert', { name: /Queue diagnostic: matching worker unavailable/i })).toBeInTheDocument();
+  expect(screen.getByText('No matching worker registered')).toBeInTheDocument();
+
+  // Task-specific diagnostic alert on unready task card
+  const taskAlert = screen.getByRole('alert', { name: 'Queue diagnostic for primary task task-unready' });
+  expect(taskAlert).toHaveTextContent('Primary task is queued for google / antigravity_cli');
+  expect(taskAlert).toHaveTextContent('Check that a worker with the antigravity_cli client is running');
+  expect(within(taskAlert).getByRole('link', { name: 'Inspect worker registration and client setup' })).toHaveAttribute('href', '/subscription-profiles#client-setup');
+
+  // Ready task should NOT have a queue diagnostic alert
+  expect(screen.queryByRole('alert', { name: 'Queue diagnostic for routine_implementation task task-ready' })).not.toBeInTheDocument();
+});

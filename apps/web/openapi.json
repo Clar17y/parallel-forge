@@ -10979,6 +10979,83 @@
         "title": "SubscriptionModelOption",
         "type": "object"
       },
+      "SubscriptionQueueDiagnosticView": {
+        "additionalProperties": false,
+        "properties": {
+          "available_routes": {
+            "items": {
+              "$ref": "#/components/schemas/AttemptRoute"
+            },
+            "maxItems": 64,
+            "title": "Available Routes",
+            "type": "array"
+          },
+          "guidance": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Guidance"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "purpose": {
+            "title": "Purpose",
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "route": {
+            "$ref": "#/components/schemas/AttemptRoute"
+          },
+          "status": {
+            "enum": [
+              "no_current_worker",
+              "no_matching_registered_route",
+              "matched_unavailable",
+              "matching_ready"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "task_id": {
+            "format": "uuid",
+            "title": "Task Id",
+            "type": "string"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "task_id",
+          "purpose",
+          "status",
+          "route",
+          "message"
+        ],
+        "title": "SubscriptionQueueDiagnosticView",
+        "type": "object"
+      },
       "SubscriptionRuntimeRouteView": {
         "additionalProperties": false,
         "properties": {
@@ -11330,6 +11407,16 @@
             "title": "Has More",
             "type": "boolean"
           },
+          "queue_diagnostic": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SubscriptionQueueDiagnosticView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "quota_statuses": {
             "items": {
               "$ref": "#/components/schemas/QuotaStatusResponse"
@@ -11478,6 +11565,16 @@
           "purpose": {
             "title": "Purpose",
             "type": "string"
+          },
+          "queue_diagnostic": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SubscriptionQueueDiagnosticView"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "quota_status": {
             "anyOf": [
