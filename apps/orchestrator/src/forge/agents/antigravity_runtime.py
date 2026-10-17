@@ -286,7 +286,7 @@ def _validate_authoring_usage_binding(
         raise ValueError("usage binding effective route does not match authoring model")
 
 
-def _tokens_from_usage(value: object) -> TokenCounts:
+def _tokens_from_usage(value: object, *, input_includes_cache: bool = True) -> TokenCounts:
     if not isinstance(value, Mapping):
         return TokenCounts(input_tokens=None, output_tokens=None)
     in_t = value.get("input_tokens")
@@ -307,7 +307,14 @@ def _tokens_from_usage(value: object) -> TokenCounts:
     cache_val = cache_t if (type(cache_t) is int and 0 <= cache_t <= MAX_SIGNED_BIGINT) else None
     think_val = think_t if (type(think_t) is int and 0 <= think_t <= MAX_SIGNED_BIGINT) else None
 
-    if cache_val is not None and in_val is not None and cache_val > in_val:
+    if not input_includes_cache:
+        # Antigravity reports uncached input separately from cache reads; Forge's
+        # input includes both. See antigravity.google/docs/cli/headless/.
+        # Without either component the total is unknown, not a partial count.
+        in_val = in_val + cache_val if in_val is not None and cache_val is not None else None
+        if in_val is not None and in_val > MAX_SIGNED_BIGINT:
+            in_val = None
+    elif cache_val is not None and in_val is not None and cache_val > in_val:
         cache_val = None
     if think_val is not None and out_val is not None and think_val > out_val:
         think_val = None
@@ -586,12 +593,10 @@ class AntigravityGateway:
             status = result.failure.value if result.failure else (
                 "interrupted" if interrupted_exc is not None else "succeeded"
             )
-            tokens = publisher.terminal_tokens or _tokens_from_usage(
-                {
-                    "input_tokens": result.telemetry.input_tokens,
-                    "output_tokens": result.telemetry.output_tokens,
-                    "cache_read_tokens": result.telemetry.cached_input_tokens,
-                }
+            tokens = publisher.terminal_tokens or TokenCounts(
+                input_tokens=result.telemetry.input_tokens,
+                output_tokens=result.telemetry.output_tokens,
+                cached_input_tokens=result.telemetry.cached_input_tokens,
             )
             await publisher.emit_final(
                 tokens=tokens, status=status, context=publisher.terminal_context
@@ -781,7 +786,7 @@ class AntigravityGateway:
                 # Startup can fail before a conversation is initialized. Retain
                 # returned usage and backoff classification, never a decision.
                 if publisher is not None:
-                    tokens = _tokens_from_usage(payload.get("usage"))
+                    tokens = _tokens_from_usage(payload.get("usage"), input_includes_cache=False)
                     ctx = _context_from_payload(payload)
                     publisher.capture_terminal(tokens=tokens, context=ctx)
                 telemetry = _usage(payload.get("usage"))
@@ -833,13 +838,13 @@ class AntigravityGateway:
                 if publisher is not None and isinstance(payload, Mapping):
                     usage_data = payload.get("usage")
                     if isinstance(usage_data, Mapping):
-                        tokens = _tokens_from_usage(usage_data)
+                        tokens = _tokens_from_usage(usage_data, input_includes_cache=False)
                         ctx = _context_from_payload(payload)
                         await publisher.emit_live(tokens=tokens, context=ctx)
                 continue
             if event != "result":
                 continue
-            tokens = _tokens_from_usage(payload.get("usage"))
+            tokens = _tokens_from_usage(payload.get("usage"), input_includes_cache=False)
             ctx = _context_from_payload(payload)
             if publisher is not None:
                 publisher.capture_terminal(tokens=tokens, context=ctx)
@@ -948,20 +953,21 @@ def _usage(value: object) -> AttemptTelemetry:
         if count is not None and (type(count) is not int or not 0 <= count <= MAX_SIGNED_BIGINT):
             raise ProtocolError("invalid Antigravity token count")
         counts[name] = count
+    tokens = _tokens_from_usage(value, input_includes_cache=False)
     if (
         counts["input_tokens"] is not None
         and counts["cached_input_tokens"] is not None
-        and counts["cached_input_tokens"] > counts["input_tokens"]
+        and tokens.input_tokens is None
     ):
-        raise ProtocolError("Antigravity cache exceeds input")
+        raise ProtocolError("Antigravity total input exceeds supported range")
     return AttemptTelemetry(
-        input_tokens=counts["input_tokens"],
-        output_tokens=counts["output_tokens"],
-        cached_input_tokens=counts["cached_input_tokens"],
+        input_tokens=tokens.input_tokens,
+        output_tokens=tokens.output_tokens,
+        cached_input_tokens=tokens.cached_input_tokens,
         unknown_telemetry_reasons=("subscription cost and quota telemetry unavailable",)
         + (
             ()
-            if all(counts[name] is not None for name in ("input_tokens", "output_tokens"))
+            if tokens.input_tokens is not None and tokens.output_tokens is not None
             else ("token telemetry unavailable",)
         ),
     )

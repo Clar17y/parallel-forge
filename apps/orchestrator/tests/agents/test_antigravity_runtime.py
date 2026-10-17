@@ -38,6 +38,63 @@ def request():
     )
 
 
+def test_cached_input_is_added_to_antigravity_uncached_input_once():
+    from forge.agents.antigravity_runtime import _tokens_from_usage, _usage
+
+    # Official headless stream example: cache hits are separate from input_tokens.
+    usage = {"input_tokens": 278, "output_tokens": 4, "cache_read_tokens": 30214}
+    tokens = _tokens_from_usage(usage, input_includes_cache=False)
+    assert tokens.input_tokens == 30492
+    assert tokens.cached_input_tokens == 30214
+    telemetry = _usage(usage)
+    assert telemetry.input_tokens == tokens.input_tokens
+    assert telemetry.cached_input_tokens == tokens.cached_input_tokens
+
+
+@pytest.mark.parametrize(
+    "uncached,cached,total",
+    [(13, 2, 15), (2, 2, 4), (0, 2, 2), (0, 0, 0),
+     (13, None, None), (None, 2, None), (None, None, None)],
+)
+def test_antigravity_input_total_requires_both_measured_components(uncached, cached, total):
+    from forge.agents.antigravity_runtime import _tokens_from_usage, _usage
+
+    usage = {"output_tokens": 5}
+    if uncached is not None:
+        usage["input_tokens"] = uncached
+    if cached is not None:
+        usage["cache_read_tokens"] = cached
+    tokens = _tokens_from_usage(usage, input_includes_cache=False)
+    telemetry = _usage(usage)
+    assert tokens.input_tokens == telemetry.input_tokens == total
+    assert tokens.cached_input_tokens == telemetry.cached_input_tokens == cached
+    assert tokens.output_tokens == telemetry.output_tokens == 5
+    assert ("token telemetry unavailable" in telemetry.unknown_telemetry_reasons) == (total is None)
+
+
+@pytest.mark.parametrize("field", ["input_tokens", "output_tokens", "cache_read_tokens"])
+@pytest.mark.parametrize("invalid", [True, -1, 1.5, "2", 2**63])
+def test_antigravity_usage_rejects_invalid_measured_counts(field, invalid):
+    from forge.agents.antigravity_runtime import _usage
+    from forge.agents.subscription_protocol import ProtocolError
+
+    usage = {"input_tokens": 13, "output_tokens": 5, "cache_read_tokens": 2, field: invalid}
+    with pytest.raises(ProtocolError, match="invalid Antigravity token count"):
+        _usage(usage)
+
+
+def test_antigravity_input_sum_is_bounded_without_clamping():
+    from forge.agents.antigravity_runtime import _tokens_from_usage, _usage
+    from forge.agents.subscription_protocol import ProtocolError
+
+    usage = {"input_tokens": 2**63 - 2, "output_tokens": 0, "cache_read_tokens": 1}
+    assert _usage(usage).input_tokens == 2**63 - 1
+    usage["cache_read_tokens"] = 2
+    assert _tokens_from_usage(usage, input_includes_cache=False).input_tokens is None
+    with pytest.raises(ProtocolError, match="total input exceeds supported range"):
+        _usage(usage)
+
+
 def test_role_guidance_keeps_handoffs_for_workers_only():
     from forge.agents.antigravity_runtime import _decision_guidance
 
@@ -89,7 +146,7 @@ async def test_antigravity_uses_real_mcp_and_supervised_stream_without_capabilit
     assert result.failure is None, [value.stderr for value in lifecycle.results]
     assert result.decision.summary == "done"
     assert len(broker.calls) == 1 and broker.revoked
-    assert result.telemetry.input_tokens == 13 and result.telemetry.output_tokens == 5
+    assert result.telemetry.input_tokens == 15 and result.telemetry.output_tokens == 5
     assert result.launch_proof.stop_confirmed
     assert not launch_directories[0].exists()
 
@@ -336,11 +393,11 @@ async def test_token_budget_failure_retains_actual_usage(tmp_path):
     runtime, _ = gateway(tmp_path, "success")
     value = request()
     value = replace(
-        value, task=replace(value.task, budget=replace(value.task.budget, max_input_tokens=10))
+        value, task=replace(value.task, budget=replace(value.task.budget, max_input_tokens=13))
     )
     result = await runtime.execute(value)
     assert result.failure is SubscriptionFailure.BUDGET
-    assert result.telemetry.input_tokens == 13
+    assert result.telemetry.input_tokens == 15
     assert result.telemetry.output_tokens == 5
     assert result.launch_proof.stop_confirmed
 
@@ -357,7 +414,7 @@ async def test_invalid_output_retains_usage_and_explains_the_failure(tmp_path, s
     result = await runtime.execute(request())
     assert result.failure is SubscriptionFailure.PROTOCOL
     assert result.failure_detail == detail
-    assert result.telemetry.input_tokens == 13 and result.telemetry.output_tokens == 5
+    assert result.telemetry.input_tokens == 15 and result.telemetry.output_tokens == 5
     assert result.launch_proof.stop_confirmed
 
 
@@ -371,7 +428,7 @@ async def test_headless_permission_denial_is_not_a_successful_forge_decision(tmp
     assert result.failure is SubscriptionFailure.POLICY_DENIED
     assert result.failure_detail == "Antigravity denied a tool permission in headless mode"
     assert result.decision is None
-    assert result.telemetry.input_tokens == 13 and result.telemetry.output_tokens == 5
+    assert result.telemetry.input_tokens == 15 and result.telemetry.output_tokens == 5
     assert not broker.calls and broker.revoked
     assert result.launch_proof.stop_confirmed
 
@@ -382,7 +439,7 @@ async def test_malformed_denied_actions_cannot_be_accepted_as_success(tmp_path, 
     result = await runtime.execute(request())
     assert result.failure is SubscriptionFailure.PROTOCOL
     assert result.decision is None
-    assert result.telemetry.input_tokens == 13 and result.telemetry.output_tokens == 5
+    assert result.telemetry.input_tokens == 15 and result.telemetry.output_tokens == 5
     assert result.launch_proof.stop_confirmed
 
 

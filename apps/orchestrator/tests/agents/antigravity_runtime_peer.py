@@ -165,6 +165,12 @@ if scenario == "bad_usage":
 if scenario == "large_usage":
     usage["input_tokens"] = 10_000_017
     usage["total_tokens"] = 10_000_022
+if scenario == "cache_heavy_usage":
+    usage.update(input_tokens=278, output_tokens=4, cache_read_tokens=30214, total_tokens=282)
+if scenario == "missing_cache":
+    usage.pop("cache_read_tokens")
+if scenario == "missing_input":
+    usage.pop("input_tokens")
 if scenario == "sparse_zero_usage":
     usage["input_tokens"] = 0
     usage.pop("output_tokens")

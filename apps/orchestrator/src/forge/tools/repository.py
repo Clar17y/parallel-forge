@@ -537,21 +537,23 @@ class RepositoryReader:
             or result.stderr_original_byte_count > _DEFAULT_RG_STREAM_BYTES
         ):
             raise RepositoryAccessDenied("repository search failed")
-        if result.return_code == 1:
-            if result.stdout.strip():
-                raise RepositoryAccessDenied("repository search failed")
-            return ()
-        if result.return_code != 0:
+        if result.return_code not in (0, 1):
             raise RepositoryAccessDenied("repository search failed")
         if not isinstance(result.stdout, str) or not isinstance(result.stderr, str):
             raise RepositoryAccessDenied("repository search output is invalid")
+        if result.return_code == 1 and result.stderr.strip():
+            raise RepositoryAccessDenied("repository search failed")
         if not result.stdout.strip():
+            if result.return_code == 1:
+                return ()
             raise RepositoryAccessDenied("repository search output is invalid")
         if not result.stdout.endswith("\n"):
             raise RepositoryAccessDenied("repository search output is incomplete")
-        return self._parse_rg_output(result.stdout, literal, normalized, entries)[
-            : self._max_search_matches
-        ]
+        matches = self._parse_rg_output(result.stdout, literal, normalized, entries)
+        # rg --json emits a summary even when its exit status reports no matches.
+        if result.return_code == 1 and matches:
+            raise RepositoryAccessDenied("repository search output contradicts exit status")
+        return matches[: self._max_search_matches]
 
     def _parse_rg_output(
         self,
