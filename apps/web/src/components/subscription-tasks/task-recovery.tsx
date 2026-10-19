@@ -11,11 +11,13 @@ type Preview = components['schemas']['RecoveryPreview'];
 type Receipt = components['schemas']['RecoveryReceipt'];
 type Action = PreviewRequest['action'];
 const labels: Record<Action, string> = {
+  acknowledge_interrupted_check: 'Recover interrupted check',
   retry_application: 'Retry saved result',
   reject_and_retry_step: 'Retry step',
   repair_approved_plan_contract: 'Repair approved-plan instructions',
 };
 const descriptions: Record<Action, string> = {
+  acknowledge_interrupted_check: 'Record owner-confirmed process cessation while retaining the unknown check outcome and usage.',
   retry_application: 'Reprocess the saved result without starting another provider attempt.',
   reject_and_retry_step: 'Retain the failed result and queue one fresh attempt after stop evidence is confirmed.',
   repair_approved_plan_contract: 'Replace the approved planning-only instructions with the approved implementation contract, then queue a bounded attempt.',

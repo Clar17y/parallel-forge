@@ -266,6 +266,19 @@ class StateEngine:
             suspension_kind=SuspensionKind.INTERVENTION,
         )
 
+    def resume_interrupted_work(self, run: RunSnapshot) -> RunSnapshot:
+        """Restore execution after an explicit owner settlement of interrupted work."""
+        if (
+            run.state is not RunState.AWAITING_HUMAN_INTERVENTION
+            or run.suspension_kind is not SuspensionKind.INTERVENTION
+            or run.suspended_state not in {
+                RunState.PLANNING, RunState.IMPLEMENTING, RunState.REMEDIATING,
+            }
+            or run.pending_gate is not None
+        ):
+            raise InvalidTransition(run.state, run.state, reason="no interrupted execution to resume")
+        return run.with_state(run.suspended_state)
+
     def resolve_intervention(self, run: RunSnapshot, target: RunState) -> RunSnapshot:
         """Apply a target legal from the state suspended for intervention."""
 

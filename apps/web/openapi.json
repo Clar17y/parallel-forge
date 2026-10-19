@@ -8754,6 +8754,7 @@
       },
       "RecoveryAction": {
         "enum": [
+          "acknowledge_interrupted_check",
           "retry_application",
           "reject_and_retry_step",
           "repair_approved_plan_contract"
@@ -8774,16 +8775,15 @@
             "type": "string"
           },
           "reason": {
+            "default": "",
             "maxLength": 1000,
-            "minLength": 1,
             "title": "Reason",
             "type": "string"
           }
         },
         "required": [
           "action",
-          "preview_token",
-          "reason"
+          "preview_token"
         ],
         "title": "RecoveryApplyRequest",
         "type": "object"

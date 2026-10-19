@@ -790,6 +790,14 @@ class PostgresSubscriptionRecoveryRepository:
     ) -> RecoverySnapshot:
         if locked and not lock_run:
             raise ValueError("locked preview requires run write lock")
+        if action is RecoveryAction.ACKNOWLEDGE_INTERRUPTED_CHECK:
+            from forge.persistence.repositories.subscription_interrupted_check import (
+                InterruptedCheckRecovery,
+            )
+
+            return await InterruptedCheckRecovery(self._session).preview(
+                run_id, task_id, attempt_id, locked=locked, lock_run=lock_run
+            )
 
         def refused(reason: str, binding: str = "") -> RecoverySnapshot:
             return RecoverySnapshot(
@@ -1209,6 +1217,16 @@ class PostgresSubscriptionRecoveryRepository:
         snapshot = await self.preview(run_id, task_id, attempt_id, action, locked=True)
         if not snapshot.eligible or snapshot.binding != binding:
             raise RecoveryConflict("recovery source differs from preview")
+        if action is RecoveryAction.ACKNOWLEDGE_INTERRUPTED_CHECK:
+            from forge.persistence.repositories.subscription_interrupted_check import (
+                InterruptedCheckRecovery,
+            )
+
+            return await InterruptedCheckRecovery(self._session).apply(
+                run_id, task_id, attempt_id, actor_id=actor_id,
+                idempotency_key=idempotency_key, request_digest=request_digest,
+                binding=binding, reason=reason,
+            )
         result = await self._session.get(
             SubscriptionAttemptResult, attempt_id, with_for_update=True
         )

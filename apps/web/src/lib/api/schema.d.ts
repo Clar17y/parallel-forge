@@ -5152,13 +5152,16 @@ export interface components {
          * RecoveryAction
          * @enum {string}
          */
-        RecoveryAction: "retry_application" | "reject_and_retry_step" | "repair_approved_plan_contract";
+        RecoveryAction: "acknowledge_interrupted_check" | "retry_application" | "reject_and_retry_step" | "repair_approved_plan_contract";
         /** RecoveryApplyRequest */
         RecoveryApplyRequest: {
             action: components["schemas"]["RecoveryAction"];
             /** Preview Token */
             preview_token: string;
-            /** Reason */
+            /**
+             * Reason
+             * @default
+             */
             reason: string;
         };
         /** RecoveryBudgetImpact */

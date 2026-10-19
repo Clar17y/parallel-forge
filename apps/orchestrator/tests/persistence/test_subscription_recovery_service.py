@@ -2800,8 +2800,8 @@ async def test_attempts_projection_skips_previews_for_superseded_attempts_and_pa
     assert diag2 is not None
     assert diag2["resolution"] == "attention"
     assert RecoveryAction.REPAIR_APPROVED_PLAN_CONTRACT.value in diag2["eligible_actions"]
-    # Only the latest attempt invoked preview (3 times, once per RecoveryAction)
-    assert preview_calls == [latest_attempt_id, latest_attempt_id, latest_attempt_id]
+    # Only the latest attempt invokes one preview per supported recovery action.
+    assert preview_calls == [latest_attempt_id] * len(RecoveryAction)
     preview_calls.clear()
 
     # 3. Full page containing both attempts
@@ -2816,7 +2816,7 @@ async def test_attempts_projection_skips_previews_for_superseded_attempts_and_pa
         in f_item2["recovery"]["eligible_actions"]
     )
     # Still only the latest attempt was previewed
-    assert preview_calls == [latest_attempt_id, latest_attempt_id, latest_attempt_id]
+    assert preview_calls == [latest_attempt_id] * len(RecoveryAction)
     assert f_item1["recovery"].keys() == f_item2["recovery"].keys()
 
 

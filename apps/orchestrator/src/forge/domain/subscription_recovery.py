@@ -11,6 +11,7 @@ RECOVERY_WORKER_FRESHNESS_SECONDS = 30
 
 
 class RecoveryAction(StrEnum):
+    ACKNOWLEDGE_INTERRUPTED_CHECK = "acknowledge_interrupted_check"
     RETRY_APPLICATION = "retry_application"
     REJECT_AND_RETRY_STEP = "reject_and_retry_step"
     REPAIR_APPROVED_PLAN_CONTRACT = "repair_approved_plan_contract"
@@ -65,7 +66,7 @@ class RecoveryApplyRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     action: RecoveryAction
     preview_token: str = Field(min_length=1, max_length=4096)
-    reason: str = Field(min_length=1, max_length=1000)
+    reason: str = Field(default="", max_length=1000)
 
 
 class RecoveryReceipt(BaseModel):
