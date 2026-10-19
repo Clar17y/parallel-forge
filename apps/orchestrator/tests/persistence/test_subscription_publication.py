@@ -105,8 +105,14 @@ async def approved_publication_case(session_factory, tmp_path):
 
 @pytest.mark.integration
 async def test_acceptance_opens_pr_gate_without_inventing_a_reviewer(session_factory, tmp_path):
-    factory, proposal, dispatch, command, controller, runner, _ = await publication_case(
+    factory, proposal, dispatch, command, controller, runner, git = await publication_case(
         session_factory, tmp_path
+    )
+    diff_text = "diff --git a/example.py b/example.py\n@@ -1 +1 @@\n-old\n+new\n"
+    git.candidate_diff = lambda _: GitCandidateDiff(
+        head_sha=proposal.review.candidate.head_sha,
+        diff=GitDiff(text=diff_text, original_byte_count=len(diff_text.encode()), truncated=False),
+        changed_paths=("example.py",),
     )
     async with factory() as work:
         outcome = await controller.validate(command, work)
@@ -122,6 +128,10 @@ async def test_acceptance_opens_pr_gate_without_inventing_a_reviewer(session_fac
         assert isinstance(evidence, SubscriptionPrApprovalEvidence)
         assert "review_digest" not in evidence.model_dump()
         assert evidence.candidate_tree_digest == proposal.review.candidate.tree_digest
+        assert await dispatch._store.open_bytes(evidence.diff_digest) == diff_text.encode()
+        diff = await work.artifacts.get_by_digest(evidence.diff_digest, run_id=run.id)
+        assert diff.media_type == "text/plain" and not diff.truncated
+        assert diff.metadata["head_sha"] == evidence.candidate_commit
         acceptance = decode_evidence_manifest(
             await dispatch._store.open_bytes(evidence.acceptance_digest)
         )

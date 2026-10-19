@@ -232,7 +232,7 @@ class SubscriptionPublicationController:
             or latest.approval_id != current.approval_id
             or source != proposal
             or receipts != proof
-            or await self._candidate(source) != diff
+            or await self._candidate(source, work=work) != diff
             or await pending_current_control_stop(work, latest.run)
         ):
             raise CommandRecoveryRequired("subscription publication changed during storage")
@@ -373,8 +373,10 @@ class SubscriptionPublicationController:
         ):
             raise CommandRecoveryRequired("subscription reviewed push queue differs")
 
-    async def _candidate(self, source: PreparedSubscriptionAcceptance) -> str:
-        def capture() -> str:
+    async def _candidate(
+        self, source: PreparedSubscriptionAcceptance, *, work: UnitOfWork | None = None
+    ) -> str:
+        def capture() -> bytes:
             git = self._git(source.policy)
             candidate = git.candidate_diff(source.worktree)
             snapshot = git.working_tree_snapshot(
@@ -389,9 +391,34 @@ class SubscriptionPublicationController:
                 or CandidateInspection.from_snapshot(snapshot) != source.review.candidate
             ):
                 raise CommandRecoveryRequired("subscription publication candidate differs")
-            return hashlib.sha256(candidate.diff.text.encode()).hexdigest()
+            return candidate.diff.text.encode()
 
-        return await asyncio.to_thread(capture)
+        data = await asyncio.to_thread(capture)
+        digest = hashlib.sha256(data).hexdigest()
+        if work is not None:
+            descriptor = await self._store.put_bytes(
+                data, media_type="text/plain", max_bytes=max(1, len(data)),
+                bounding_policy="head_tail",
+            )
+            if (
+                descriptor.digest != digest
+                or descriptor.byte_count != len(data)
+                or descriptor.truncated
+                or not await self._store.verify(digest)
+            ):
+                raise CommandRecoveryRequired("subscription candidate diff storage differs")
+            await work.artifacts.record(
+                descriptor,
+                run_id=source.decision.run_id,
+                producer_type="subscription_candidate_diff",
+                producer_id=source.attempt_id,
+                metadata={
+                    "head_sha": source.review.candidate.head_sha,
+                    "base_sha": source.review.candidate.base_sha,
+                    "candidate_tree_digest": source.review.candidate.tree_digest,
+                },
+            )
+        return digest
 
     @staticmethod
     def _decision(
