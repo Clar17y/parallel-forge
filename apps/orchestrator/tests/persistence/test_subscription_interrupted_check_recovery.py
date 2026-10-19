@@ -233,6 +233,53 @@ async def owner_preview(factory, identity):
     )
 
 
+async def test_recovered_interruption_does_not_hold_fresh_work(session_factory, tmp_path):
+    factory, identity, _ = await interrupted_case(session_factory, tmp_path)
+    async with factory() as work:
+        assert await work.session.scalar(select(startup_intervention_hold(identity.run_id)))
+    service, actor, request = await owner_preview(factory, identity)
+    await service.apply(
+        run_id=identity.run_id,
+        task_id=identity.task_id,
+        attempt_id=identity.attempt_id,
+        actor=actor,
+        request=request,
+        idempotency_key="recover-before-fresh-check",
+    )
+    fresh = await SubscriptionDecisionExecutor(factory).admit_next("fresh-owner", _reservation())
+    assert fresh is not None
+    async with factory() as work:
+        fresh_call_id = uuid4()
+        work.session.add(
+            ToolCall(
+                id=fresh_call_id,
+                run_id=identity.run_id,
+                subscription_task_id=fresh.attempt.task_id,
+                subscription_attempt_id=fresh.attempt.attempt_id,
+                subscription_purpose="primary",
+                tool_name=ToolName.BUILD_RUN_NAMED_CHECK.value,
+                arguments_schema_version=1,
+                normalized_arguments={"command_name": "unit"},
+                authorized=True,
+                status="RUNNING",
+                started_at=datetime.now(UTC),
+            )
+        )
+        await work.session.flush()
+        assert await work.session.scalar(select(unresolved_work(identity.run_id)))
+        assert not await work.session.scalar(select(startup_intervention_hold(identity.run_id)))
+
+        # A later interruption is a new episode and must restore the hold.
+        run = await work.runs.get(identity.run_id)
+        await work.runs.intervene(
+            run.id,
+            run.version,
+            "run.recovery_intervention",
+            {"reason": "startup_outcome_unresolved", "tool_call_ids": [str(fresh_call_id)]},
+        )
+        assert await work.session.scalar(select(startup_intervention_hold(identity.run_id)))
+
+
 async def test_owner_settlement_preserves_unknowns_and_replay_is_idempotent(
     session_factory, tmp_path
 ):
