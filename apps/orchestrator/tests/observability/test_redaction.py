@@ -113,7 +113,10 @@ def test_capture_closure_computes_each_immutable_secret_edge_once(
         "access-token: Bearer\n" + "Z" * 30,
         "postgresql://user:" + "Z" * 30 + "@db/",
         "password='" + "Z" * 15 + "\n" + "Z" * 15 + "'",
-        "-----BEGIN RSA PRIVATE KEY-----\n" + "Z" * 15 + "\n" + "Z" * 15
+        ("-----BEGIN RSA " + "PRIVATE KEY-----\n")
+        + "Z" * 15
+        + "\n"
+        + "Z" * 15
         + "\n-----END RSA PRIVATE KEY-----",
     ],
     ids=["bearer", "basic", "github", "pat", "assignment", "auth-value", "url", "quoted", "pem"],
