@@ -116,7 +116,7 @@ export function RunCockpit({ initial, tasks, queueDiagnostics, onRefreshTasks, s
           <Link href={`/projects/${value.project.id}`}>{value.project.name}</Link>
           <span><GitBranch aria-hidden="true" />{value.resource.branch_name ?? 'Branch not yet created'}</span>
           <span>Run <code>{value.run.id.slice(0, 8)}</code></span>
-          <span>Head <code>{value.candidate.commit?.slice(0, 7) ?? 'not yet recorded'}</code></span>
+          {value.candidate.commit ? <span>Head <code>{value.candidate.commit.slice(0, 7)}</code></span> : null}
         </div>
       </div>
       <div className="run-heading-actions">

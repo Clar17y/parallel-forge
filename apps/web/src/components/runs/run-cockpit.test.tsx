@@ -199,3 +199,21 @@ test('the PR outcome panel lives on the overview instead of stacking above every
   await userEvent.click(screen.getByRole('button', { name: 'Overview' }));
   expect(screen.getByRole('region', { name: 'PR / Merge' })).toBeInTheDocument();
 });
+
+test('head badge in run header is absent when candidate commit is null and rendered when commit is present', () => {
+  const initial = projection();
+  initial.candidate.commit = null;
+  const { container, unmount } = render(<RunCockpit initial={initial} />);
+  const metadata = container.querySelector('.run-metadata');
+  expect(metadata).not.toBeNull();
+  expect(metadata).not.toHaveTextContent('Head');
+  expect(screen.queryByText('not yet recorded')).not.toBeInTheDocument();
+  unmount();
+
+  const committed = projection();
+  committed.candidate.commit = '1234567890abcdef';
+  const { container: committedContainer } = render(<RunCockpit initial={committed} />);
+  const committedMetadata = committedContainer.querySelector('.run-metadata');
+  expect(committedMetadata).toHaveTextContent('Head 1234567');
+  expect(screen.getByText('1234567')).toBeInTheDocument();
+});
