@@ -5,12 +5,14 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { Loader2 } from 'lucide-react';
 import { useApi } from '@/hooks/use-api';
+import { useSubscriptionTasks, useSubscriptionTasksContext, type SubscriptionTasksState } from '@/hooks/use-subscription-tasks';
 import { QuotaStatusCard, QuotaStatusList } from './quota-status';
 import { TaskControls, TaskControlSummary } from './task-controls';
 import { TaskFeedback } from './task-feedback';
 import { recoveryReason, TaskRecovery } from './task-recovery';
 import { RecoveryReceiptHistory } from './recovery-receipt-history';
 import { RunUsageCheckpoint } from './run-usage-checkpoint';
+import { RunQueueDiagnosticsBanner } from '@/components/runs/run-queue-diagnostics';
 import type { components } from '@/lib/api/schema';
 
 type TaskPage = components['schemas']['SubscriptionTaskPage'];
@@ -20,11 +22,27 @@ const pageSize = 25;
 const unknown = (value: number | null | undefined) => value == null ? 'Unknown' : value.toLocaleString();
 const routeLabel = (route: Route) => `${route.provider} / ${route.client} / ${route.model} · ${route.effort} · ${route.auth_mode} · ${route.billing_mode}`;
 
-export function TaskInspector({ runId }: { runId: string }) {
-  const [offset, setOffset] = useState(0);
-  const [selected, setSelected] = useState<string | null>(null);
-  const tasks = useApi<TaskPage>(`/runs/${runId}/subscription-tasks?offset=${offset}&limit=${pageSize}`, { refreshIntervalMs: 5000, keepPreviousOnRefresh: true });
-  const movePage = (next: number) => { setSelected(null); setOffset(next); };
+export type TaskInspectorProps = {
+  runId: string;
+  controller?: SubscriptionTasksState;
+};
+
+export function TaskInspector({ runId, controller }: TaskInspectorProps) {
+  const context = useSubscriptionTasksContext();
+  const effective = controller ?? (context && context.runId === runId ? context : null);
+  if (effective) {
+    return <TaskInspectorView runId={runId} controller={effective} />;
+  }
+  return <StandaloneTaskInspector runId={runId} />;
+}
+
+function StandaloneTaskInspector({ runId }: { runId: string }) {
+  const controller = useSubscriptionTasks(runId);
+  return <TaskInspectorView runId={runId} controller={controller} />;
+}
+
+function TaskInspectorView({ runId, controller }: { runId: string; controller: SubscriptionTasksState }) {
+  const { offset, selected, setSelected, movePage, tasks } = controller;
   return <section id="subscription-tasks" aria-label="Run usage and subscription tasks" className="my-6 min-w-0 space-y-4 rounded-lg border border-slate-300 p-4">
     <div className="flex flex-wrap items-center justify-between gap-3">
       <h2 className="text-lg font-semibold">Run usage and subscription tasks</h2>
@@ -43,6 +61,7 @@ export function TaskInspector({ runId }: { runId: string }) {
         <p>Candidate: {tasks.value.candidate_state ?? 'Unknown'} · epoch {unknown(tasks.value.candidate_epoch)}</p>
         <CapacityStatus capacity={tasks.value.capacity} />
         <p><Link href="/subscription-profiles#client-setup">Inspect worker registration and client setup</Link></p>
+        {tasks.value.queue_diagnostic && tasks.value.queue_diagnostic.status !== 'matching_ready' ? <RunQueueDiagnosticsBanner diagnostic={tasks.value.queue_diagnostic} /> : null}
         <QuotaStatusList statuses={tasks.value.quota_statuses ?? []} />
         {tasks.value.recovery_attention ? <p role="alert" className="rounded border border-amber-500 p-3 font-semibold">Recovery attention required: this workflow needs review.</p> : null}
         {tasks.value.tasks.length === 0 ? <p>No tasks on this page.</p> :
@@ -64,6 +83,12 @@ export function TaskInspector({ runId }: { runId: string }) {
             {task.capacity_waits?.length ? <p>Capacity limits reached: {task.capacity_waits.map(value => value === 'run' ? 'this run' : value).join(', ')}</p> : null}
             {task.quota_status ? <QuotaStatusCard status={task.quota_status} /> : null}
             {task.effective_route ? <p>Selected route: {routeLabel(task.effective_route)}{task.fallback_selected ? ' · approved fallback selected' : ' · preferred route'}</p> : null}
+            {task.queue_diagnostic && task.queue_diagnostic.status !== 'matching_ready' ? <div role="alert" className="rounded border border-amber-500 p-2.5 my-1.5 space-y-1 text-sm bg-amber-500/10" aria-label={`Queue diagnostic for ${task.purpose} task ${task.task_id}`}>
+              <p className="font-semibold text-amber-500">{task.queue_diagnostic.status === 'no_current_worker' ? 'No worker reporting' : task.queue_diagnostic.status === 'no_matching_registered_route' ? 'No matching worker registered' : 'Matching worker unavailable'}</p>
+              <p>{task.queue_diagnostic.message}</p>
+              {task.queue_diagnostic.guidance && <p className="opacity-90">{task.queue_diagnostic.guidance}</p>}
+              <p><Link href="/subscription-profiles#client-setup" className="underline underline-offset-4 font-semibold text-blue-400 hover:text-blue-300">Inspect worker registration and client setup</Link></p>
+            </div> : null}
             {selected === task.task_id ? <>
               <TaskFeedback key={`${task.task_id}-feedback`} runId={runId}
                 runVersion={tasks.value!.run_version ?? -1} runIsTerminal={tasks.value!.run_is_terminal ?? false}

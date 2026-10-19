@@ -21,7 +21,12 @@ from forge.domain.subscription import (
     SpecialistPurpose,
     decode_subscription_record,
 )
-from forge.domain.subscription_quota import PoolQuotaStatus, QuotaPolicy, QuotaPoolKey
+from forge.domain.subscription_quota import (
+    PoolQuotaStatus,
+    QuotaPolicy,
+    QuotaPoolKey,
+    task_candidate_routes,
+)
 from forge.persistence.models.run import Run
 from forge.persistence.models.scheduling import SubscriptionScheduledTask
 from forge.persistence.models.subscription import (
@@ -311,34 +316,29 @@ class PostgresSubscriptionQuotaRepository:
         contract = decode_subscription_record(logical.payload)
         if not isinstance(contract, LogicalTaskContract):
             raise TypeError("invalid quota task")
-        available = eligible_routes is None or contract.route.effective in eligible_routes
-        if available and await self.eligible(contract.route.effective):
+        current_available = (
+            eligible_routes is None or contract.route.effective in eligible_routes
+        )
+        if current_available and await self.eligible(contract.route.effective):
             return contract.route
         if contract.purpose is SpecialistPurpose.PRIMARY or contract.route.is_primary:
             return None
         stored = await self._session.get(SubscriptionEnvelope, contract.run_id)
         envelope = decode_subscription_record(stored.payload) if stored else None
-        if not isinstance(envelope, ExecutionEnvelope):
-            return None
-        try:
-            preferred = envelope.route_for(contract.purpose)
-        except KeyError:
-            return None
-        if contract.route.requested != preferred.requested:
-            return None
-        # After a fallback exhausts, the frozen preferred pool may be eligible
-        # again. Preserve its exact mapping instead of manufacturing a new one.
-        for route in (preferred.effective, *envelope.fallbacks_for(contract.purpose)):
+        if envelope is not None and not isinstance(envelope, ExecutionEnvelope):
+            envelope = None
+
+        # The current route was checked above without requiring an envelope.
+        for candidate in task_candidate_routes(contract, envelope)[1:]:
+            route = candidate.route
             if eligible_routes is not None and route not in eligible_routes:
-                continue
-            if route.billing_mode is not contract.route.effective.billing_mode:
-                continue
-            if route.auth_mode is not contract.route.effective.auth_mode:
                 continue
             if not await self.eligible(route):
                 continue
-            if route == preferred.effective:
-                return preferred
+            if candidate.kind == "preferred":
+                assert envelope is not None
+                return envelope.route_for(contract.purpose)
+            assert envelope is not None
             mapping = RouteMapping(
                 requested=contract.route.requested,
                 effective=route,
@@ -346,7 +346,7 @@ class PostgresSubscriptionQuotaRepository:
                 approval_id=f"profile:{envelope.profile_id}:version:{envelope.profile_version}",
                 reason=(
                     "Confirmed quota exhaustion; frozen specialist fallback"
-                    if available
+                    if current_available
                     else "Runtime route unavailable; frozen specialist fallback"
                 ),
             )

@@ -6,7 +6,14 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from forge.domain.subscription import AuthMode, BillingMode, RouteSpec
+from forge.domain.subscription import (
+    AuthMode,
+    BillingMode,
+    ExecutionEnvelope,
+    LogicalTaskContract,
+    RouteSpec,
+    SpecialistPurpose,
+)
 
 _LABEL = re.compile(r"[a-z0-9][a-z0-9_.-]{0,95}\Z", re.ASCII)
 
@@ -99,3 +106,39 @@ class PoolQuotaStatus:
     @property
     def allows_attempt(self) -> bool:
         return self.status != "blocked"
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateTaskRoute:
+    route: RouteSpec
+    kind: Literal["current", "preferred", "fallback"]
+
+
+def task_candidate_routes(
+    contract: LogicalTaskContract,
+    envelope: ExecutionEnvelope | None,
+) -> list[CandidateTaskRoute]:
+    """Pure candidate order: current effective, then frozen preferred + fallbacks for non-primary."""
+    candidates = [CandidateTaskRoute(route=contract.route.effective, kind="current")]
+    if contract.purpose is SpecialistPurpose.PRIMARY or contract.route.is_primary:
+        return candidates
+    if envelope is None or not isinstance(envelope, ExecutionEnvelope):
+        return candidates
+    try:
+        preferred = envelope.route_for(contract.purpose)
+    except KeyError:
+        return candidates
+    if contract.route.requested != preferred.requested:
+        return candidates
+
+    # Preserve the scheduler's frozen order, including its preferred-route recheck.
+    for route in (preferred.effective, *envelope.fallbacks_for(contract.purpose)):
+        if route.billing_mode is not contract.route.effective.billing_mode:
+            continue
+        if route.auth_mode is not contract.route.effective.auth_mode:
+            continue
+        kind: Literal["preferred", "fallback"] = (
+            "preferred" if route == preferred.effective else "fallback"
+        )
+        candidates.append(CandidateTaskRoute(route=route, kind=kind))
+    return candidates
