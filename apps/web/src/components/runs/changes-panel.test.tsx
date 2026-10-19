@@ -25,6 +25,19 @@ test('changes render recorded diff and disclose when its head differs from the c
   expect(screen.getByRole('alert')).toHaveTextContent('earlier candidate');
   expect(screen.getByText('b'.repeat(40))).toBeInTheDocument();
 });
+test('legacy PR gates keep the reviewer diff without subscription acceptance evidence', async () => {
+  const { value, artifact } = fixture();
+  value.run.state = 'AWAITING_PR_APPROVAL'; value.next_gate = 'pr';
+  value.candidate.commit = artifact.head_sha;
+  value.candidate.pending_evidence_digest = 'e'.repeat(64);
+  value.candidate.acceptance_evidence_digest = null;
+  value.candidate.review_evidence_digest = 'f'.repeat(64);
+  vi.mocked(api).mockResolvedValue(artifact);
+  render(<ChangesPanel projection={value} />);
+  expect(await screen.findByText('+new')).toBeInTheDocument();
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  expect(vi.mocked(api).mock.calls.map(([path]) => path)).toEqual([`/artifacts/${artifact.digest}/reviewer-diff`]);
+});
 test.each(['digest', 'run_id', 'producer_execution_id', 'validation_evidence_set_id', 'policy_version'])('changes hide mismatched %s evidence', async field => {
   const { value, artifact } = fixture();
   vi.mocked(api).mockResolvedValue({ ...artifact, [field]: 'wrong' });
