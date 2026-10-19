@@ -276,3 +276,27 @@ test('renders provider-tinted compact role cards with explicit provider labels a
   expect(screen.queryByText(/Input 100000 tokens · Output 8000 tokens · 30 tools · 300 seconds · Cost limit 150 minor currency units/)).not.toBeInTheDocument();
   expect(screen.getAllByText(/All policy limits/i)).toHaveLength(3);
 });
+
+test('displays project policy models heading and explanatory help before and after selecting a profile override', async () => {
+  vi.mocked(api).mockResolvedValueOnce([{
+    profile_id: 'profile-1',
+    version: 3,
+    preferences: [{ purpose: 'primary', preferred_route: { provider: 'openai', model: 'gpt-test' } }],
+    approved_mappings: [],
+    default_billing_mode: 'allowance_only',
+    jev: null,
+  }]);
+  render(<NewRunForm projects={[project]} onCreated={vi.fn()} />);
+  await screen.findByRole('option', { name: /profile-1/ });
+
+  expect(screen.getByRole('heading', { name: 'Project policy models' })).toBeInTheDocument();
+  expect(screen.queryByRole('heading', { name: 'Assigned Agent Roles' })).not.toBeInTheDocument();
+  expect(screen.getByText(/Subscription runs use the selected profile's primary and specialist routes\. Changing the subscription profile does not change these project policy models\./)).toBeInTheDocument();
+
+  const user = userEvent.setup();
+  await user.selectOptions(screen.getByLabelText('Subscription profile'), 'profile-1:3');
+
+  expect(screen.getByRole('heading', { name: 'Project policy models' })).toBeInTheDocument();
+  expect(screen.queryByRole('heading', { name: 'Assigned Agent Roles' })).not.toBeInTheDocument();
+  expect(screen.getByText(/Subscription runs use the selected profile's primary and specialist routes\. Changing the subscription profile does not change these project policy models\./)).toBeInTheDocument();
+});

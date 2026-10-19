@@ -292,8 +292,11 @@ function ProjectRunSummary({ project }: { project: Project }) {
       </dl>
 
       <h3 style={{ marginTop: '16px', marginBottom: '8px', fontSize: '0.8125rem', textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--muted)' }}>
-        Assigned Agent Roles
+        Project policy models
       </h3>
+      <p className="meta">
+        Subscription runs use the selected profile&apos;s primary and specialist routes. Changing the subscription profile does not change these project policy models.
+      </p>
       {roles.map(({ key, name }) => {
         const model = policy?.[`${key}_model` as keyof typeof policy] as components['schemas']['AgentModelPolicy'] | undefined;
         const cue = getProviderCue(model?.provider);
