@@ -7,7 +7,7 @@ import EvaluationsPage from './evaluations/page';
 import { api } from '@/lib/api/client';
 
 vi.mock('@/lib/api/client', () => ({ api: vi.fn() }));
-afterEach(() => { cleanup(); vi.mocked(api).mockReset(); });
+afterEach(() => { cleanup(); vi.mocked(api).mockReset(); window.history.replaceState(null, '', '/'); });
 
 function mockUsage(load: () => unknown | Promise<unknown>) {
   vi.mocked(api).mockImplementation(async <T,>(path: string) => {
@@ -31,6 +31,7 @@ function mockUsage(load: () => unknown | Promise<unknown>) {
 test('usage shows dimensions, distinguishes unpriced calls and requests the next server page', async () => {
   mockUsage(() => ({ items: [{ project_id: 'p1', run_id: 'r1', provider: 'fixture', model: 'model-a', currency: 'USD', input_tokens: 20, output_tokens: 4, duration_ms: 200, known_cost_minor: 7, unpriced_calls: 1, model_calls: 2 }], truncated: true }));
   render(<UsagePage />);
+  await userEvent.click(screen.getByRole('button', { name: 'API usage' }));
   expect(await screen.findByText('fixture / model-a')).toBeInTheDocument();
   expect(screen.getByText('7 USD minor units')).toBeInTheDocument();
   expect(screen.getByText('1 call with unknown cost')).toBeInTheDocument();
@@ -57,6 +58,7 @@ test.each([false, true])('evaluations preserve persisted status and prompt linea
 test('failed usage load exposes retry and clears the error after successful refresh', async () => {
   mockUsage(vi.fn().mockRejectedValueOnce(new Error('unavailable')).mockResolvedValueOnce({ items: [], truncated: false }));
   render(<UsagePage />);
+  await userEvent.click(screen.getByRole('button', { name: 'API usage' }));
   expect(await screen.findByRole('alert')).toHaveTextContent('Usage unavailable');
   await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
   expect(await screen.findByText('No usage on this page.')).toBeInTheDocument();
@@ -70,7 +72,7 @@ test('audit applies source-aware filters and links exact event evidence', async 
     operations: [{ id: 'op-1', kind: 'push_branch', status: 'PENDING' }], payload: { note: '<script>untrusted</script>' } }], truncated: true });
   render(<AuditPage />);
   expect(await screen.findByText('tool.observed')).toBeInTheDocument();
-  expect(screen.getByRole('link', { name: 'Event evidence' })).toHaveAttribute('href', '/api/audit/run-events/event-1');
+  expect(screen.getByRole('link', { name: 'Raw JSON' })).toHaveAttribute('href', '/api/audit/run-events/event-1');
   await userEvent.type(screen.getByLabelText('Run ID'), '11111111-1111-4111-8111-111111111111');
   await userEvent.selectOptions(screen.getByLabelText('Current operation status'), 'PENDING');
   await userEvent.click(screen.getByRole('button', { name: 'Apply filters' }));

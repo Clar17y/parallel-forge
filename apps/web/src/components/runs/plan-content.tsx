@@ -46,7 +46,17 @@ export function parsePlan(text: string): Plan | null {
   }
 }
 
+const OPTIONAL_SECTIONS = [
+  ['assumptions', 'Assumptions'],
+  ['security_considerations', 'Security considerations'],
+  ['dependency_changes', 'Dependency changes'],
+] as const;
+
 export function PlanContent({ plan }: { plan: Plan }): ReactNode {
+  const optionalKeys = new Set(['assumptions', 'security_considerations', 'dependency_changes']);
+  const emptyOptional = OPTIONAL_SECTIONS.filter(([key]) => plan[key].length === 0);
+  const shouldConsolidateEmpty = emptyOptional.length > 1;
+
   return (
     <>
       <p>{plan.summary}</p>
@@ -64,20 +74,45 @@ export function PlanContent({ plan }: { plan: Plan }): ReactNode {
           )}
         </section>
       )}
-      {PLAN_SECTIONS.map(([key, label]) => (
-        <section key={key}>
-          <h3>{label}</h3>
-          {plan[key].length ? (
-            <ol>
-              {plan[key].map((item, index) => (
-                <li key={index}>{item}</li>
-              ))}
-            </ol>
-          ) : (
-            <p>None recorded</p>
-          )}
+      {PLAN_SECTIONS.map(([key, label]) => {
+        const isOptional = optionalKeys.has(key);
+        if (isOptional && shouldConsolidateEmpty && plan[key].length === 0) {
+          return null;
+        }
+        return (
+          <section key={key}>
+            <h3>{label}</h3>
+            {plan[key].length ? (
+              plan[key].length > 4 ? (
+                <details className="plan-section-disclosure">
+                  <summary style={{ cursor: 'pointer', fontSize: '0.875rem', color: 'var(--muted)', marginBottom: '6px' }}>
+                    {plan[key].length} {label.toLowerCase()}
+                  </summary>
+                  <ol>
+                    {plan[key].map((item, index) => (
+                      <li key={index}>{item}</li>
+                    ))}
+                  </ol>
+                </details>
+              ) : (
+                <ol>
+                  {plan[key].map((item, index) => (
+                    <li key={index}>{item}</li>
+                  ))}
+                </ol>
+              )
+            ) : (
+              <p>None recorded</p>
+            )}
+          </section>
+        );
+      })}
+      {shouldConsolidateEmpty && (
+        <section className="plan-supporting-summary">
+          <h3>Supporting considerations</h3>
+          <p>None recorded for: {emptyOptional.map(([, label]) => label).join(', ')}.</p>
         </section>
-      ))}
+      )}
     </>
   );
 }

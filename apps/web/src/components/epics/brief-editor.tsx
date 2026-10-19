@@ -39,35 +39,67 @@ interface BriefListRowsProps {
 function BriefListRows({
   rows,
   field,
-  inputClassName = 'flex-1 px-2 py-1 text-sm border border-[var(--control-border)] rounded',
+  inputClassName = 'flex-1 px-2.5 py-1.5 text-sm border border-[var(--control-border)] rounded bg-[var(--surface)] text-[var(--text)] min-h-[52px] focus:outline-none focus:border-[var(--focus)]',
   update,
   remove,
 }: BriefListRowsProps) {
   return (
     <div className="space-y-2">
-      {rows.map((item, idx) => (
-        <div key={idx} className="flex items-center space-x-2">
-          <input
-            type="text"
-            aria-label={getBriefItemLabel(field, idx)}
-            className={inputClassName}
-            value={item}
-            onChange={e => update(idx, e.target.value)}
-          />
-          <Button type="button" variant="quiet" onClick={() => remove(idx)}>
-            ×
-          </Button>
-        </div>
-      ))}
+      {rows.map((item, idx) => {
+        const label = getBriefItemLabel(field, idx);
+        return (
+          <div key={idx} className="flex items-start space-x-2">
+            <textarea
+              rows={2}
+              aria-label={label}
+              className={inputClassName}
+              value={item}
+              onChange={e => update(idx, e.target.value)}
+            />
+            <Button
+              type="button"
+              variant="quiet"
+              className="text-[var(--danger)] text-sm pt-1"
+              aria-label={`Remove ${label}`}
+              onClick={() => remove(idx)}
+            >
+              ×
+            </Button>
+          </div>
+        );
+      })}
     </div>
   );
 }
 
-export function BriefEditor({ epicId, onBrainstorm }: { epicId: string; onBrainstorm?: () => void }) {
+export function getBriefMissingContent(content: { problem?: string; outcomes?: string[]; requirements?: BriefRequirement[] } | undefined): string[] {
+  if (!content) return ['brief content is missing'];
+  const missing: string[] = [];
+  if (!content.problem || !content.problem.trim()) {
+    missing.push('problem statement');
+  }
+  if (!content.outcomes || content.outcomes.length === 0 || content.outcomes.every(o => !o.trim())) {
+    missing.push('at least one outcome');
+  }
+  if (!content.requirements || content.requirements.length === 0) {
+    missing.push('at least one requirement');
+  } else {
+    const reqsWithoutCriteria = content.requirements
+      .map((r, idx) => (!r.acceptance_criteria || r.acceptance_criteria.length === 0 || r.acceptance_criteria.every(c => !c.trim())) ? `Requirement #${idx + 1}` : null)
+      .filter(Boolean);
+    if (reqsWithoutCriteria.length > 0) {
+      missing.push(`acceptance criteria for ${reqsWithoutCriteria.join(', ')}`);
+    }
+  }
+  return missing;
+}
+
+export function BriefEditor({ epicId, onBrainstorm, initialView }: { epicId: string; onBrainstorm?: () => void; initialView?: 'editor' | 'accepted' | 'history' }) {
   const workspace = useEpicWorkspace(epicId);
-  const [viewTab, setViewTab] = useState<'editor' | 'accepted' | 'history'>('editor');
+  const [chosenView, setViewTab] = useState<'editor' | 'accepted' | 'history' | null>(initialView ?? null);
   const [saveSuccess, setSaveSuccess] = useState<string | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
+  const [lastAdoptedRevId, setLastAdoptedRevId] = useState<string | null>(null);
 
   const {
     epic,
@@ -101,6 +133,8 @@ export function BriefEditor({ epicId, onBrainstorm }: { epicId: string; onBrains
     mutations,
   } = workspace;
 
+  const viewTab = chosenView ?? (!isDirty && epic?.accepted_brief_revision_id ? 'accepted' : 'editor');
+
   const statusRef = useRef<HTMLDivElement>(null);
   const { registerCompletion } = mutations;
   const isBriefAction = !mutations.actionKind || ['brief-draft', 'brief-revision', 'brief-adoption'].includes(mutations.actionKind);
@@ -119,6 +153,7 @@ export function BriefEditor({ epicId, onBrainstorm }: { epicId: string; onBrains
   const titleChanged = draftTitle !== epic?.title;
 
   if (loading && !epic) {
+
     return <LoadingStatus>Loading epic requirements brief…</LoadingStatus>;
   }
 
@@ -184,6 +219,7 @@ export function BriefEditor({ epicId, onBrainstorm }: { epicId: string; onBrains
   };
 
   const handleAdopt = async (revId: string, digest: string) => {
+    setLastAdoptedRevId(revId);
     setSaveSuccess(null);
     try {
       await adoptBrief(revId, digest);
@@ -192,35 +228,45 @@ export function BriefEditor({ epicId, onBrainstorm }: { epicId: string; onBrains
     }
   };
 
+
   return (
     <div className="brief-workspace space-y-6">
-      {onBrainstorm && <Panel title="Start with an idea" description="A rough idea is enough. Brainstorm with the assistant, then review any proposed brief before adopting it.">
-        <Button variant="secondary" onClick={onBrainstorm}>Get help brainstorming</Button>
-      </Panel>}
+      {onBrainstorm && !epic?.accepted_brief_revision_id && (
+        <Panel title="Start with an idea" description="A rough idea is enough. Brainstorm with the assistant, then review any proposed brief before adopting it.">
+          <Button variant="secondary" onClick={onBrainstorm}>Get help brainstorming</Button>
+        </Panel>
+      )}
       {/* Navigation tabs */}
-      <nav aria-label="Brief views" className="flex space-x-2 border-b border-[var(--border)] pb-2">
-        <Button
-          variant={viewTab === 'editor' ? 'primary' : 'quiet'}
-          aria-current={viewTab === 'editor' ? 'page' : undefined}
-          onClick={() => setViewTab('editor')}
-        >
-          Draft Editor
-        </Button>
-        <Button
-          variant={viewTab === 'accepted' ? 'primary' : 'quiet'}
-          aria-current={viewTab === 'accepted' ? 'page' : undefined}
-          onClick={() => setViewTab('accepted')}
-        >
-          Accepted Brief
-        </Button>
-        <Button
-          variant={viewTab === 'history' ? 'primary' : 'quiet'}
-          aria-current={viewTab === 'history' ? 'page' : undefined}
-          onClick={() => setViewTab('history')}
-        >
-          History & Revisions ({briefRevisions.length})
-        </Button>
-      </nav>
+      <div className="flex flex-wrap items-center justify-between border-b border-[var(--border)] pb-2 gap-2">
+        <nav aria-label="Brief views" className="flex space-x-2">
+          <Button
+            variant={viewTab === 'editor' ? 'primary' : 'quiet'}
+            aria-current={viewTab === 'editor' ? 'page' : undefined}
+            onClick={() => setViewTab('editor')}
+          >
+            Draft Editor
+          </Button>
+          <Button
+            variant={viewTab === 'accepted' ? 'primary' : 'quiet'}
+            aria-current={viewTab === 'accepted' ? 'page' : undefined}
+            onClick={() => setViewTab('accepted')}
+          >
+            Accepted Brief
+          </Button>
+          <Button
+            variant={viewTab === 'history' ? 'primary' : 'quiet'}
+            aria-current={viewTab === 'history' ? 'page' : undefined}
+            onClick={() => setViewTab('history')}
+          >
+            History & Revisions ({briefRevisions.length})
+          </Button>
+        </nav>
+        {onBrainstorm && epic?.accepted_brief_revision_id && (
+          <Button variant="quiet" onClick={onBrainstorm}>
+            Get help brainstorming
+          </Button>
+        )}
+      </div>
 
       {/* Uncertainty Retry Banner */}
       {mutations.hasPendingRetry && !mutations.loading && !mutations.shared && (
@@ -268,7 +314,21 @@ export function BriefEditor({ epicId, onBrainstorm }: { epicId: string; onBrains
           </Button>
         </div>
       )}
-      {(mutations.error && !mutations.conflict && !mutations.hasPendingRetry && isBriefAction) && <p role="alert">{mutations.error}</p>}
+      {(() => {
+        if (!mutations.error || mutations.conflict || mutations.hasPendingRetry || !isBriefAction) return null;
+        if (mutations.actionKind === 'brief-adoption') {
+          const rev = briefRevisions.find(r => r.brief_revision_id === lastAdoptedRevId);
+          const missing = rev ? getBriefMissingContent(rev.content) : [];
+          if (missing.length > 0) {
+            return (
+              <p role="alert">
+                Validation failed: Revision #{rev?.revision_number ?? ''} cannot be adopted because it is missing: {missing.join(', ')}. Complete these required fields in the draft editor and save a new revision.
+              </p>
+            );
+          }
+        }
+        return <p role="alert">{mutations.error}</p>;
+      })()}
       {localError && <p role="alert">{localError}</p>}
 
       {/* Success Notification */}
@@ -384,10 +444,10 @@ export function BriefEditor({ epicId, onBrainstorm }: { epicId: string; onBrains
                       >
                         Requirement text
                       </label>
-                      <input
+                      <textarea
                         id={`req-text-${req.requirement_id}`}
-                        type="text"
-                        className="w-full px-3 py-1.5 border border-[var(--control-border)] rounded bg-[var(--surface)] text-sm"
+                        rows={2}
+                        className="w-full px-3 py-1.5 border border-[var(--control-border)] rounded bg-[var(--surface)] text-sm min-h-[56px] focus:outline-none focus:border-[var(--focus)]"
                         value={req.text}
                         onChange={e => updateRequirement(req.requirement_id, e.target.value)}
                         placeholder="Requirement statement..."
@@ -411,11 +471,11 @@ export function BriefEditor({ epicId, onBrainstorm }: { epicId: string; onBrains
                       </div>
 
                       {(req.acceptance_criteria ?? []).map((crit, cIdx) => (
-                        <div key={cIdx} className="flex items-center space-x-2">
-                          <input
-                            type="text"
+                        <div key={cIdx} className="flex items-start space-x-2">
+                          <textarea
+                            rows={2}
                             aria-label={`Criterion ${cIdx + 1} for requirement ${reqIdx + 1}`}
-                            className="flex-1 px-2.5 py-1 text-xs border border-[var(--control-border)] rounded bg-[var(--surface)]"
+                            className="flex-1 px-2.5 py-1 text-xs border border-[var(--control-border)] rounded bg-[var(--surface)] min-h-[44px] focus:outline-none focus:border-[var(--focus)]"
                             value={crit}
                             onChange={e => {
                               const updated = [...(req.acceptance_criteria ?? [])];
@@ -427,7 +487,8 @@ export function BriefEditor({ epicId, onBrainstorm }: { epicId: string; onBrains
                           <Button
                             type="button"
                             variant="quiet"
-                            className="text-xs text-[var(--danger)]"
+                            className="text-xs text-[var(--danger)] pt-1"
+                            aria-label={`Remove criterion ${cIdx + 1} for requirement ${reqIdx + 1}`}
                             onClick={() => {
                               const updated = [...(req.acceptance_criteria ?? [])];
                               updated.splice(cIdx, 1);
@@ -585,69 +646,123 @@ export function BriefEditor({ epicId, onBrainstorm }: { epicId: string; onBrains
                 </EvidenceDetails>
               </div>
 
-              <div>
-                <h4 className="font-semibold text-sm mb-1">Problem Statement</h4>
-                <p className="text-sm bg-[var(--surface-muted)] p-3 rounded">{acceptedBrief.problem}</p>
+              <nav aria-label="Accepted brief sections" className="flex flex-wrap gap-2 text-xs border-b border-[var(--border)] pb-2 text-[var(--muted)]">
+                <a href="#brief-problem" className="hover:text-[var(--focus)] hover:underline">Problem</a>
+                <span>•</span>
+                <a href="#brief-requirements" className="hover:text-[var(--focus)] hover:underline">Requirements ({(acceptedBrief.requirements ?? []).length})</a>
+                <span>•</span>
+                <a href="#brief-scope-outcomes" className="hover:text-[var(--focus)] hover:underline">Outcomes & Scope</a>
+                <span>•</span>
+                <a href="#brief-decisions" className="hover:text-[var(--focus)] hover:underline">Decisions & Context</a>
+              </nav>
+
+              <div id="brief-problem" className="space-y-1">
+                <h3 className="font-semibold text-sm">Problem Statement</h3>
+                <p className="text-sm bg-[var(--surface-muted)] p-3 rounded border border-[var(--border)] readable-prose whitespace-pre-wrap leading-relaxed">{acceptedBrief.problem}</p>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                {([
-                  ['Outcomes', acceptedBrief.outcomes ?? []],
-                  ['Scope', acceptedBrief.scope ?? []],
-                  ['Exclusions', acceptedBrief.exclusions ?? []],
-                ] as const).map(([title, rows]) => <div key={title} className="p-3 border border-[var(--border)] rounded text-sm">
-                  <h4 className="font-semibold mb-1">{title}</h4>
-                  {rows.length ? <ul className="list-disc pl-4 space-y-1">{rows.map((row, index) => <li key={index}>{row}</li>)}</ul> : <p className="text-[var(--muted)]">None recorded.</p>}
-                </div>)}
+              <div id="brief-requirements" className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <h3 className="font-semibold text-sm">Requirements ({(acceptedBrief.requirements ?? []).length})</h3>
+                  <span className="text-xs text-[var(--muted)]">Independent expandable requirement cards</span>
+                </div>
+                <div className="space-y-3">
+                  {(acceptedBrief.requirements ?? []).map((req, idx) => {
+                    const isShort = req.text.trim().length <= 80 && !req.text.includes('\n');
+                    const summaryText = isShort ? req.text : `${req.text.slice(0, 80).trim()}…`;
+                    return (
+                      <details key={req.requirement_id} className="disclosure-card border border-[var(--border)] rounded bg-[var(--surface)] group">
+                        <summary className="disclosure-summary p-3 cursor-pointer flex flex-wrap items-center justify-between gap-2 hover:bg-[var(--surface-muted)] transition-colors rounded">
+                          <span className="font-medium text-sm flex items-center gap-2">
+                            <span className="text-xs px-2 py-0.5 rounded bg-[var(--surface-muted)] border border-[var(--border)] font-semibold text-[var(--muted)]">R{idx + 1}</span>
+                            <span className="line-clamp-1">{summaryText}</span>
+                          </span>
+                          <StatusBadge label={`${(req.acceptance_criteria ?? []).length} criteria`} tone="neutral" />
+                        </summary>
+                        <div className="disclosure-body p-4 border-t border-[var(--border)] space-y-3 bg-[var(--surface)]">
+                          {!isShort && (
+                            <p className="text-sm readable-prose whitespace-pre-wrap leading-relaxed">{req.text}</p>
+                          )}
+                          <EvidenceDetails summary="Requirement ID">
+                            <span>{req.requirement_id}</span>
+                          </EvidenceDetails>
+                          <div className="space-y-1 pt-1">
+                            <h4 className="text-xs font-semibold text-[var(--muted)] uppercase tracking-wider">Acceptance criteria</h4>
+                            <ul className="list-disc pl-5 text-sm text-[var(--muted)] space-y-1 leading-relaxed">
+                              {(req.acceptance_criteria ?? []).map((crit, cIdx) => (
+                                <li key={cIdx} className="text-sm text-[var(--foreground)]">{crit}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        </div>
+                      </details>
+                    );
+                  })}
+                </div>
               </div>
 
-              <div>
-                <h4 className="font-semibold text-sm mb-2">Requirements</h4>
-                <div className="space-y-2">
-                  {(acceptedBrief.requirements ?? []).map((req, idx) => (
-                    <div key={req.requirement_id} className="p-3 border border-[var(--border)] rounded text-sm space-y-1">
-                      <p className="font-medium">
-                        {idx + 1}. {req.text}
-                      </p>
-                      <EvidenceDetails summary="Requirement ID">
-                        <span>{req.requirement_id}</span>
-                      </EvidenceDetails>
-                      <ul className="list-disc pl-5 text-xs text-[var(--muted)] space-y-0.5 mt-1">
-                        {(req.acceptance_criteria ?? []).map((crit, cIdx) => (
-                          <li key={cIdx}>{crit}</li>
-                        ))}
-                      </ul>
+              <div id="brief-scope-outcomes" className="space-y-2">
+                <h3 className="font-semibold text-sm">Outcomes & Scope</h3>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  {([
+                    ['Outcomes', acceptedBrief.outcomes ?? []],
+                    ['Scope', acceptedBrief.scope ?? []],
+                    ['Exclusions', acceptedBrief.exclusions ?? []],
+                  ] as const).map(([title, rows]) => (
+                    <div key={title} className="p-3 border border-[var(--border)] rounded text-sm bg-[var(--surface)]">
+                      <h4 className="font-semibold mb-1">{title}</h4>
+                      {rows.length ? (
+                        <ul className="list-disc pl-4 space-y-1 text-sm">{rows.map((row, index) => <li key={index}>{row}</li>)}</ul>
+                      ) : (
+                        <p className="text-[var(--muted)] text-xs">None recorded.</p>
+                      )}
                     </div>
                   ))}
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                <div className="p-3 rounded border border-[var(--accent)] bg-[var(--accent-soft)] text-sm">
-                  <h5 className="font-semibold text-[var(--accent)] mb-1">Decisions</h5>
-                  <ul className="list-disc pl-4 text-xs space-y-1">
-                    {(acceptedBrief.decisions ?? []).map((d, i) => (
-                      <li key={i}>{d}</li>
-                    ))}
-                  </ul>
-                </div>
-                <div className="p-3 rounded border border-[var(--info)] bg-[var(--info-soft)] text-sm">
-                  <h5 className="font-semibold text-[var(--info)] mb-1">Assumptions</h5>
-                  <ul className="list-disc pl-4 text-xs space-y-1">
-                    {(acceptedBrief.assumptions ?? []).map((a, i) => (
-                      <li key={i}>{a}</li>
-                    ))}
-                  </ul>
-                </div>
-                <div className="p-3 rounded border border-[var(--warning)] bg-[var(--warning-soft)] text-sm">
-                  <h5 className="font-semibold text-[var(--warning)] mb-1">Open Questions</h5>
-                  <ul className="list-disc pl-4 text-xs space-y-1">
-                    {(acceptedBrief.open_questions ?? []).map((q, i) => (
-                      <li key={i}>{q}</li>
-                    ))}
-                  </ul>
-                </div>
+              <div id="brief-decisions" className="space-y-2">
+                <h3 className="font-semibold text-sm">Decisions & Context</h3>
+                {!(acceptedBrief.decisions?.length || acceptedBrief.assumptions?.length || acceptedBrief.open_questions?.length) ? (
+                  <p className="text-xs text-[var(--muted)] p-3 border border-[var(--border)] rounded bg-[var(--surface)]">
+                    No decisions, assumptions, or open questions recorded in this accepted brief.
+                  </p>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    {acceptedBrief.decisions && acceptedBrief.decisions.length > 0 ? (
+                      <div className="p-3 rounded border border-[var(--accent)] bg-[var(--accent-soft)] text-sm">
+                        <h4 className="font-semibold text-[var(--accent)] mb-1">Decisions</h4>
+                        <ul className="list-disc pl-4 text-xs space-y-1">
+                          {acceptedBrief.decisions.map((d, i) => (
+                            <li key={i}>{d}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : null}
+                    {acceptedBrief.assumptions && acceptedBrief.assumptions.length > 0 ? (
+                      <div className="p-3 rounded border border-[var(--info)] bg-[var(--info-soft)] text-sm">
+                        <h4 className="font-semibold text-[var(--info)] mb-1">Assumptions</h4>
+                        <ul className="list-disc pl-4 text-xs space-y-1">
+                          {acceptedBrief.assumptions.map((a, i) => (
+                            <li key={i}>{a}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : null}
+                    {acceptedBrief.open_questions && acceptedBrief.open_questions.length > 0 ? (
+                      <div className="p-3 rounded border border-[var(--warning)] bg-[var(--warning-soft)] text-sm">
+                        <h4 className="font-semibold text-[var(--warning)] mb-1">Open Questions</h4>
+                        <ul className="list-disc pl-4 text-xs space-y-1">
+                          {acceptedBrief.open_questions.map((q, i) => (
+                            <li key={i}>{q}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : null}
+                  </div>
+                )}
               </div>
+
             </div>
           )}
         </Panel>

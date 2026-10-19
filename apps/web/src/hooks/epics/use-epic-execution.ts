@@ -52,8 +52,18 @@ export function useEpicExecution(epicId: string, initialExecutionId?: string | n
       const url = new URL(window.location.href);
       if (id) url.searchParams.set('execution_id', id);
       else url.searchParams.delete('execution_id');
-      window.history.replaceState(window.history.state, '', url);
+      window.history.replaceState(window.history.state, '', url.pathname + url.search);
     }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handlePopState = () => {
+      const urlId = new URL(window.location.href).searchParams.get('execution_id');
+      setExecutionIdState(urlId);
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
   }, []);
 
   // Execution discovery

@@ -68,14 +68,10 @@ describe('SubscriptionProfilesPage', () => {
 
     expect(screen.getByRole('heading', { name: 'Subscription profiles' })).toBeInTheDocument();
     expect(screen.getByText(/Manage versioned requested routes and explicit fallbacks/i)).toBeInTheDocument();
-    expect(screen.getByText('Worker and client reports')).toBeInTheDocument();
-    expect(screen.getByText('Worker and client reports').closest('details')).not.toHaveAttribute('open');
-    await userEvent.click(screen.getByText('Worker and client reports'));
     expect(await screen.findByText('Subscription readiness')).toBeInTheDocument();
 
-    // Profiles load and display
-    await userEvent.click(screen.getByText(/Saved profile history/));
-    expect(await screen.findByRole('heading', { name: /Profile test-profile-1/i })).toBeInTheDocument();
+    // Profiles load and display directly
+    expect(await screen.findByRole('heading', { name: /gpt-6-astra.*Profile test-pro.*version 1/i })).toBeVisible();
   });
 
   test('keeps profile editor mounted and visible during background profile refresh', async () => {
@@ -117,7 +113,7 @@ describe('SubscriptionProfilesPage', () => {
     render(<SubscriptionProfilesPage />);
 
     await userEvent.click(await screen.findByText(/Saved profile history/));
-    expect(await screen.findByRole('heading', { name: /Profile test-profile-1/i })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: /gpt-6-astra.*Profile test-pro.*version 1/i })).toBeVisible();
 
     // Open append editor
     await userEvent.click(screen.getByRole('button', { name: 'Append from latest version 1' }));
@@ -170,5 +166,30 @@ describe('SubscriptionProfilesPage', () => {
 
     expect(await screen.findByRole('alert')).toHaveTextContent(/Profile history unavailable/i);
     expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+  });
+
+  test('provides valid deep link targets for client-setup, profile-history, and profile-editor', async () => {
+    vi.stubGlobal('fetch', mockFetch());
+    const { container } = render(<SubscriptionProfilesPage />);
+
+    // Wait for profiles to load so profile-editor is mounted
+    await screen.findByRole('heading', { name: /gpt-6-astra.*Profile test-pro.*version 1/i });
+
+    // Deep link nav
+    const nav = screen.getByRole('navigation', { name: 'Section navigation' });
+    expect(nav).toBeInTheDocument();
+    expect(nav.querySelector('a[href="#client-setup"]')).toBeInTheDocument();
+    expect(nav.querySelector('a[href="#profile-history"]')).toBeInTheDocument();
+    expect(nav.querySelector('a[href="#profile-editor"]')).toBeInTheDocument();
+
+    // Verify all 3 targeted elements exist in the DOM
+    expect(container.querySelector('#client-setup')).toBeInTheDocument();
+    expect(container.querySelector('#profile-history')).toBeInTheDocument();
+    expect(container.querySelector('#profile-editor')).toBeInTheDocument();
+
+    // Client setup must not be hidden inside a closed details element
+    const clientSetup = container.querySelector('#client-setup')!;
+    const parentDetails = clientSetup.closest('details');
+    expect(parentDetails).toBeNull();
   });
 });

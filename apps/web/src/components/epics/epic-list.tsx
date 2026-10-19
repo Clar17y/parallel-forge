@@ -16,31 +16,39 @@ export function EpicList({ epics }: { epics: EpicResponse[] }) {
       {epics.map(epic => (
         <div
           key={epic.epic_id}
-          className="p-4 border border-[var(--border)] rounded bg-[var(--surface)] flex flex-col md:flex-row md:items-center justify-between gap-3 hover:border-[var(--control-border)] transition-colors"
+          className="p-4 border border-[var(--border)] rounded bg-[var(--surface)] hover:border-[var(--control-border)] transition-colors grid grid-cols-1 md:grid-cols-12 gap-4 items-center"
         >
-          <div className="space-y-1">
+          <div className="md:col-span-6 space-y-1 min-w-0">
             <div className="flex items-center space-x-2">
               <Link
                 href={`/epics/${epic.epic_id}`}
-                className="font-semibold text-base text-[var(--focus)] hover:underline"
+                className="font-semibold text-base text-[var(--focus)] hover:underline truncate"
+                title={epic.title}
               >
                 {epic.title}
               </Link>
-              <span className="text-xs px-2 py-0.5 rounded bg-[var(--surface-muted)] text-[var(--muted)] border border-[var(--border)]">
+              <span className="text-xs px-2 py-0.5 rounded bg-[var(--surface-muted)] text-[var(--muted)] border border-[var(--border)] shrink-0">
                 v{epic.version}
               </span>
             </div>
             {epic.draft?.problem && (
-              <p className="text-xs text-[var(--muted)] line-clamp-1">{epic.draft.problem}</p>
+              <details className="text-xs text-[var(--muted)] group">
+                <summary className="cursor-pointer hover:text-[var(--foreground)] line-clamp-1">
+                  {epic.draft.problem}
+                </summary>
+                <p className="mt-1 p-2 bg-[var(--surface-muted)] rounded text-xs text-[var(--foreground)] border border-[var(--border)]">
+                  {epic.draft.problem}
+                </p>
+              </details>
             )}
-            <div className="flex flex-wrap items-center gap-3 pt-1 text-xs text-[var(--muted)]">
+            <div className="flex flex-wrap items-center gap-3 pt-0.5 text-xs text-[var(--muted)]">
               <span>Updated: {new Date(epic.updated_at).toLocaleDateString()}</span>
               <span>•</span>
               <span>ID: {epic.epic_id.slice(0, 8)}…</span>
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="md:col-span-4 flex flex-wrap items-center gap-2">
             {epic.accepted_brief_revision_id ? (
               <StatusBadge label="Brief Accepted" tone="success" />
             ) : (
@@ -51,9 +59,12 @@ export function EpicList({ epics }: { epics: EpicResponse[] }) {
             ) : (
               <StatusBadge label="No Graph" tone="neutral" />
             )}
+          </div>
+
+          <div className="md:col-span-2 flex justify-start md:justify-end">
             <Link
               href={`/epics/${epic.epic_id}`}
-              className="button text-xs ml-2"
+              className="button text-xs whitespace-nowrap"
               data-variant="secondary"
             >
               Open Workspace

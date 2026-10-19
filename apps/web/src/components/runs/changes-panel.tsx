@@ -15,7 +15,18 @@ export function ChangesPanel({ projection }: { projection: components['schemas']
     && value.policy_version === projection.run.policy_version ? value : null;
   return <section aria-label="Run changes"><h2>Changes</h2>
     <p>Persisted diff supplied to the latest reviewer. Uncommitted work and later edits are not included.</p>
-    {!digest && <p>No reviewer diff evidence recorded yet.</p>}
+    {!digest && (
+      <div className="empty-state-notice">
+        <p>No reviewer diff evidence recorded yet.</p>
+        <p className="meta">
+          {['CREATED', 'PLANNING', 'PREPARING_WORKTREE', 'IMPLEMENTING'].includes(projection.run.state)
+            ? 'Candidate diff will be captured and presented here once implementation produces changes for review.'
+            : ['FAILED', 'CANCELLED'].includes(projection.run.state)
+              ? 'Run ended before candidate changes were submitted for review.'
+              : 'No candidate diff artifact is retained for this run.'}
+        </p>
+      </div>
+    )}
     {artifact.loading && <LoadingStatus>Loading changes…</LoadingStatus>}
     {(artifact.failed || (value && !changes)) && <p role="alert">Changes evidence unavailable. <button onClick={artifact.refresh}>Retry</button></p>}
     {changes && <><p>Recorded head: <code>{changes.head_sha}</code> · Diff digest: <code>{changes.diff_digest}</code></p>

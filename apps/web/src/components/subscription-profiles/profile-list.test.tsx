@@ -22,6 +22,33 @@ afterEach(() => {
   mockedClient.api.mockImplementation(defaultApi);
 });
 const profile = (version: number) => ({ profile_id: 'profile-1', version, default_billing_mode: 'allowance_only', approved_mappings: [], preferences: [{ purpose: 'primary', preferred_route: { provider: 'openai', client: 'codex', model: `model-${version}`, effort: 'low', auth_mode: 'subscription', billing_mode: 'allowance_only' }, fallback_routes: [] }] });
+test('keeps saved role details secondary and expands each role independently', async () => {
+  const saved = profile(1);
+  saved.preferences.push({
+    ...saved.preferences[0],
+    purpose: 'planning',
+    preferred_route: { ...saved.preferences[0].preferred_route, provider: 'google', client: 'gemini_cli', model: 'planner-model' },
+  });
+  render(<ProfileList profiles={[saved]} refresh={vi.fn()} />);
+  const latest = within(screen.getByRole('region', { name: 'Latest subscription profiles' }));
+  const primaryClient = latest.getByText('Codex', { exact: true });
+  const plannerClient = latest.getByText('Gemini CLI', { exact: true });
+
+  expect(primaryClient).not.toBeVisible();
+  await userEvent.click(latest.getByText('Assigned roles', { exact: true }));
+  expect(latest.getByText('Primary', { exact: true })).toBeVisible();
+  expect(latest.getByText('Planner', { exact: true })).toBeVisible();
+  expect(primaryClient).not.toBeVisible();
+  expect(plannerClient).not.toBeVisible();
+
+  await userEvent.click(latest.getByText('Primary', { exact: true }));
+  expect(primaryClient).toBeVisible();
+  expect(plannerClient).not.toBeVisible();
+  await userEvent.click(latest.getByText('Primary', { exact: true }));
+  expect(primaryClient).not.toBeVisible();
+  expect(primaryClient).toBeInTheDocument();
+});
+
 test('keeps historical versions visible and labels them immutable', async () => {
   render(<ProfileList profiles={[profile(1), profile(2)]} refresh={vi.fn()} />);
   await userEvent.click(screen.getByText(/Saved profile history/));
@@ -246,7 +273,29 @@ test('displays saved Jev default in profile version card details', async () => {
   render(<ProfileList profiles={[profileWithJev, profileWithoutJev]} refresh={vi.fn()} />);
   await userEvent.click(screen.getByText(/Saved profile history/));
 
-  expect(screen.getByText('On (jev-latest)')).toBeInTheDocument();
-  expect(screen.getByText('Jev default: On · jev-latest · remote processing allowed')).toBeInTheDocument();
-  expect(screen.getByText('Jev default: None')).toBeInTheDocument();
+  expect(screen.getByText('On (jev-latest)').closest('p'))
+    .toHaveTextContent('Jev default: On (jev-latest) · remote processing allowed');
+  const latest = within(screen.getByRole('region', { name: 'Latest subscription profiles' }));
+  expect(latest.getByText('None', { exact: true }).closest('p')).toHaveTextContent('Jev default: None');
+});
+
+test('latest profiles are discoverable with derived human routing labels while history remains secondary', () => {
+  const p1 = profile(1);
+  const p2 = profile(2);
+  const { container } = render(<ProfileList profiles={[p1, p2]} refresh={vi.fn()} />);
+
+  // Latest profile card is discoverable without opening any closed ancestor
+  const latestArticle = screen.getAllByRole('article')[0];
+  expect(latestArticle).toBeInTheDocument();
+  const parentDetails = latestArticle.closest('details');
+  // Latest article is NOT inside a closed details element
+  if (parentDetails) {
+    expect(parentDetails).toHaveAttribute('open');
+  }
+
+  // Derived human summary label is present in heading
+  expect(screen.getByRole('heading', { level: 3, name: /model-2/i })).toBeInTheDocument();
+
+  // #profile-editor element exists and is mounted
+  expect(container.querySelector('#profile-editor')).toBeInTheDocument();
 });

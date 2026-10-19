@@ -113,15 +113,23 @@ function RouteReadiness({ route }: { route: Route }) {
     <h4>{reasonTitles[route.effective_reason]}</h4>
     <p>Configured: {route.configured ? 'yes' : 'no'} · Admitted: {route.admitted ? 'yes' : 'no'}</p>
     {hasAntigravityToolWarning ? <p role="alert"><strong>Warning:</strong> {antigravityToolBoundaryWarning}</p> : null}
-    <p>{guidance(route)}</p>
-    {operatorTrusted ? <p>Forge applies your configured login, model and spending controls. Provider internals are not independently verified.</p> : null}
-    {route.warnings?.includes('client_build_changed') ? <p>The local client has updated. Forge will attempt the installed build; no new evidence is required.</p> : null}
     <QuotaStatus route={route} />
-    {operatorTrusted ? null : evidence.length === 0 ? <p>Capability evidence: none retained for this route.</p> : <ul aria-label={`Capability evidence for ${route.provider} ${route.model}`}>
-      {evidence.map(item => <li key={`${item.scope}:${item.evidence_id}:${item.revision}`}>
-        {item.scope} · evidence {item.evidence_id} · revision {item.revision} · observed <time dateTime={item.observed_at}>{item.observed_at}</time> · expires <time dateTime={item.expires_at}>{item.expires_at}</time>
-      </li>)}
-    </ul>}
+    {route.warnings?.includes('client_build_changed') ? <p>The local client has updated. Forge will attempt the installed build; no new evidence is required.</p> : null}
+
+    <details className="mt-2 text-xs">
+      <summary className="cursor-pointer font-medium text-muted">
+        Diagnostic guidance &amp; capability evidence
+      </summary>
+      <div className="mt-2 space-y-2">
+        <p>{guidance(route)}</p>
+        {operatorTrusted ? <p>Forge applies your configured login, model and spending controls. Provider internals are not independently verified.</p> : null}
+        {operatorTrusted ? null : evidence.length === 0 ? <p>Capability evidence: none retained for this route.</p> : <ul aria-label={`Capability evidence for ${route.provider} ${route.model}`}>
+          {evidence.map(item => <li key={`${item.scope}:${item.evidence_id}:${item.revision}`}>
+            {item.scope} · evidence {item.evidence_id} · revision {item.revision} · observed <time dateTime={item.observed_at}>{item.observed_at}</time> · expires <time dateTime={item.expires_at}>{item.expires_at}</time>
+          </li>)}
+        </ul>}
+      </div>
+    </details>
   </li>;
 }
 
@@ -132,6 +140,10 @@ export function SubscriptionRuntimeStatus() {
     keepPreviousOnRefresh: true,
     refreshStorageKey,
   });
+  const allWorkers = reports.value?.workers ?? [];
+  const currentWorkers = allWorkers.filter(worker => worker.state === 'current');
+  const historicalWorkers = allWorkers.filter(worker => worker.state !== 'current');
+
   return <section id="client-setup" aria-label="Worker registration" className="my-6 space-y-3 rounded border p-4">
     <h2>Subscription readiness</h2>
     <p>This read-only view uses retained worker, capability-evidence, and quota metadata. It never launches a provider client or reserves quota. Forge never collects or copies provider credentials, API keys, credits, or overage settings.</p>
@@ -142,14 +154,50 @@ export function SubscriptionRuntimeStatus() {
         <div role="status" aria-live="polite" className="runtime-refresh-status" style={{ minHeight: '1.5rem', margin: '4px 0' }}>
           {reports.refreshing ? <p style={{ margin: 0 }}>Refreshing worker registration…</p> : null}
         </div>
-        {(reports.value.workers ?? []).length === 0 ? <p>Worker registration is unknown: no reports on this page. Start the Forge worker to publish its registration.</p> :
-          <ul className="space-y-3">{(reports.value.workers ?? []).map(worker => <li key={worker.worker_instance_id} className="rounded border p-3 [overflow-wrap:anywhere]">
-            <h3>{states[worker.state]}</h3>
-            <p>Instance {worker.worker_instance_id} · last report <time dateTime={worker.last_seen_at}>{worker.last_seen_at}</time></p>
-            {worker.routes.length > 0 ? <ul className="space-y-2">{worker.routes.map(route =>
-              <RouteReadiness key={`${route.provider}:${route.client}:${route.model}:${route.effort}`} route={route} />)}</ul> :
-              worker.state === 'current' ? <p>No subscription routes registered by this worker. It does not confirm sign-in, capability, or remaining allowance. Configure your local clients and restart the worker.</p> : <p>No routes in this historical report.</p>}
-          </li>)}</ul>}
+        {allWorkers.length === 0 ? <p>Worker registration is unknown: no reports on this page. Start the Forge worker to publish its registration.</p> : <>
+          {currentWorkers.length > 0 ? (
+            <ul className="space-y-3">{currentWorkers.map(worker => (
+              <li key={worker.worker_instance_id} className="rounded border p-3 [overflow-wrap:anywhere]">
+                <details open>
+                  <summary className="cursor-pointer">
+                    <h3 className="inline text-base font-semibold">{states[worker.state]}</h3>
+                    <span className="meta ml-2">Instance {worker.worker_instance_id} · last report <time dateTime={worker.last_seen_at}>{worker.last_seen_at}</time></span>
+                  </summary>
+                  <div className="mt-3">
+                    {worker.routes.length > 0 ? <ul className="space-y-2">{worker.routes.map(route =>
+                      <RouteReadiness key={`${route.provider}:${route.client}:${route.model}:${route.effort}`} route={route} />)}</ul> :
+                      <p>No subscription routes registered by this worker. It does not confirm sign-in, capability, or remaining allowance. Configure your local clients and restart the worker.</p>}
+                  </div>
+                </details>
+              </li>
+            ))}</ul>
+          ) : (
+            <p className="meta">No active current worker report on this page. Start the Forge worker to publish current registration.</p>
+          )}
+
+          {historicalWorkers.length > 0 && (
+            <details className="historical-worker-reports mt-4 rounded border p-3">
+              <summary className="cursor-pointer font-medium">
+                Historical worker reports ({historicalWorkers.length})
+              </summary>
+              <ul className="space-y-3 mt-3">{historicalWorkers.map(worker => (
+                <li key={worker.worker_instance_id} className="rounded border p-3 [overflow-wrap:anywhere]">
+                  <details>
+                    <summary className="cursor-pointer">
+                      <h4 className="inline text-base font-semibold">{states[worker.state]}</h4>
+                      <span className="meta ml-2">Instance {worker.worker_instance_id} · last report <time dateTime={worker.last_seen_at}>{worker.last_seen_at}</time></span>
+                    </summary>
+                    <div className="mt-3">
+                      {worker.routes.length > 0 ? <ul className="space-y-2">{worker.routes.map(route =>
+                        <RouteReadiness key={`${route.provider}:${route.client}:${route.model}:${route.effort}`} route={route} />)}</ul> :
+                        <p>No routes in this historical report.</p>}
+                    </div>
+                  </details>
+                </li>
+              ))}</ul>
+            </details>
+          )}
+        </>}
         {reports.value.has_more ? <p>This page is not the complete worker inventory. Inspect the next page before drawing conclusions about other workers.</p> : null}
       </> : null}
     <nav aria-label="Worker report pages" className="flex gap-4">

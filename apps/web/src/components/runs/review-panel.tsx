@@ -15,7 +15,12 @@ export function ReviewPanel({ projection }: { projection: components['schemas'][
     && value.head_sha === projection.review.head_sha && value.policy_version === projection.run.policy_version ? value : null;
   return <section aria-label="Review evidence"><h2>Review</h2>
     <section><h3>Independent local review</h3><p>Head: <code>{projection.review.head_sha ?? 'Unavailable'}</code></p>
-      {projection.review.evidence_digest ? <p><a href={`/api/artifacts/${projection.review.evidence_digest}/download`}>Local review evidence</a> · <code>{projection.review.evidence_digest}</code></p> : <p>No local review evidence recorded.</p>}
+      {projection.review.evidence_digest ? <p><a href={`/api/artifacts/${projection.review.evidence_digest}/download`}>Local review evidence</a> · <code>{projection.review.evidence_digest}</code></p> : (
+        <div className="empty-state-notice">
+          <p>No local review evidence recorded.</p>
+          <p className="meta">Independent review evaluates candidate changes once validation checks pass.</p>
+        </div>
+      )}
       {artifact.loading && <LoadingStatus>Loading review decision…</LoadingStatus>}
       {(artifact.failed || (value && !decision)) && <p role="alert">Review decision evidence unavailable. <button onClick={artifact.refresh}>Retry</button></p>}
       {decision && <><p>Decision: {decision.decision.replaceAll('_', ' ')}</p><p>{decision.summary}</p>
@@ -32,7 +37,12 @@ export function ReviewPanel({ projection }: { projection: components['schemas'][
       })}
     </section>
     <section><h3>GitHub reviews</h3>
-      {!remote ? <p>No remote observation recorded.</p> : <><ObservationEvidence observation={remote} />
+      {!remote ? (
+        <div className="empty-state-notice">
+          <p>No remote observation recorded.</p>
+          <p className="meta">PR review comments will be monitored after a pull request is published.</p>
+        </div>
+      ) : <><ObservationEvidence observation={remote} />
         {!remote.reviews.length && <p>No reviews returned in this observation.</p>}
         {remote.reviews.map((review, index) => <article key={`${review.reviewer}:${index}`}><h4>{review.reviewer} · {review.state}</h4>
           {review.requested_changes && <p>Changes requested</p>}<p>{review.unresolved_threads} unresolved threads</p><p>{review.comment_count} comments</p>

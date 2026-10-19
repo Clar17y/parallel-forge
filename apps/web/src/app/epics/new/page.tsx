@@ -43,6 +43,10 @@ function NewEpicContent() {
           onCreated={epicId => router.push(`/epics/${encodeURIComponent(epicId)}`)}
         />
 
+      <p className="text-xs text-[var(--muted)]">
+        Next step: After creating your epic, you can brainstorm with the assistant, review proposed requirements, or edit the brief directly.
+      </p>
+
       {projectsApi.value && projects.length === 0 && (
         <p className="text-sm text-[var(--muted)]">
           No projects found.{' '}

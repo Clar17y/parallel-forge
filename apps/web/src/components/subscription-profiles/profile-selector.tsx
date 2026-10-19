@@ -5,7 +5,8 @@ import Link from 'next/link';
 import type { components } from '@/lib/api/schema';
 import { ApiError, api } from '@/lib/api/client';
 import { Button } from '@/components/ui/button';
-import { profileLabel } from './labels';
+import { Disclosure } from '@/components/ui/disclosure';
+import { profileLabel, profileVersionLabel } from './labels';
 import type { Preference, Route } from './models';
 
 type Profile = components['schemas']['ProfileResponse'];
@@ -84,100 +85,116 @@ export function ProfileSelector({
         <a href="/policies" className="underline">project safety policy</a>.
       </p>
 
-      <form onSubmit={submit}>
-        <div className="form-field" style={{ maxWidth: '400px' }}>
-          <label>
-            Profile version
-            <select
-              aria-label="Profile version"
-              disabled={stale}
-              value={`${profileId}:${version}`}
-              onChange={event => {
-                const [id, selectedVersion] = event.target.value.split(':');
-                setProfileId(id);
-                setVersion(selectedVersion);
-              }}
-            >
-              <option value=":">Choose a profile version</option>
-              {profiles.map(profile => (
-                <option
-                  key={`${profile.profile_id}:${profile.version}`}
-                  value={`${profile.profile_id}:${profile.version}`}
-                >
-                  Version {profile.version} · {profile.profile_id}
-                  {profile.jev ? ` (Jev: ${profileLabel(profile.jev.mode)})` : ''}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
-
-        {current && (
-          <div className="meta" style={{ marginTop: '8px' }}>
-            <p style={{ margin: 0 }}>
-              Current selection: <strong>version {current.version}</strong> · <code>{current.profile_id}</code>
-            </p>
-            {current.preferences && current.preferences.length > 0 && (
-              <div style={{ marginTop: '4px' }}>
-                <p style={{ margin: 0 }}>
-                  <strong>Role models &amp; reasoning:</strong>
-                </p>
-                <ul style={{ margin: '4px 0 0', paddingLeft: '20px' }}>
-                  {(current.preferences as unknown as Preference[]).map((pref, idx) => {
-                    const purpose = String(pref.purpose ?? `Role ${idx + 1}`);
-                    const route = pref.preferred_route as Route | undefined;
-                    return (
-                      <li key={purpose}>
-                        <strong>{profileLabel(purpose)}</strong>:{' '}
-                        <code>{route?.model || 'Unset'}</code>
-                        {route?.effort ? ` (Reasoning: ${route.effort})` : ''}
-                      </li>
-                    );
-                  })}
-                </ul>
-              </div>
-            )}
-            <p style={{ margin: '4px 0 0' }}>
-              Jev default:{' '}
-              <strong>
-                {current.jev ? `${profileLabel(current.jev.mode)} (${current.jev.model})` : 'None'}
-              </strong>
-            </p>
-            <p style={{ margin: '8px 0 0' }}>
-              <Link href="/subscription-profiles" className="underline">
-                Edit subscription profiles
-              </Link>
-            </p>
-          </div>
-        )}
-        {!current && (
-          <p className="meta" style={{ marginTop: '8px' }}>
+      {current ? (
+        <div className="meta mb-4" style={{ marginTop: '8px' }}>
+          <p style={{ margin: 0 }}>
+            Current selection: <strong>version {current.version}</strong> · <code>{current.profile_id}</code>
+          </p>
+          {current.preferences && current.preferences.length > 0 && (
+            <div style={{ marginTop: '4px' }}>
+              <p style={{ margin: 0 }}>
+                <strong>Role models &amp; reasoning:</strong>
+              </p>
+              <ul style={{ margin: '4px 0 0', paddingLeft: '20px' }}>
+                {(current.preferences as unknown as Preference[]).map((pref, idx) => {
+                  const purpose = String(pref.purpose ?? `Role ${idx + 1}`);
+                  const route = pref.preferred_route as Route | undefined;
+                  return (
+                    <li key={purpose}>
+                      <strong>{profileLabel(purpose)}</strong>:{' '}
+                      <code>{route?.model || 'Unset'}</code>
+                      {route?.effort ? ` (Reasoning: ${route.effort})` : ''}
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          )}
+          <p style={{ margin: '4px 0 0' }}>
+            Jev default:{' '}
+            <strong>
+              {current.jev ? `${profileLabel(current.jev.mode)} (${current.jev.model})` : 'None'}
+            </strong>
+          </p>
+          <p style={{ margin: '8px 0 0' }}>
             <Link href="/subscription-profiles" className="underline">
               Edit subscription profiles
             </Link>
           </p>
-        )}
-
-        {error && <p role="alert" className="field-error">{error}</p>}
-
-        <div className="form-actions" style={{ marginTop: '16px' }}>
-          {stale && (
-            <Button
-              type="button"
-              variant="secondary"
-              onClick={() => {
-                setError(undefined);
-                refresh();
-              }}
-            >
-              Reload project selection
-            </Button>
-          )}
-          <Button type="submit" variant="primary" disabled={saving || stale}>
-            {saving ? 'Saving…' : 'Select profile version'}
-          </Button>
         </div>
-      </form>
+      ) : (
+        <p className="meta mb-4" style={{ marginTop: '8px' }}>
+          No subscription profile selected. Project runs will use project safety policy API models by default.{' '}
+          <Link href="/subscription-profiles" className="underline">
+            Edit subscription profiles
+          </Link>
+        </p>
+      )}
+
+      <Disclosure
+        className="mt-4"
+        summary={
+          <div className="summary-line">
+            <span className="summary-title">
+              {current
+                ? `Change subscription profile · Currently version ${current.version}`
+                : 'Select a subscription profile'}
+            </span>
+            <span className="summary-meta">
+              {current ? `Profile: ${current.profile_id}` : 'Choose profile version'}
+            </span>
+          </div>
+        }
+      >
+        <form onSubmit={submit}>
+          <div className="form-field" style={{ maxWidth: '400px' }}>
+            <label>
+              Profile version
+              <select
+                aria-label="Profile version"
+                disabled={stale}
+                value={`${profileId}:${version}`}
+                onChange={event => {
+                  const [id, selectedVersion] = event.target.value.split(':');
+                  setProfileId(id);
+                  setVersion(selectedVersion);
+                }}
+              >
+                <option value=":">Choose a profile version</option>
+                {profiles.map(profile => (
+                  <option
+                    key={`${profile.profile_id}:${profile.version}`}
+                    value={`${profile.profile_id}:${profile.version}`}
+                  >
+                    {profileVersionLabel(profile)}
+                    {profile.jev ? ` (Jev: ${profileLabel(profile.jev.mode)})` : ''}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          {error && <p role="alert" className="field-error">{error}</p>}
+
+          <div className="form-actions" style={{ marginTop: '16px' }}>
+            {stale && (
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => {
+                  setError(undefined);
+                  refresh();
+                }}
+              >
+                Reload project selection
+              </Button>
+            )}
+            <Button type="submit" variant="primary" disabled={saving || stale}>
+              {saving ? 'Saving…' : 'Select profile version'}
+            </Button>
+          </div>
+        </form>
+      </Disclosure>
     </section>
   );
 }

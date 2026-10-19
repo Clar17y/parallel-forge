@@ -80,6 +80,7 @@ describe('BriefEditor', () => {
     });
 
     render(<BriefEditor epicId={epicId} />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Draft Editor' }));
 
     expect(await screen.findByDisplayValue('Workspace Architecture Epic')).toBeInTheDocument();
     expect(screen.getByDisplayValue('Need a dedicated workspace for epics')).toBeInTheDocument();
@@ -110,6 +111,7 @@ describe('BriefEditor', () => {
     });
 
     render(<BriefEditor epicId={epicId} />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Draft Editor' }));
     const reqInput = await screen.findByDisplayValue('Stable requirement text');
 
     await userEvent.clear(reqInput);
@@ -192,8 +194,7 @@ describe('BriefEditor', () => {
       return [] as T;
     });
     render(<BriefEditor epicId={epicId} />);
-    await screen.findByDisplayValue('Workspace Architecture Epic');
-    await userEvent.click(screen.getByRole('button', { name: 'Accepted Brief' }));
+    expect(await screen.findByRole('button', { name: 'Accepted Brief' })).toHaveAttribute('aria-current', 'page');
     expect(await screen.findByText(initialEpic.draft.outcomes[0])).toBeInTheDocument();
     expect(screen.getByText(initialEpic.draft.scope[0])).toBeInTheDocument();
     expect(screen.getByText(initialEpic.draft.exclusions[0])).toBeInTheDocument();
@@ -206,8 +207,7 @@ describe('BriefEditor', () => {
       return [] as T;
     });
     render(<BriefEditor epicId={epicId} />);
-    await screen.findByDisplayValue('Workspace Architecture Epic');
-    await userEvent.click(screen.getByRole('button', { name: /History & Revisions/ }));
+    await userEvent.click(await screen.findByRole('button', { name: /History & Revisions/ }));
     await userEvent.click(screen.getByText('Inspect revision IDs and digest'));
     expect(await screen.findByText(/Historical criterion/)).toBeVisible();
   });
@@ -219,8 +219,7 @@ describe('BriefEditor', () => {
       return [] as T;
     });
     render(<BriefEditor epicId={epicId} />);
-    await screen.findByDisplayValue('Workspace Architecture Epic');
-    await userEvent.click(screen.getByRole('button', { name: /History & Revisions/ }));
+    await userEvent.click(await screen.findByRole('button', { name: /History & Revisions/ }));
     expect(screen.getByText('Brief history could not be loaded.')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Retry brief history' })).toBeEnabled();
     expect(screen.queryByText('No brief revisions saved yet.')).not.toBeInTheDocument();
@@ -236,6 +235,7 @@ describe('BriefEditor', () => {
       return [] as T;
     });
     render(<BriefEditor epicId={epicId} />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Draft Editor' }));
     const title = await screen.findByDisplayValue(initialEpic.title);
     await userEvent.clear(title);
     await userEvent.type(title, 'My saved title');
@@ -253,6 +253,7 @@ describe('BriefEditor', () => {
       return [] as T;
     });
     render(<BriefEditor epicId={epicId} />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Draft Editor' }));
     const title = await screen.findByDisplayValue(initialEpic.title);
     await userEvent.clear(title);
     await userEvent.type(title, 'Local unsaved change');
@@ -275,6 +276,7 @@ describe('BriefEditor', () => {
       return [] as T;
     });
     render(<BriefEditor epicId={epicId} />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Draft Editor' }));
     const title = await screen.findByDisplayValue(initialEpic.title);
     await userEvent.clear(title);
     await userEvent.type(title, 'Attempt save');

@@ -1,4 +1,4 @@
-import { cleanup, render, screen, within } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, test, vi } from 'vitest';
 import { TaskInspector } from './task-inspector';
@@ -22,7 +22,7 @@ test('loads attempts on selection and preserves unknown usage', async () => {
   render(<TaskInspector runId="run-1" />);
   await screen.findByText('src');
   expect(screen.getByText('Execution capacity: Unknown')).toBeInTheDocument();
-  expect(fetcher.mock.calls.some(([url]) => String(url).includes('/usage-checkpoint'))).toBe(true);
+  await waitFor(() => expect(fetcher.mock.calls.some(([url]) => String(url).includes('/usage-checkpoint'))).toBe(true));
   await userEvent.click(screen.getByRole('button', { name: 'Inspect primary task task-1' }));
   await screen.findByText('Attempt 1 · running');
   expect(screen.getAllByText('Unknown').length).toBeGreaterThan(1);

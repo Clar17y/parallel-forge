@@ -34,3 +34,25 @@ test('remediation rows use the origin-neutral title because the list has no tran
   expect(screen.getByText('Repairing recorded findings')).toBeInTheDocument();
   expect(screen.queryByText('Repairing local findings')).not.toBeInTheDocument();
 });
+
+test('formats elapsed duration into readable hours and days', () => {
+  render(<RunList items={[{
+    run_id: 'run-3', task_id: 'task-3', task_title: 'Long running task', project_id: 'project-1', project_name: 'Forge',
+    state: 'COMPLETED', version: 10, pending_gate: null, next_gate: null, attention_required: false,
+    local_remediation_count: 0, remote_remediation_count: 0, elapsed_ms: 90_000_000, elapsed_seconds: 90000,
+    created_at: '2026-09-08T00:00:00Z', updated_at: '2026-09-09T01:00:00Z',
+    pull_request: null,
+    cost_summary: { currencies: [], unpriced_calls: 0 },
+  }, {
+    run_id: 'run-4', task_id: 'task-4', task_title: 'Cancelled task', project_id: 'project-1', project_name: 'Forge',
+    state: 'CANCELLED', version: 4, pending_gate: null, next_gate: null, attention_required: false,
+    local_remediation_count: 0, remote_remediation_count: 0, elapsed_ms: 7_500_000, elapsed_seconds: 7500,
+    created_at: '2026-09-08T00:00:00Z', updated_at: '2026-09-08T02:05:00Z',
+    pull_request: null,
+    cost_summary: { currencies: [], unpriced_calls: 0 },
+  }]} />);
+  expect(screen.getByText('1d 1h')).toBeInTheDocument();
+  expect(screen.getByText('2h 5m')).toBeInTheDocument();
+  expect(screen.getByText('Run completed')).toBeInTheDocument();
+  expect(screen.getByText('Run cancelled')).toBeInTheDocument();
+});

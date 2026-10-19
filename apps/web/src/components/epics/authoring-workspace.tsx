@@ -134,16 +134,20 @@ function ProposalList({ title, items }: { title: string; items: string[] }) {
   );
 }
 
-function ProposalPreview({ proposal }: { proposal: BrainstormProposal }) {
-  return (
-    <div className="p-4 rounded border border-[var(--border)] bg-[var(--surface)] space-y-4 mt-3">
-      <div className="flex items-center justify-between border-b border-[var(--border)] pb-2">
-        <h3 className="font-semibold">Proposed brief</h3>
-        <StatusBadge label="Proposal" tone="warning" />
-      </div>
+function ProposalPreview({
+  proposal,
+  isLatest = true,
+  isAdopted = false,
+}: {
+  proposal: BrainstormProposal;
+  isLatest?: boolean;
+  isAdopted?: boolean;
+}) {
+  const content = (
+    <div className="space-y-4 pt-1">
       <section>
         <h4 className="font-semibold text-xs text-[var(--muted)] uppercase">Problem</h4>
-        <p className="text-sm mt-1">{proposal.problem}</p>
+        <p className="text-sm mt-1 readable-prose leading-relaxed whitespace-pre-wrap">{proposal.problem}</p>
       </section>
       <ProposalList title="Expected outcomes" items={proposal.outcomes} />
       <ProposalList title="In scope" items={proposal.scope} />
@@ -169,9 +173,11 @@ function ProposalPreview({ proposal }: { proposal: BrainstormProposal }) {
       <ProposalList title="Assumptions" items={proposal.assumptions} />
       <ProposalList title="Open questions" items={proposal.open_questions} />
       {!!proposal.evidence?.length && (
-        <section>
-          <h4 className="font-semibold text-xs text-[var(--muted)] uppercase">Supporting evidence</h4>
-          <ul className="list-disc pl-4 mt-1 text-sm space-y-2">
+        <details className="disclosure-card border border-[var(--border)] rounded p-2 bg-[var(--surface-muted)] mt-2">
+          <summary className="cursor-pointer text-xs font-semibold text-[var(--muted)] uppercase">
+            <span>Supporting evidence</span> {proposal.evidence.length > 0 && <span className="opacity-75">({proposal.evidence.length})</span>}
+          </summary>
+          <ul className="list-disc pl-4 mt-2 text-sm space-y-2">
             {proposal.evidence.map((evidence, index) => (
               <li key={`${evidence.path}-${index}`}>
                 <span>{evidence.path}: {evidence.excerpt}</span>
@@ -179,7 +185,26 @@ function ProposalPreview({ proposal }: { proposal: BrainstormProposal }) {
               </li>
             ))}
           </ul>
-        </section>
+        </details>
+      )}
+    </div>
+  );
+
+  return (
+    <div className="p-4 rounded border border-[var(--border)] bg-[var(--surface)] space-y-3 mt-3">
+      <div className="flex items-center justify-between border-b border-[var(--border)] pb-2">
+        <h3 className="font-semibold">Proposed brief</h3>
+        <StatusBadge label={isAdopted ? 'Adopted' : 'Proposal'} tone={isAdopted ? 'success' : 'warning'} />
+      </div>
+      {!isLatest ? (
+        <details className="disclosure-card">
+          <summary className="cursor-pointer text-xs text-[var(--muted)] hover:text-[var(--foreground)] py-1 font-medium">
+            Earlier proposal ({proposal.requirements.length} requirements, {proposal.outcomes.length} outcomes) — click to expand
+          </summary>
+          {content}
+        </details>
+      ) : (
+        content
       )}
     </div>
   );
@@ -623,10 +648,12 @@ export function AuthoringWorkspace({
       <div className="space-y-4">
         {turns.length === 0 ? (
           <p className="p-6 bg-[var(--surface-muted)] rounded border border-[var(--border)] text-center text-sm text-[var(--muted)]">No messages yet. Send a prompt to begin.</p>
-        ) : turns.map(turn => {
+        ) : turns.map((turn, tIdx) => {
           const operator = turn.role === 'operator';
+          const isLatestTurn = tIdx === turns.length - 1;
           const matchingOutcome = outcome?.proposal?.turn_id === turn.proposal?.turn_id ? outcome : null;
-          const canAdopt = !isSubmitting && !outcomeStale && matchingOutcome?.state === 'proposed' && !!matchingOutcome.proposal_digest && !matchingOutcome.adopted_revision_id;
+          const isAdopted = !!(matchingOutcome?.adopted_revision_id || (matchingOutcome && adoptedRevisionId));
+          const canAdopt = !isSubmitting && !outcomeStale && matchingOutcome?.state === 'proposed' && !!matchingOutcome.proposal_digest && !isAdopted;
           return (
             <article key={turn.turn_id} className={`p-4 rounded border ${operator ? 'bg-[var(--surface)] border-[var(--border)] mr-8' : 'bg-[var(--info-soft)] border-[var(--info)] ml-8'} space-y-3`}>
               <div className="flex items-center justify-between">
@@ -636,11 +663,11 @@ export function AuthoringWorkspace({
               <p className="text-sm whitespace-pre-wrap">{turn.text}</p>
               {turn.proposal && isBrainstormProposal(turn.proposal) && (
                 <>
-                  <ProposalPreview proposal={turn.proposal} />
+                  <ProposalPreview proposal={turn.proposal} isLatest={isLatestTurn} isAdopted={isAdopted} />
                   {canAdopt && (
                     <Button variant="primary" disabled={mutationPending || isUnavailable} onClick={handleAdopt}>Adopt proposed brief</Button>
                   )}
-                  {matchingOutcome?.adopted_revision_id && <p className="text-sm text-[var(--success)]">This proposal has been adopted.</p>}
+                  {isAdopted && <p className="text-sm text-[var(--success)] font-medium">This proposal has been adopted.</p>}
                 </>
               )}
             </article>

@@ -385,58 +385,84 @@ export function ProfileEditor({
       )}
 
       {preferences.map((preference, index) => (
-        <section
+        <details
           key={preference.id}
-          className={styles.row}
+          data-testid={`role-disclosure-${index}`}
+          className="disclosure-card role-editor-disclosure mb-2"
         >
-          <h3 className={styles.title}>{profileLabel(preference.purpose)}</h3>
-          <RouteFields
-            label={profileLabel(preference.purpose)}
-            route={preference.preferred_route}
-            update={change => updateRoute(index, undefined, change)}
-            presets={presets}
-          />
-          <details className={styles.advanced}><summary>Advanced</summary>
-            <div className="form-field" style={{ maxWidth: '320px' }}><label>Purpose
-              <select aria-label={`Purpose ${index + 1}`} value={preference.purpose} onChange={event => updatePreference(index, { purpose: event.target.value as Preference['purpose'] })}>
-                {purposes.map(value => <option key={value} value={value}>{profileLabel(value)}</option>)}
-              </select>
-            </label></div>
-            <RouteAdvancedFields label={profileLabel(preference.purpose)} route={preference.preferred_route} update={change => updateRoute(index, undefined, change)} />
-            <fieldset className="mt-3 space-y-4">
-              <legend className="font-medium">Token budget defaults</legend>
-              <p className="meta">Default token budgets for new tasks. Existing tasks keep their saved limits.</p>
-              {(['input', 'output'] as const).map(dimension => {
-                const key = dimension === 'input' ? 'max_input_tokens' : 'max_output_tokens';
-                const budget = preference.token_budget ?? {};
-                const updateBudget = (value: number | string | null) => updatePreference(index, {
-                  token_budget: { ...budget, [key]: value },
-                });
-                const label = `${profileLabel(preference.purpose)} ${dimension} token budget`;
-                return <div key={dimension} className="space-y-2">
-                  <OptionalTokenCapInput
-                    caption={label}
-                    helpText="(optional hard cap; blank inherits)"
-                    ariaLabel={label}
-                    fieldName={label}
-                    value={budget[key]}
-                    allowSigned64
-                    onChange={updateBudget}
-                  />
-                  <span>{budget[key] == null ? `${dimension === 'input' ? 'Input' : 'Output'} tokens: Use run/task default` : `Saved ${dimension} hard cap: ${(typeof budget[key] === 'number' ? budget[key]!.toLocaleString() : BigInt(budget[key]!).toLocaleString())} tokens`}</span>
-                </div>;
-              })}
-            </fieldset>
-            {preferences.length > 1 && <Button type="button" variant="danger" onClick={() => setPreferences(current => current.filter((_, itemIndex) => itemIndex !== index))}>Remove role</Button>}
-            <h4>Fallback routes ({preference.fallback_routes.length})</h4>
-            {preference.fallback_routes.map((r, fallbackIndex) => <div className={styles.fallback} key={fallbackIndex}>
-              <RouteFields label={`${profileLabel(preference.purpose)} fallback route ${fallbackIndex + 1}`} route={r} update={change => updateRoute(index, fallbackIndex, change)} presets={presets} />
-              <RouteAdvancedFields label={`${profileLabel(preference.purpose)} fallback route ${fallbackIndex + 1}`} route={r} update={change => updateRoute(index, fallbackIndex, change)} />
-              <Button type="button" variant="danger" onClick={() => setPreferences(current => current.map((item, itemIndex) => itemIndex === index ? { ...item, fallback_routes: item.fallback_routes.filter((_, routeIndex) => routeIndex !== fallbackIndex) } : item))}>Remove fallback</Button>
-            </div>)}
-            <Button type="button" variant="secondary" onClick={() => setPreferences(current => current.map((item, itemIndex) => itemIndex === index ? { ...item, fallback_routes: [...item.fallback_routes, defaultRoute()] } : item))}>Add fallback route</Button>
-          </details>
-        </section>
+          <summary className="disclosure-summary cursor-pointer">
+            <div className="summary-line">
+              <div className="summary-title flex items-center gap-2">
+                <span className="font-semibold">{profileLabel(preference.purpose)}</span>
+                {preference.preferred_route.model && (
+                  <code className="text-xs">{preference.preferred_route.model}</code>
+                )}
+              </div>
+              <div className="summary-meta">
+                {preference.preferred_route.provider && (
+                  <span>{profileLabel(preference.preferred_route.provider)} · </span>
+                )}
+                <span>Reasoning: {effortLabel(preference.preferred_route.effort)}</span>
+                {preference.fallback_routes.length > 0 && (
+                  <span className="meta">
+                    {' '}· {preference.fallback_routes.length} fallback{preference.fallback_routes.length > 1 ? 's' : ''}
+                  </span>
+                )}
+              </div>
+            </div>
+          </summary>
+          <div className="disclosure-body">
+            <section className={styles.row}>
+              <h4 className="sr-only">{profileLabel(preference.purpose)}</h4>
+              <RouteFields
+                label={profileLabel(preference.purpose)}
+                route={preference.preferred_route}
+                update={change => updateRoute(index, undefined, change)}
+                presets={presets}
+              />
+              <details className={styles.advanced}><summary>Advanced</summary>
+                <div className="form-field" style={{ maxWidth: '320px' }}><label>Purpose
+                  <select aria-label={`Purpose ${index + 1}`} value={preference.purpose} onChange={event => updatePreference(index, { purpose: event.target.value as Preference['purpose'] })}>
+                    {purposes.map(value => <option key={value} value={value}>{profileLabel(value)}</option>)}
+                  </select>
+                </label></div>
+                <RouteAdvancedFields label={profileLabel(preference.purpose)} route={preference.preferred_route} update={change => updateRoute(index, undefined, change)} />
+                <fieldset className="mt-3 space-y-4">
+                  <legend className="font-medium">Token budget defaults</legend>
+                  <p className="meta">Default token budgets for new tasks. Existing tasks keep their saved limits.</p>
+                  {(['input', 'output'] as const).map(dimension => {
+                    const key = dimension === 'input' ? 'max_input_tokens' : 'max_output_tokens';
+                    const budget = preference.token_budget ?? {};
+                    const updateBudget = (value: number | string | null) => updatePreference(index, {
+                      token_budget: { ...budget, [key]: value },
+                    });
+                    const label = `${profileLabel(preference.purpose)} ${dimension} token budget`;
+                    return <div key={dimension} className="space-y-2">
+                      <OptionalTokenCapInput
+                        caption={label}
+                        helpText="(optional hard cap; blank inherits)"
+                        ariaLabel={label}
+                        fieldName={label}
+                        value={budget[key]}
+                        allowSigned64
+                        onChange={updateBudget}
+                      />
+                      <span>{budget[key] == null ? `${dimension === 'input' ? 'Input' : 'Output'} tokens: Use run/task default` : `Saved ${dimension} hard cap: ${(typeof budget[key] === 'number' ? budget[key]!.toLocaleString() : BigInt(budget[key]!).toLocaleString())} tokens`}</span>
+                    </div>;
+                  })}
+                </fieldset>
+                {preferences.length > 1 && <Button type="button" variant="danger" onClick={() => setPreferences(current => current.filter((_, itemIndex) => itemIndex !== index))}>Remove role</Button>}
+                <h4>Fallback routes ({preference.fallback_routes.length})</h4>
+                {preference.fallback_routes.map((r, fallbackIndex) => <div className={styles.fallback} key={fallbackIndex}>
+                  <RouteFields label={`${profileLabel(preference.purpose)} fallback route ${fallbackIndex + 1}`} route={r} update={change => updateRoute(index, fallbackIndex, change)} presets={presets} />
+                  <RouteAdvancedFields label={`${profileLabel(preference.purpose)} fallback route ${fallbackIndex + 1}`} route={r} update={change => updateRoute(index, fallbackIndex, change)} />
+                  <Button type="button" variant="danger" onClick={() => setPreferences(current => current.map((item, itemIndex) => itemIndex === index ? { ...item, fallback_routes: item.fallback_routes.filter((_, routeIndex) => routeIndex !== fallbackIndex) } : item))}>Remove fallback</Button>
+                </div>)}
+                <Button type="button" variant="secondary" onClick={() => setPreferences(current => current.map((item, itemIndex) => itemIndex === index ? { ...item, fallback_routes: [...item.fallback_routes, defaultRoute()] } : item))}>Add fallback route</Button>
+              </details>
+            </section>
+          </div>
+        </details>
       ))}
 
       {purposes.some(purpose => !preferences.some(preference => preference.purpose === purpose)) && <div style={{ margin: '16px 0' }}>
