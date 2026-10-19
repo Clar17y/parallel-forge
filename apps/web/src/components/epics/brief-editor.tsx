@@ -680,9 +680,7 @@ export function BriefEditor({ epicId, onBrainstorm, initialView }: { epicId: str
                           <StatusBadge label={`${(req.acceptance_criteria ?? []).length} criteria`} tone="neutral" />
                         </summary>
                         <div className="disclosure-body p-4 border-t border-[var(--border)] space-y-3 bg-[var(--surface)]">
-                          {!isShort && (
-                            <p className="text-sm readable-prose whitespace-pre-wrap leading-relaxed">{req.text}</p>
-                          )}
+                          <p className="text-sm readable-prose whitespace-pre-wrap leading-relaxed">{req.text}</p>
                           <EvidenceDetails summary="Requirement ID">
                             <span>{req.requirement_id}</span>
                           </EvidenceDetails>

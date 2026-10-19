@@ -1,5 +1,6 @@
 import { describe, expect, test, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, act } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { describeAuthoringOutcome } from './authoring-presentation';
 import { EpicList } from './epic-list';
 import { groupActiveBlockers } from './delivery-workspace';
@@ -129,7 +130,7 @@ describe('Epic Readability & Density Improvements', () => {
     expect(activeChildBlocker!.targets.map((t: any) => t.label)).toEqual(['Run Migrations']);
   });
 
-  test('accepted brief details are closed by default, short requirements avoid body duplication, and empty context is concise', async () => {
+  test('accepted brief cards expose complete requirement text at every length when expanded', async () => {
     const epicId = 'epic-brief-test-1';
     const testEpic = {
       epic_id: epicId,
@@ -150,8 +151,18 @@ describe('Epic Readability & Density Improvements', () => {
       requirements: [
         {
           requirement_id: 'req-short',
-          text: 'Short requirement text.',
+          text: 'Keep every accepted requirement readable on small screens.',
           acceptance_criteria: ['Criterion 1'],
+        },
+        {
+          requirement_id: 'req-boundary',
+          text: 'Keep accepted requirements readable at every screen width.'.padEnd(80, '.'),
+          acceptance_criteria: [],
+        },
+        {
+          requirement_id: 'req-multiline',
+          text: 'First line\nSecond line',
+          acceptance_criteria: [],
         },
         {
           requirement_id: 'req-long',
@@ -193,12 +204,18 @@ describe('Epic Readability & Density Improvements', () => {
     expect(screen.queryByRole('heading', { name: 'Decisions' })).not.toBeInTheDocument();
     expect(screen.getByText(/no decisions, assumptions, or open questions/i)).toBeInTheDocument();
 
-    // Short requirement does not duplicate its full text inside body when expanded
-    const shortSummary = screen.getByText('Short requirement text.').closest('details')!;
-    const bodyBeforeExpand = shortSummary.querySelector('.disclosure-body')!;
-    // Body should contain criteria and ID, not duplicate the short text paragraph
-    const bodyParagraphs = Array.from(bodyBeforeExpand.querySelectorAll('p')).map(p => p.textContent);
-    expect(bodyParagraphs).not.toContain('Short requirement text.');
+    // A one-line summary may clip at any character count on narrow screens.
+    for (const requirement of testAcceptedBrief.requirements) {
+      const fullText = screen.getAllByText(requirement.text, { exact: true, collapseWhitespace: false })
+        .find(element => element.closest('.disclosure-body'));
+      expect(fullText).toBeDefined();
+      expect(fullText).not.toBeVisible();
+      const card = fullText!.closest('details')!;
+      await userEvent.click(card.querySelector('summary')!);
+      expect(fullText).toBeVisible();
+      await userEvent.click(card.querySelector('summary')!);
+      expect(fullText).not.toBeVisible();
+    }
   });
 
   test('accepted graph reading view provides item overview with human source requirement labels, criteria, and dependencies', async () => {
