@@ -187,6 +187,13 @@ async def test_git_settlement_under_run_lock_contention(
         assert len(replay.artifact_digests) == 1
         assert await store.verify(replay.artifact_digests[0])
         assert "new_sha" not in replay.metadata
+        async with PostgresUnitOfWork(session_factory) as work:  # type: ignore[arg-type]
+            recorded = await work.artifacts.get_by_digest(
+                replay.artifact_digests[0], run_id=run_id
+            )
+        # No publication was admitted: the durable artifact metadata must not
+        # carry a stringified missing publication id.
+        assert recorded.metadata["publication_intent_id"] is None
         assert (git.prepares, git.publishes) == (1, 0)
     finally:
         git.release.set()

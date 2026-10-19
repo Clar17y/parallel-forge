@@ -2296,7 +2296,9 @@ class ControlledToolService:
                 producer_id=call_id,
                 metadata={
                     "operation_intent_id": str(preparation.id),
-                    "publication_intent_id": None if cancelled else str(publication_id),
+                    "publication_intent_id": (
+                        None if publication_id is None else str(publication_id)
+                    ),
                     "producer_id": str(call_id),
                     "request_digest": request_digest,
                     "resource_id": context.worktree_id,
