@@ -33,6 +33,35 @@ async function confirm(page, name) {
   await expect(dialog).toBeVisible();
   await dialog.getByRole('button', { name: `Confirm ${name.toLowerCase()}`, exact: true }).click();
 }
+async function openPrimaryRoute(form) {
+  const primary = form.locator('details').filter({
+    has: form.page().getByLabel('Primary model', { exact: true }),
+  });
+  await expect(primary.getByLabel('Primary model', { exact: true })).toBeHidden();
+  await primary.locator(':scope > summary').click();
+  await expect(primary.getByLabel('Primary model', { exact: true })).toBeVisible();
+  await expect(primary.getByLabel('Primary custom model', { exact: true })).toBeHidden();
+  await primary.getByText('Advanced', { exact: true }).click();
+  await expect(primary.getByLabel('Primary custom model', { exact: true })).toBeVisible();
+  return primary;
+}
+async function profileVersion(page, profileId, version, model) {
+  const heading = page.getByRole('heading', {
+    name: new RegExp(`Profile ${profileId.slice(0, 8)} · version ${version}$`),
+  });
+  await expect(heading).toBeVisible();
+  await expect(heading).toContainText(model);
+  const card = page.getByRole('article').filter({ has: heading });
+  await card.getByText('View immutable configuration', { exact: true }).click();
+  const configuration = card.locator('pre');
+  await expect(configuration).toBeVisible();
+  expect(JSON.parse(await configuration.innerText())).toMatchObject({
+    profile_id: profileId, version,
+    preferences: expect.arrayContaining([
+      expect.objectContaining({ purpose: 'primary', preferred_route: expect.objectContaining({ model }) }),
+    ]),
+  });
+}
 
 let browser;
 try {
@@ -51,15 +80,17 @@ try {
   const workerBefore = await api(first, '/subscription-runtime');
 
   const create = first.getByRole('form', { name: 'Create subscription profile' });
-  await create.getByLabel('Preferred route provider', { exact: true }).fill('openai');
-  await create.getByLabel('Preferred route client', { exact: true }).fill('codex_app_server');
-  await create.getByLabel('Preferred route model', { exact: true }).fill('gpt-6-astra');
+  const createPrimary = await openPrimaryRoute(create);
+  await createPrimary.getByLabel('Primary provider', { exact: true }).fill('openai');
+  await createPrimary.getByLabel('Primary client', { exact: true }).fill('codex_app_server');
+  await createPrimary.getByLabel('Primary custom model', { exact: true }).fill('gpt-6-astra');
+  await createPrimary.getByLabel('Primary reasoning', { exact: true }).selectOption('low');
   const createdResponse = first.waitForResponse(response => response.request().method() === 'POST' && response.url().endsWith('/api/subscription-profiles'));
   await create.getByRole('button', { name: 'Create profile version 1' }).click();
   const profileResponse = await createdResponse;
   expect(profileResponse.ok()).toBe(true);
   const profile = await profileResponse.json();
-  await expect(first.getByRole('heading', { name: `Profile ${profile.profile_id} · version 1`, exact: true })).toBeVisible();
+  await profileVersion(first, profile.profile_id, 1, 'gpt-6-astra');
 
   // Project/task setup uses real authenticated API calls; profile edits and run
   // controls below use rendered product forms and confirmation dialogs.
@@ -82,17 +113,20 @@ try {
   await second.goto(new URL('/subscription-profiles', web).href);
   for (const page of [first, second]) await page.getByRole('button', { name: 'Append from latest version 1' }).click();
   const edit = first.getByRole('form', { name: 'Append profile version 1' });
-  await edit.getByLabel('Preferred route model', { exact: true }).fill('gpt-5.6-sol');
-  await edit.getByLabel('Preferred route effort', { exact: true }).selectOption('high');
+  const editPrimary = await openPrimaryRoute(edit);
+  await editPrimary.getByLabel('Primary custom model', { exact: true }).fill('gpt-5.6-sol');
+  await editPrimary.getByLabel('Primary reasoning', { exact: true }).selectOption({ label: 'More levels…' });
+  await editPrimary.getByLabel('Primary reasoning', { exact: true }).selectOption('high');
   const staleEdit = second.getByRole('form', { name: 'Append profile version 1' });
-  await staleEdit.getByLabel('Preferred route model', { exact: true }).fill('gpt-5.6-terra');
+  const stalePrimary = await openPrimaryRoute(staleEdit);
+  await stalePrimary.getByLabel('Primary custom model', { exact: true }).fill('gpt-5.6-terra');
 
   const lostProfile = loseFirstResponse(first, `**/api/subscription-profiles/${profile.profile_id}/versions`);
   await lostProfile.install();
   await edit.getByRole('button', { name: 'Append version 2' }).click();
   await expect(edit.getByRole('alert')).toBeVisible();
   await edit.getByRole('button', { name: 'Append version 2' }).click();
-  await expect(first.getByRole('heading', { name: `Profile ${profile.profile_id} · version 2`, exact: true })).toBeVisible();
+  await profileVersion(first, profile.profile_id, 2, 'gpt-5.6-sol');
   expect(lostProfile.statuses).toEqual([201, 201]);
   expect(lostProfile.requests).toHaveLength(2);
   expect(lostProfile.requests[1]).toEqual(lostProfile.requests[0]);
@@ -103,11 +137,11 @@ try {
   await staleEdit.getByRole('button', { name: 'Append version 2' }).click();
   await expect(second.getByRole('alert').filter({ hasText: 'This profile changed in another tab.' })).toBeVisible();
   await expect(staleEdit).toBeVisible();
-  await expect(staleEdit.getByLabel('Preferred route model', { exact: true })).toHaveValue('gpt-5.6-terra');
+  await expect(staleEdit.getByLabel('Primary custom model', { exact: true })).toHaveValue('gpt-5.6-terra');
   await expect(staleEdit.getByRole('button', { name: 'Append version 2' })).toBeDisabled();
   await second.getByRole('button', { name: 'Reload profile history' }).click();
   await expect(staleEdit).toBeHidden();
-  await expect(second.getByRole('heading', { name: `Profile ${profile.profile_id} · version 2`, exact: true })).toBeVisible();
+  await profileVersion(second, profile.profile_id, 2, 'gpt-5.6-sol');
   expect((await api(first, '/subscription-profiles')).length).toBe(2);
   expect((await bridge('/snapshot')).envelopes[original]).toEqual(frozen.envelopes[original]);
 
@@ -121,7 +155,7 @@ try {
   for (const page of [first, second]) {
     await page.goto(new URL(`/runs/${original}`, web).href);
     await header(page, 'PLANNING');
-    const inspector = page.getByRole('region', { name: 'Subscription tasks', exact: true });
+    const inspector = page.getByRole('region', { name: 'Run usage and subscription tasks', exact: true });
     await page.getByRole('button', { name: 'Tasks', exact: true }).click();
     await expect(page.getByRole('button', { name: 'Tasks', exact: true })).toHaveAttribute('aria-pressed', 'true');
     await expect(inspector).toContainText('Status: unknown');
