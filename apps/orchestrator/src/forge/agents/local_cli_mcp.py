@@ -50,6 +50,7 @@ class LocalCliMcp:
         self._finish_seconds = finish_seconds
         self._settle_seconds = settle_seconds
         self._inflight: dict[str, asyncio.Task[Mapping[str, object]]] = {}
+        self._checks_cancelled = asyncio.Event()
         self.name = "forge_" + request.attempt.attempt_id.hex
         self.bridge = GeminiMcpBridge(secrets.token_urlsafe(32), self._handle)
         self.calls = self.checks = self.metadata_calls = 0
@@ -93,6 +94,14 @@ class LocalCliMcp:
         if self.broker is not None:
             await self.broker.revoke()
 
+    def cancel_checks(self) -> None:
+        """Request bounded check settlement without interrupting cleanup twice."""
+        self._closed = True
+        self._checks_cancelled.set()
+        for task in self._inflight.values():
+            if not task.done() and not task.cancelling():
+                task.cancel()
+
     @property
     def close_seconds(self) -> float:
         """Upper bound a caller should allow ``close`` before treating it as uncertain."""
@@ -115,17 +124,22 @@ class LocalCliMcp:
         tasks = tuple(self._inflight.values())
         if not tasks:
             return
+        finished = asyncio.create_task(asyncio.wait(tasks, timeout=self._finish_seconds))
+        cancelled = asyncio.create_task(self._checks_cancelled.wait())
         try:
-            _, pending = await asyncio.wait(tasks, timeout=self._finish_seconds)
-            for task in pending:
-                task.cancel()
+            await asyncio.wait((finished, cancelled), return_when=asyncio.FIRST_COMPLETED)
+            pending = {task for task in tasks if not task.done()}
             if pending:
+                self.cancel_checks()
                 _, pending = await asyncio.wait(pending, timeout=self._settle_seconds)
         except asyncio.CancelledError:
             # The attempt itself is being stopped: stop its checks too.
-            for task in tasks:
-                task.cancel()
+            self.cancel_checks()
             raise
+        finally:
+            finished.cancel()
+            cancelled.cancel()
+            await asyncio.gather(finished, cancelled, return_exceptions=True)
         if pending:
             raise TimeoutError("named check did not settle after the connection closed")
         self._inflight.clear()

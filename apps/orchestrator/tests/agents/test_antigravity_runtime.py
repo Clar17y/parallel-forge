@@ -384,6 +384,57 @@ async def test_antigravity_deadline_returns_stopped_tree(tmp_path, launch_direct
     assert not launch_directories[0].exists()
 
 
+@pytest.mark.parametrize("stop", ["cancel", "deadline"])
+async def test_antigravity_cancel_stops_and_settles_an_active_named_check(tmp_path, monkeypatch, stop):
+    from test_local_cli_mcp import _check_call, initialize
+
+    started, settled, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    class SlowCheckBroker(_Broker):
+        async def __call__(self, call):
+            started.set()
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                await asyncio.sleep(0.02)
+                settled.set()
+                raise
+            return {"status": "cancelled"}
+
+    broker = SlowCheckBroker()
+    runtime, _ = gateway(tmp_path, "cancel", broker=broker, duration=0.5 if stop == "deadline" else 5)
+
+    async def exchange(session, value, mcp, **kwargs):
+        await initialize(mcp)
+        await mcp._handle(_check_call(1))
+        await release.wait()
+
+    monkeypatch.setattr(runtime, "_exchange", exchange)
+    value = request()
+    value = replace(value, authorization=replace(
+        value.authorization, permitted_tools=frozenset({ToolName.BUILD_RUN_NAMED_CHECK})
+    ))
+    task = asyncio.create_task(runtime.execute(value))
+    try:
+        await asyncio.wait_for(started.wait(), 5)
+        if stop == "cancel":
+            task.cancel()
+        done, _ = await asyncio.wait({task}, timeout=2)
+        assert task in done, "adapter waited for the command instead of stopping it"
+        if stop == "cancel":
+            with pytest.raises(SubscriptionInterrupted) as interrupted:
+                await task
+            result = interrupted.value.result
+        else:
+            result = await task
+            assert result.failure is SubscriptionFailure.DEADLINE
+        assert settled.is_set()
+        assert result.launch_proof.stop_confirmed
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+
+
 async def test_missing_usage_stays_unknown_and_does_not_block_personal_use(tmp_path):
     runtime, _ = gateway(tmp_path, "missing_usage")
     result = await runtime.execute(request())

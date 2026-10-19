@@ -593,6 +593,11 @@ class MuseGateway:
         except Exception as error:  # noqa: BLE001
             result = failed(SubscriptionFailure.PROTOCOL, protocol_failure_detail("Muse", error))
         finally:
+            if interrupted or (
+                result is not None
+                and result.failure in {SubscriptionFailure.INTERRUPTED, SubscriptionFailure.DEADLINE}
+            ):
+                mcp.cancel_checks()
 
             async def settle() -> None:
                 nonlocal result
@@ -656,6 +661,7 @@ class MuseGateway:
                     await asyncio.shield(cleanup)
                 except asyncio.CancelledError:
                     interrupted = True
+                    mcp.cancel_checks()
             cleanup.result()
 
         telemetry = replace(

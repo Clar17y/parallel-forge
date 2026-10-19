@@ -701,6 +701,11 @@ class AntigravityGateway:
                 SubscriptionFailure.PROTOCOL, protocol_failure_detail("Antigravity", error)
             )
         finally:
+            if interrupted or (
+                result is not None
+                and result.failure in {SubscriptionFailure.INTERRUPTED, SubscriptionFailure.DEADLINE}
+            ):
+                mcp.cancel_checks()
 
             async def settle() -> None:
                 nonlocal result
@@ -752,6 +757,7 @@ class AntigravityGateway:
                     await asyncio.shield(cleanup)
                 except asyncio.CancelledError:
                     interrupted = True
+                    mcp.cancel_checks()
             cleanup.result()
         telemetry = replace(
             telemetry,
