@@ -392,6 +392,12 @@ _PRIMARY_DECISION_GUIDANCE = """
 The primary coordinates the run: do not return a task handoff. In planning,
 return the plan; in work phases, choose a primary decision permitted by the
 supplied schema. A plan for future implementation is not completed work.
+In work phases you may implement a small task directly through the permitted
+Forge write/check tools; delegate when useful. For an ordinary implementation
+task, complete the implementation and checks before choosing review or final
+acceptance. The supplied tool descriptions and decision schema explain the
+protocol; inspecting Forge internals merely to learn it is not a prerequisite.
+Follow the owner's task preferences within the frozen permissions and scope.
 """
 
 

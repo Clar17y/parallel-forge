@@ -101,6 +101,9 @@ def test_role_guidance_keeps_handoffs_for_workers_only():
     primary = _decision_guidance(SpecialistPurpose.PRIMARY)
     worker = _decision_guidance(SpecialistPurpose.ROUTINE_IMPLEMENTATION)
     assert "do not return a task handoff" in primary
+    assert "implement a small task directly" in primary
+    assert "implementation and checks before" in primary
+    assert "implement a small task directly" not in worker
     assert "For a completed handoff" not in primary
     assert "For a completed handoff" in worker
 
