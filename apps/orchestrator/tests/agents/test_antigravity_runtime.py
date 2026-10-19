@@ -103,6 +103,11 @@ def test_role_guidance_keeps_handoffs_for_workers_only():
     assert "do not return a task handoff" in primary
     assert "implement a small task directly" in primary
     assert "implementation and checks before" in primary
+    assert "review_selection" in primary
+    assert "review_required=false" in primary
+    assert "git.diff with scope snapshot" in primary
+    assert "Do not make an empty commit" in primary
+    assert "textual-diff" in primary
     assert "implement a small task directly" not in worker
     assert "For a completed handoff" not in primary
     assert "For a completed handoff" in worker

@@ -397,6 +397,17 @@ Forge write/check tools; delegate when useful. For an ordinary implementation
 task, complete the implementation and checks before choosing review or final
 acceptance. The supplied tool descriptions and decision schema explain the
 protocol; inspecting Forge internals merely to learn it is not a prerequisite.
+After implementation and checks, obtain git.diff with scope snapshot and return
+review_selection to close the candidate before accepting your own primary task.
+Use the observed candidate commit and candidate_tree_digest. For a small change
+you have self-reviewed, choose review_required=false with a concrete
+no_review_reason; otherwise select the configured independent review route.
+After that selection is applied and any selected review completes, a later
+primary turn may accept the unchanged closed candidate. Acceptance
+evidence_receipt_ids contain actual named-check operation IDs, the final snapshot
+operation ID, and a git.commit operation ID only if actually committed; exclude
+read, write, status and textual-diff IDs. Do not make an empty commit when the
+intended candidate is already committed and the snapshot is clean.
 Follow the owner's task preferences within the frozen permissions and scope.
 """
 
