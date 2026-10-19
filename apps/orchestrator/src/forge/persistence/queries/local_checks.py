@@ -114,16 +114,21 @@ async def local_checks(
         legacy = await _legacy_items(
             session, run, policy, [row.id for row in rows if row.source == "validation"]
         )
-        subscriptions = (
-            await session.execute(
-                select(ToolCall, OperationIntent, SubscriptionAttempt)
-                .join(OperationIntent, OperationIntent.id == ToolCall.id)
-                .join(
-                    SubscriptionAttempt, SubscriptionAttempt.id == ToolCall.subscription_attempt_id
+        subscription_ids = [row.id for row in rows if row.source == "subscription"]
+        if subscription_ids:
+            subscriptions = (
+                await session.execute(
+                    select(ToolCall, OperationIntent, SubscriptionAttempt)
+                    .join(OperationIntent, OperationIntent.id == ToolCall.id)
+                    .join(
+                        SubscriptionAttempt,
+                        SubscriptionAttempt.id == ToolCall.subscription_attempt_id,
+                    )
+                    .where(ToolCall.id.in_(subscription_ids))
                 )
-                .where(ToolCall.id.in_([row.id for row in rows if row.source == "subscription"]))
-            )
-        ).all()
+            ).all()
+        else:
+            subscriptions = []
         artifacts, parents = await _artifacts(session, run.id, [op for _, op, _ in subscriptions])
         named = {
             call.id: _subscription_item(run, policy, call, op, attempt, artifacts, parents)

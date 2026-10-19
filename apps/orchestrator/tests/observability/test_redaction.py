@@ -65,6 +65,44 @@ def test_capture_edge_redaction_cannot_split_an_overlapping_complete_secret():
 
 
 @pytest.mark.parametrize(
+    ("head", "tail", "secrets", "expected"),
+    [
+        (
+            "START ababab",
+            "bababa END",
+            ("ababa", "private-sensitive-value"),
+            "START [REDACTED]\n[... output omitted ...]\n[REDACTED] END",
+        ),
+        (
+            "START public password=Z",
+            "\nFINAL SUMMARY\n",
+            ("public password", "ababa"),
+            "START [REDACTED]\n[... output omitted ...]\n[REDACTED] SUMMARY\n",
+        ),
+    ],
+)
+def test_capture_closure_computes_each_immutable_secret_edge_once(
+    monkeypatch, head, tail, secrets, expected
+):
+    from forge.observability import redaction
+
+    overlap = redaction._secret_overlap
+    scans = []
+
+    def counted(value, secret):
+        scans.append((value, secret))
+        return overlap(value, secret)
+
+    monkeypatch.setattr(redaction, "_secret_overlap", counted)
+    safe, truncated = Redactor(secrets=secrets).redact_text(
+        head + tail, capture_truncated=True, capture_boundary=len(head)
+    )
+    assert safe == expected
+    assert not truncated
+    assert len(scans) == 2 * len(secrets)
+
+
+@pytest.mark.parametrize(
     "credential",
     [
         "Bearer " + "Z" * 30,

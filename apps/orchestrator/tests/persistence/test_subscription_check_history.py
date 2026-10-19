@@ -1,7 +1,7 @@
 """Checks projections include controlled subscription executions without legacy rows."""
 
 from dataclasses import replace
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -18,6 +18,7 @@ from forge.persistence.models.subscription import SubscriptionAttempt
 from forge.persistence.queries.check_history import check_history
 from forge.persistence.queries.dashboard import DashboardQuery
 from sqlalchemy import delete, null, update
+from sqlalchemy.ext.asyncio import AsyncSession
 from test_scheduler_acceptance import _remove_disposable_subscription_rows  # noqa: F401
 from test_subscription_named_check import _subscription_named_case
 
@@ -46,6 +47,47 @@ async def completed_case(
         arguments={"command_name": "unit"},
     )
     return case, receipt, task_id, attempt_id
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+async def test_pages_without_subscription_rows_skip_subscription_hydration(
+    session_factory, tmp_path, monkeypatch, legacy
+):
+    case, _, _, _ = await _subscription_named_case(session_factory, tmp_path)
+    if legacy:
+        async with session_factory() as session, session.begin():
+            step = Step(run_id=case.context.run_id, kind="validate", attempt=3, status="FAILED")
+            session.add(step)
+            await session.flush()
+            session.add(
+                ValidationResult(
+                    run_id=case.context.run_id,
+                    step_id=step.id,
+                    check_name="legacy",
+                    command_name="unit",
+                    command_version=1,
+                    status="FAILED",
+                    exit_code=2,
+                    started_at=datetime.now(UTC),
+                    completed_at=datetime.now(UTC),
+                )
+            )
+    execute = AsyncSession.execute
+    subscription_queries = []
+
+    async def counted(session, statement, *args, **kwargs):
+        entities = [item.get("entity") for item in getattr(statement, "column_descriptions", ())]
+        if entities == [ToolCall, OperationIntent, SubscriptionAttempt]:
+            subscription_queries.append(statement)
+        return await execute(session, statement, *args, **kwargs)
+
+    monkeypatch.setattr(AsyncSession, "execute", counted)
+    items, more = await check_history(session_factory, case.context.run_id, 0, 25)
+    assert not more
+    assert [(item["name"], item["status"], item["exit_code"]) for item in items] == (
+        [("legacy", "FAILED", 2)] if legacy else []
+    )
+    assert not subscription_queries
 
 
 async def test_failed_subscription_check_is_visible_in_history_and_overview(

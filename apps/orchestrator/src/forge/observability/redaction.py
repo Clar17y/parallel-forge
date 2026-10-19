@@ -223,12 +223,18 @@ class Redactor:
         head = (value if boundary is None else value[:boundary]).rstrip("\ufffd")
         tail = "" if boundary is None else value[boundary:].lstrip("\ufffd")
         reversed_secrets = tuple(secret[::-1] for secret in self._secrets)
-        head_cut, tail_cut = len(head), 0
+        reversed_tail = tail[::-1]
+        head_cut = len(head) - max(
+            (_secret_overlap(head, secret) for secret in self._secrets), default=0
+        )
+        tail_cut = max(
+            (_secret_overlap(reversed_tail, secret) for secret in reversed_secrets), default=0
+        )
         while True:
             previous = head_cut, tail_cut
             head_cut = _secret_cut_start(head, self._secrets, cut=head_cut)
             tail_cut = len(tail) - _secret_cut_start(
-                tail[::-1], reversed_secrets, cut=len(tail) - tail_cut
+                reversed_tail, reversed_secrets, cut=len(tail) - tail_cut
             )
             head_cut, tail_cut = credential_capture_cuts(
                 head, tail, head_cut=head_cut, tail_cut=tail_cut
@@ -276,8 +282,7 @@ class Redactor:
 
 
 def _secret_cut_start(value: str, secrets: tuple[str, ...], *, cut: int) -> int:
-    overlap = max((_secret_overlap(value, secret) for secret in secrets), default=0)
-    cut = min(cut, len(value) - overlap)
+    """Extend an existing cut through complete overlapping known values."""
     if cut == len(value):
         return cut
     # Include complete known values intersecting the cut. Otherwise replacing

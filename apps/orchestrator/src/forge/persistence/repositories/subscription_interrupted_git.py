@@ -419,16 +419,15 @@ class InterruptedGitPreparationRecovery:
                 or read.attempt_id != attempt_id
                 or read.provider_call_key != pending.provider_call_key
                 or read.durable_operation_id != pending.durable_operation_id
-                or any(
-                    [
-                        await self.session.get(model, pending.durable_operation_id) is not None
-                        for model in (ToolCall, OperationIntent, SubscriptionScheduledEffect)
-                    ]
-                )
             ):
                 return _refused(
                     "other_work_unresolved", "Another callback must be reconciled first."
                 )
+            for model in (ToolCall, OperationIntent, SubscriptionScheduledEffect):
+                if await self.session.get(model, pending.durable_operation_id) is not None:
+                    return _refused(
+                        "other_work_unresolved", "Another callback must be reconciled first."
+                    )
         # A stopped provider can leave a read reservation before tool admission.
         # Preserve its missing result; it grants no writer and is never replayed.
         other = (
@@ -463,11 +462,12 @@ class InterruptedGitPreparationRecovery:
             ),
             select(Step.id).where(Step.run_id == run_id, Step.status == "RUNNING"),
         )
-        if any([await self.session.scalar(query.limit(1)) is not None for query in other]):
-            return _refused(
-                "other_work_unresolved",
-                "Another effect, publication or result must be reconciled first.",
-            )
+        for query in other:
+            if await self.session.scalar(query.limit(1)) is not None:
+                return _refused(
+                    "other_work_unresolved",
+                    "Another effect, publication or result must be reconciled first.",
+                )
         digest = canonical_digest(
             {
                 "action": ACTION.value,

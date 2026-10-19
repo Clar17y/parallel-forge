@@ -38,6 +38,9 @@ from forge.persistence.models.subscription_results import (
 from forge.persistence.models.subscription_usage import SubscriptionAttemptConsumption
 from forge.persistence.queries.recovery import startup_intervention_hold
 from forge.persistence.queries.subscription_tasks import SubscriptionTaskQuery
+from forge.persistence.repositories.subscription_interrupted_git import (
+    InterruptedGitPreparationRecovery,
+)
 from forge.persistence.repositories.subscription_recovery import RecoveryConflict
 from sqlalchemy import JSON, func, select
 from test_scheduler_acceptance import _remove_disposable_subscription_rows  # noqa: F401
@@ -154,6 +157,94 @@ async def interrupted_git_case(session_factory, tmp_path):
         )
         await work.commit()
     return factory, admission, operation_id, snapshot
+
+
+@pytest.mark.parametrize("blocker", ["pending_read", "publication"])
+async def test_recovery_stops_database_reads_after_proving_a_conflict(
+    session_factory, tmp_path, monkeypatch, blocker
+):
+    factory, admission, operation_id, _ = await interrupted_git_case(session_factory, tmp_path)
+    identity = admission.attempt
+    extra_id = uuid4()
+    async with factory() as work:
+        if blocker == "pending_read":
+            work.session.add(
+                SubscriptionOperationBinding(
+                    attempt_id=identity.attempt_id,
+                    provider_call_key="read",
+                    durable_operation_id=extra_id,
+                    payload=encode_subscription_record(
+                        ToolCallBinding(
+                            attempt_id=identity.attempt_id,
+                            provider_call_key="read",
+                            durable_operation_id=extra_id,
+                            tool_name=ToolName.GIT_DIFF,
+                            arguments_digest=canonical_digest({}),
+                        )
+                    ),
+                )
+            )
+            work.session.add(
+                ToolCall(
+                    id=extra_id,
+                    run_id=identity.run_id,
+                    subscription_task_id=identity.task_id,
+                    subscription_attempt_id=identity.attempt_id,
+                    subscription_purpose="primary",
+                    tool_name=ToolName.GIT_DIFF.value,
+                    normalized_arguments={},
+                    authorized=True,
+                    status="SUCCEEDED",
+                    started_at=datetime.now(UTC),
+                    completed_at=datetime.now(UTC),
+                )
+            )
+        else:
+            work.session.add(
+                OperationIntent(
+                    id=extra_id,
+                    run_id=identity.run_id,
+                    operation_kind="git.commit.publish.v1",
+                    idempotency_key=f"git.commit:{operation_id}:publish",
+                    request_digest=canonical_digest({}),
+                    request_payload={},
+                    status="FAILED",
+                    last_error="Uncertain publication",
+                    completed_at=datetime.now(UTC),
+                )
+            )
+        await work.commit()
+    async with factory() as work:
+        get, scalar = work.session.get, work.session.scalar
+        conflict_seen = False
+        later_reads = []
+
+        async def counted_get(model, key, *args, **kwargs):
+            nonlocal conflict_seen
+            if conflict_seen:
+                later_reads.append("get")
+            result = await get(model, key, *args, **kwargs)
+            if key == extra_id and result is not None:
+                conflict_seen = True
+            return result
+
+        async def counted_scalar(statement, *args, **kwargs):
+            nonlocal conflict_seen
+            if conflict_seen:
+                later_reads.append("scalar")
+            result = await scalar(statement, *args, **kwargs)
+            if result == extra_id:
+                conflict_seen = True
+            return result
+
+        monkeypatch.setattr(work.session, "get", counted_get)
+        monkeypatch.setattr(work.session, "scalar", counted_scalar)
+        preview = await InterruptedGitPreparationRecovery(work.session).preview(
+            identity.run_id, identity.task_id, identity.attempt_id
+        )
+        assert not preview.eligible and preview.reason_code == "other_work_unresolved"
+        assert conflict_seen
+        assert not later_reads
 
 
 @pytest.mark.integration
