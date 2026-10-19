@@ -61,7 +61,7 @@ test('connection loss leaves authorised actions disabled and last-known state ex
 
 test('a success recorded on another head is never shown as a current pass', () => {
   const p = projection(); p.candidate.commit = 'b'.repeat(40);
-  p.checks = [{ id: 'check-1', name: 'Typecheck', command_name: 'typecheck', command_version: 1,
+  p.checks = [{ id: 'check-1', name: 'Typecheck', command_name: 'typecheck', command_version: 1, source: 'validation',
     status: 'SUCCEEDED', completed_at: null, exit_code: 0, head_sha: 'a'.repeat(40), output_artifact_digest: null }];
   render(<RunCockpit initial={p} />);
   const summary = within(screen.getByRole('region', { name: 'Checks at a glance' }));
@@ -71,7 +71,7 @@ test('a success recorded on another head is never shown as a current pass', () =
 
 test('stale check results are announced as last known, not current passes', () => {
   transport.connection = 'reconnecting';
-  const p = projection(); p.checks = [{ id: 'check-1', name: 'Typecheck', command_name: 'typecheck', command_version: 1,
+  const p = projection(); p.checks = [{ id: 'check-1', name: 'Typecheck', command_name: 'typecheck', command_version: 1, source: 'validation',
     status: 'SUCCEEDED', completed_at: null, exit_code: 0, head_sha: 'a'.repeat(40), output_artifact_digest: null }];
   p.candidate.commit = 'a'.repeat(40);
   render(<RunCockpit initial={p} />);

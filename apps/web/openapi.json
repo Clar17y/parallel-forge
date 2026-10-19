@@ -2899,6 +2899,15 @@
             ],
             "title": "Output Artifact Digest"
           },
+          "source": {
+            "default": "validation",
+            "enum": [
+              "validation",
+              "subscription"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
           "started_at": {
             "format": "date-time",
             "title": "Started At",
@@ -2907,6 +2916,17 @@
           "status": {
             "title": "Status",
             "type": "string"
+          },
+          "stderr_artifact_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stderr Artifact Digest"
           },
           "step_id": {
             "anyOf": [
@@ -2919,6 +2939,30 @@
               }
             ],
             "title": "Step Id"
+          },
+          "subscription_attempt_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subscription Attempt Id"
+          },
+          "subscription_task_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subscription Task Id"
           }
         },
         "required": [
@@ -3006,9 +3050,53 @@
             ],
             "title": "Output Artifact Digest"
           },
+          "source": {
+            "default": "validation",
+            "enum": [
+              "validation",
+              "subscription"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
           "status": {
             "title": "Status",
             "type": "string"
+          },
+          "stderr_artifact_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stderr Artifact Digest"
+          },
+          "subscription_attempt_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subscription Attempt Id"
+          },
+          "subscription_task_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subscription Task Id"
           }
         },
         "required": [
