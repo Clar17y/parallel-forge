@@ -468,8 +468,9 @@ async def test_cross_process_git_commit_observer_backs_off_between_receipt_reads
 
 
 @pytest.mark.parametrize("cancel_run", [False, True])
+@pytest.mark.parametrize("prepare_fails", [False, True])
 async def test_cancelled_git_commit_caller_waits_for_admitted_owner(
-    session_factory: object, tmp_path: Path, cancel_run: bool
+    session_factory: object, tmp_path: Path, cancel_run: bool, prepare_fails: bool
 ) -> None:
     (
         project_id,
@@ -484,7 +485,15 @@ async def test_cancelled_git_commit_caller_waits_for_admitted_owner(
     ) = await _seed_test_database(session_factory, tmp_path)  # type: ignore[arg-type]
     identity = WorktreeIdentity.for_run(project_id, run_id, branch, False)
     worktree = ManagedWorktree(identity=identity, path=Path(worktree_path), base_sha=base_sha)
-    git = _BlockedCommitGit(worktree)
+
+    class Git(_BlockedCommitGit):
+        def prepare_commit(self, worktree, message):
+            prepared = super().prepare_commit(worktree, message)
+            if prepare_fails:
+                raise RuntimeError("injected completed preparation failure")
+            return prepared
+
+    git = Git(worktree)
     store = _ControlledArtifactStore(tmp_path / "artifacts")
     service = ControlledToolService(
         lambda: PostgresUnitOfWork(session_factory),
@@ -519,15 +528,21 @@ async def test_cancelled_git_commit_caller_waits_for_admitted_owner(
     git.release.set()
     if cancel_run:
         result = await asyncio.wait_for(caller, timeout=10)
-        assert result.status is ToolCallStatus.CANCELLED
+        assert result.status is (
+            ToolCallStatus.FAILED if prepare_fails else ToolCallStatus.CANCELLED
+        )
     else:
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(caller, timeout=10)
-    assert (git.prepares, git.publishes) == (1, 0 if cancel_run else 1)
+    assert (git.prepares, git.publishes) == (1, 0 if cancel_run or prepare_fails else 1)
     async with PostgresUnitOfWork(session_factory) as work:  # type: ignore[arg-type]
         record = await work.tool_calls.get(context.invocation_id)
         assert record.status is (
-            ToolCallStatus.CANCELLED if cancel_run else ToolCallStatus.SUCCEEDED
+            ToolCallStatus.FAILED
+            if prepare_fails
+            else ToolCallStatus.CANCELLED
+            if cancel_run
+            else ToolCallStatus.SUCCEEDED
         )
         assert len(record.artifact_digests) == 1
         assert await store.verify(record.artifact_digests[0])
@@ -540,8 +555,10 @@ async def test_cancelled_git_commit_caller_waits_for_admitted_owner(
                 is None
             )
             preparation = await work.operations.get(record.operation_intent_id)
-            assert preparation.status is OperationStatus.SUCCEEDED
+            assert preparation.status is (
+                OperationStatus.FAILED if prepare_fails else OperationStatus.SUCCEEDED
+            )
     replay = await service.invoke(context, request)
     assert replay.status is record.status
     assert replay.artifact_digests == record.artifact_digests
-    assert (git.prepares, git.publishes) == (1, 0 if cancel_run else 1)
+    assert (git.prepares, git.publishes) == (1, 0 if cancel_run or prepare_fails else 1)

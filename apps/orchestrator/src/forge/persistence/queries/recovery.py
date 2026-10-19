@@ -36,7 +36,9 @@ def startup_intervention_hold(run_id: UUID) -> ColumnElement[bool]:
     recovered_later = exists(
         select(recovery.id).where(
             recovery.run_id == RunEvent.run_id,
-            recovery.event_type == "run.interrupted_check_recovered",
+            recovery.event_type.in_(
+                ("run.interrupted_check_recovered", "run.interrupted_git_preparation_recovered")
+            ),
             recovery.sequence > RunEvent.sequence,
         )
     ).correlate(RunEvent)

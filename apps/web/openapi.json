@@ -8842,6 +8842,7 @@
       },
       "RecoveryAction": {
         "enum": [
+          "acknowledge_interrupted_git_preparation",
           "acknowledge_interrupted_check",
           "retry_application",
           "reject_and_retry_step",

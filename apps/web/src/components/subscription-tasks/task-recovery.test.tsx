@@ -4,7 +4,7 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { TaskRecovery } from './task-recovery';
 import { SessionIdentity } from '@/components/auth/session-identity';
 import type { ReactElement } from 'react';
-import { bindingStorageKey, removeMatchingBinding, reserveBinding } from './recovery-binding';
+import { bindingStorageKey, readBinding, removeMatchingBinding, reserveBinding } from './recovery-binding';
 import { RecoveryReceiptHistory } from './recovery-receipt-history';
 
 const renderRecovery = (element: ReactElement, actorId = 'actor-1') => render(<SessionIdentity.Provider value={actorId}>{element}</SessionIdentity.Provider>);
@@ -13,6 +13,40 @@ const stored = (actorId = 'actor-1', runId = 'run-1', taskId = 'task-1', attempt
 
 beforeEach(() => Object.defineProperty(navigator, 'locks', { configurable: true, value: { request: async (_name: string, optionsOrCallback: { signal?: AbortSignal } | (() => unknown), maybeCallback?: () => unknown) => (typeof optionsOrCallback === 'function' ? optionsOrCallback : maybeCallback!)() } }));
 afterEach(() => { cleanup(); localStorage.clear(); Object.defineProperty(navigator, 'locks', { configurable: true, value: undefined }); vi.restoreAllMocks(); });
+
+test.each(['acknowledge_interrupted_check', 'acknowledge_interrupted_git_preparation'] as const)('owner action %s retains its optional note and exact reservation', async action => {
+  const binding = { ...stored(), body: { ...stored().body, action, reason: '' } };
+  expect(await reserveBinding(binding)).toBe('saved');
+  expect(readBinding(binding)).toEqual({ binding, error: false });
+  expect(await reserveBinding({ ...binding, key: '99999999-1234-1234-1234-123456789abc' })).toBe('existing');
+  expect(readBinding(binding).binding).toEqual(binding);
+  localStorage.setItem(bindingStorageKey(binding.actorId, binding.runId, binding.taskId, binding.attemptId)!, JSON.stringify({ ...binding, body: { ...binding.body, action: 'replay_git' } }));
+  expect(readBinding(binding)).toEqual({ binding: null, error: true });
+});
+
+test('server-listed Git acknowledgement applies at a fenced boundary with an optional note', async () => {
+  const action = 'acknowledge_interrupted_git_preparation';
+  const sent: unknown[] = [];
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
+    if (!new Headers(init?.headers).has('Idempotency-Key')) return new Response(JSON.stringify({ run_id: 'run-1', task_id: 'task-1', attempt_id: 'attempt-1', preview_token: 'preview-1', expires_at: new Date(Date.now() + 60_000).toISOString(), action, eligible: true, message: 'Preparation outcome remains unknown.', reason_code: 'owner_acknowledgment_required', changes: [], retained_evidence: [], budget_impact: { provider_attempts: 0, repair_units: 0 } }));
+    sent.push(JSON.parse(String(init?.body)));
+    return new Response(JSON.stringify({ run_id: 'run-1', task_id: 'task-1', attempt_id: 'attempt-1', receipt_id: 'receipt-1', action, status: 'applied', observed_at: new Date().toISOString(), reason_code: 'git_preparation_acknowledged' }));
+  });
+  renderRecovery(<TaskRecovery {...recoveryProps} taskState="reconciling" eligibleActions={[action]} />);
+  await userEvent.click(screen.getByRole('button', { name: 'Recover interrupted Git preparation' }));
+  expect(await screen.findByLabelText('Recovery note (optional)')).toHaveValue('');
+  expect(screen.getByText('Preparation outcome remains unknown.')).toBeInTheDocument();
+  await userEvent.click(screen.getByRole('button', { name: 'Apply recovery' }));
+  await screen.findByText(/Recovery receipt receipt-1/);
+  expect(sent).toEqual([{ action, preview_token: 'preview-1', reason: '' }]);
+  expect(localStorage.length).toBe(0);
+});
+
+test.each([{ pauseRequested: true }, { cancelRequested: true }, { taskState: 'running' }])('Git acknowledgement respects active ownership and stop controls: %j', change => {
+  renderRecovery(<TaskRecovery {...recoveryProps} taskState="reconciling" {...change} eligibleActions={['acknowledge_interrupted_git_preparation', 'retry_application']} />);
+  expect(screen.getByRole('button', { name: 'Recover interrupted Git preparation' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'Retry saved result' })).toBeDisabled();
+});
 
 test('two tabs reserving the same attempt cannot send two distinct requests', async () => {
   let tail = Promise.resolve();

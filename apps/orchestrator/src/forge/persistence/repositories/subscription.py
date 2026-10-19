@@ -18,7 +18,7 @@ from forge.application.ports.tool_recovery import (
 from forge.application.services.subscription_broker import _receipt_result
 from forge.application.services.tool_recovery import ToolRecoveryService
 from forge.application.services.tools import ToolInvocationError, _result_from_record
-from forge.domain.operation import canonical_digest
+from forge.domain.operation import OperationStatus, canonical_digest
 from forge.domain.subscription import (
     CANDIDATE_READ_TOOLS,
     SPECIALIST_ALLOWED_TOOLS,
@@ -377,9 +377,13 @@ class PostgresSubscriptionRepository:
                 publication = await operations.get_by_idempotency_key(
                     f"git.commit:{effect_id}:publish"
                 )
-                if publication is None:
+                if publication is not None:
+                    intents.append(publication)
+                elif (
+                    terminal.status is not ToolCallStatus.FAILED
+                    or intent.status is not OperationStatus.FAILED
+                ):
                     return False
-                intents.append(publication)
             if (
                 tuple((item.id, terminal_intent_digest(item)) for item in intents)
                 != verified_terminal.intent_digests

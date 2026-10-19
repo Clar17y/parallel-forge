@@ -441,11 +441,12 @@ class PostgresRunRepository:
     async def resume_interrupted_work(
         self, run_id: UUID, expected_version: int, *, actor_id: UUID,
         event_payload: Mapping[str, object],
+        event_type: str = "run.interrupted_check_recovered",
     ) -> RunSnapshot:
         """Record owner recovery and restore the suspended execution state atomically."""
         return await self._change_state(
             run_id, expected_version, self._state_engine.resume_interrupted_work,
-            "run.interrupted_check_recovered", event_payload,
+            event_type, event_payload,
             actor_class="operator", actor_id=actor_id, occurred_at=None, payload_schema_version=1,
         )
 

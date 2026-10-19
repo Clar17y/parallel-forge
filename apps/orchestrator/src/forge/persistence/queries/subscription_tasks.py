@@ -272,15 +272,20 @@ class SubscriptionTaskQuery:
             for row in rows[:limit]:
                 item = _attempt(row)
                 diagnostic = diagnostics.get(row.id)
+                eligible = []
+                if row.id == latest_attempt_id:
+                    actions = (
+                        tuple(RecoveryAction)
+                        if diagnostic is not None
+                        else (RecoveryAction.ACKNOWLEDGE_INTERRUPTED_GIT_PREPARATION,)
+                    )
+                    for action in actions:
+                        snapshot = await recovery.preview(
+                            run_id, task_id, row.id, action, lock_run=False
+                        )
+                        if snapshot.eligible:
+                            eligible.append(action.value)
                 if diagnostic is not None:
-                    eligible = []
-                    if row.id == latest_attempt_id:
-                        for action in RecoveryAction:
-                            snapshot = await recovery.preview(
-                                run_id, task_id, row.id, action, lock_run=False
-                            )
-                            if snapshot.eligible:
-                                eligible.append(action.value)
                     item["recovery"] = {
                         "classification": diagnostic.classification,
                         "reason_code": diagnostic.reason_code,
@@ -289,6 +294,19 @@ class SubscriptionTaskQuery:
                         "first_failure_at": diagnostic.first_failure_at,
                         "last_failure_at": diagnostic.last_failure_at,
                         "next_retry_at": diagnostic.next_retry_at,
+                        "eligible_actions": eligible,
+                    }
+                elif eligible:
+                    # A fenced effect can precede decision-application diagnostics.
+                    # Its attempt timestamp is the recorded fence, not a new failure.
+                    item["recovery"] = {
+                        "classification": "unresolved_effect",
+                        "reason_code": "git_preparation_outcome_unknown",
+                        "resolution": "attention",
+                        "failed_applications": 0,
+                        "first_failure_at": row.updated_at,
+                        "last_failure_at": row.updated_at,
+                        "next_retry_at": None,
                         "eligible_actions": eligible,
                     }
                 projected.append(item)

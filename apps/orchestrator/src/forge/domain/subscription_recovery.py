@@ -11,6 +11,7 @@ RECOVERY_WORKER_FRESHNESS_SECONDS = 30
 
 
 class RecoveryAction(StrEnum):
+    ACKNOWLEDGE_INTERRUPTED_GIT_PREPARATION = "acknowledge_interrupted_git_preparation"
     ACKNOWLEDGE_INTERRUPTED_CHECK = "acknowledge_interrupted_check"
     RETRY_APPLICATION = "retry_application"
     REJECT_AND_RETRY_STEP = "reject_and_retry_step"

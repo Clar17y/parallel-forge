@@ -446,3 +446,132 @@ async def test_terminal_proof_is_rechecked_against_locked_settlement_snapshot(
     assert await recovery.reconcile_all() == 0
     assert case.factory.calls == 1
     await _assert_fenced(session_factory, receipt.operation_id)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("corruption", [None, "error", "request", "artifact"])
+async def test_failed_preparation_restores_lost_tool_and_broker_receipts(
+    session_factory, tmp_path, monkeypatch, corruption
+):
+    from forge.application.services.subscription_broker import BrokerDenied
+    from forge.application.services.tool_recovery import ToolRecoveryDisposition
+
+    broker, git, _, store, worktree = await _git_case(
+        session_factory, tmp_path, primary_writer=True
+    )
+    (worktree.path / "README.md").write_text("initial\n", encoding="utf-8")
+    head = git.head_sha(worktree)
+
+    async def lose_artifact(*args, **kwargs):
+        raise OSError("injected artifact store failure")
+
+    def fail_preparation(*args, **kwargs):
+        raise RuntimeError("injected completed preparation failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(git, "prepare_commit", fail_preparation)
+        patch.setattr(store, "put_bytes", lose_artifact)
+        with pytest.raises(BrokerDenied):
+            await broker.invoke(
+                token="commit-token",
+                provider_call_key="failed",
+                tool_name=ToolName.GIT_COMMIT,
+                arguments={"message": "feat: no change"},
+            )
+    async with session_factory() as session, session.begin():
+        call = await session.scalar(
+            select(ToolCall).where(
+                ToolCall.tool_name == "git.commit", ToolCall.run_id == worktree.identity.run_id
+            )
+        )
+        assert call is not None and call.status == "RUNNING"
+        effect_id = call.id
+        operation = await session.get(OperationIntent, effect_id)
+        assert operation is not None and operation.status == "FAILED"
+        if corruption == "error":
+            operation.last_error = "other unknown failure"
+        elif corruption == "request":
+            operation.request_payload = {
+                **operation.request_payload,
+                "subscription_attempt_id": str(uuid4()),
+            }
+            operation.request_digest = canonical_digest(operation.request_payload)
+        await session.execute(
+            update(SubscriptionScheduledTask)
+            .where(SubscriptionScheduledTask.task_id == call.subscription_task_id)
+            .values(lease_expires_at=datetime.now(UTC) - timedelta(seconds=1))
+        )
+    verifier = ToolRecoveryService(lambda: PostgresUnitOfWork(session_factory), store)
+    recovered = await verifier.recover_one(effect_id)
+    if corruption in {"error", "request"}:
+        assert recovered.disposition in {
+            ToolRecoveryDisposition.UNRESOLVED,
+            ToolRecoveryDisposition.INTERVENTION,
+        }
+        assert await verifier.verify_terminal_effect(effect_id) is None
+        return
+    assert recovered.disposition is ToolRecoveryDisposition.SETTLED
+    async with PostgresUnitOfWork(session_factory) as work:
+        call = await work.tool_calls.get(effect_id)
+        assert call.status is ToolCallStatus.FAILED
+        assert "new_sha" not in call.result_metadata
+    if corruption == "artifact":
+        store.stored[call.artifact_digests[0]] = b"{}"
+    recovery = SubscriptionEffectRecovery(
+        lambda: PostgresUnitOfWork(session_factory),
+        terminal_verifier=verifier,
+    )
+    assert await recovery.reconcile_all() == (0 if corruption else 1)
+    assert await recovery.reconcile_all() == 0
+    assert git.head_sha(worktree) == head
+    async with session_factory() as session:
+        effect = await session.get(SubscriptionScheduledEffect, effect_id)
+        binding = await session.scalar(
+            select(SubscriptionOperationBinding).where(
+                SubscriptionOperationBinding.durable_operation_id == effect_id
+            )
+        )
+        assert effect.state == ("reconciling" if corruption else "rejected")
+        assert (binding.receipt_payload is None) is bool(corruption)
+
+
+@pytest.mark.integration
+async def test_publication_exception_and_unproved_preparation_remain_fenced(
+    session_factory, tmp_path, monkeypatch
+):
+    from forge.application.services.subscription_broker import BrokerDenied
+    from forge.application.services.tool_recovery import ToolRecoveryDisposition
+
+    broker, git, _, store, worktree = await _git_case(
+        session_factory, tmp_path, primary_writer=True
+    )
+    head = git.head_sha(worktree)
+
+    def fail_publication(*args):
+        raise RuntimeError("publication outcome unknown")
+
+    monkeypatch.setattr(git, "commit_prepared", fail_publication)
+    with pytest.raises(BrokerDenied):
+        await broker.invoke(
+            token="commit-token",
+            provider_call_key="publish",
+            tool_name=ToolName.GIT_COMMIT,
+            arguments={"message": "feat: interrupted publication"},
+        )
+    async with session_factory() as session:
+        call = await session.scalar(
+            select(ToolCall).where(
+                ToolCall.tool_name == "git.commit", ToolCall.run_id == worktree.identity.run_id
+            )
+        )
+        assert call.status == "RUNNING"
+        publication = await session.scalar(
+            select(OperationIntent).where(
+                OperationIntent.idempotency_key == f"git.commit:{call.id}:publish"
+            )
+        )
+        assert publication.status == "PENDING" and publication.outcome_payload is None
+    verifier = ToolRecoveryService(lambda: PostgresUnitOfWork(session_factory), store)
+    assert (await verifier.recover_one(call.id)).disposition is ToolRecoveryDisposition.UNRESOLVED
+    assert await verifier.verify_terminal_effect(call.id) is None
+    assert git.head_sha(worktree) == head

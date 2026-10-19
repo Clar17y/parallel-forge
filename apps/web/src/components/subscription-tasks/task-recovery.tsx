@@ -4,19 +4,21 @@ import { useEffect, useId, useRef, useState } from 'react';
 import { ApiError, api, mutate } from '@/lib/api/client';
 import type { components } from '@/lib/api/schema';
 import { useSessionIdentity } from '@/components/auth/session-identity';
-import { bindingStorageKey, matchesStoredBinding, readBinding, removeMatchingBinding, reserveBinding, sameBinding, type RecoveryBinding } from './recovery-binding';
+import { bindingStorageKey, isOwnerAcknowledgement, matchesStoredBinding, readBinding, removeMatchingBinding, reserveBinding, sameBinding, type RecoveryBinding } from './recovery-binding';
 
 type PreviewRequest = components['schemas']['RecoveryPreviewRequest'];
 type Preview = components['schemas']['RecoveryPreview'];
 type Receipt = components['schemas']['RecoveryReceipt'];
 type Action = PreviewRequest['action'];
 const labels: Record<Action, string> = {
+  acknowledge_interrupted_git_preparation: 'Recover interrupted Git preparation',
   acknowledge_interrupted_check: 'Recover interrupted check',
   retry_application: 'Retry saved result',
   reject_and_retry_step: 'Retry step',
   repair_approved_plan_contract: 'Repair approved-plan instructions',
 };
 const descriptions: Record<Action, string> = {
+  acknowledge_interrupted_git_preparation: 'Acknowledge that prior preparation processes have stopped, retain their unknown outcome, and verify the saved review selection without replaying Git.',
   acknowledge_interrupted_check: 'Record owner-confirmed process cessation while retaining the unknown check outcome and usage.',
   retry_application: 'Reprocess the saved result without starting another provider attempt.',
   reject_and_retry_step: 'Retain the failed result and queue one fresh attempt after stop evidence is confirmed.',
@@ -86,13 +88,19 @@ function TaskRecoveryInstance({ runId, taskId, attemptId, actorId, taskVersion, 
   const previewCurrent = Boolean(preview && preview.value.eligible && selectedAction && eligibleActions.includes(selectedAction)
     && preview.value.run_id === runId && preview.value.task_id === taskId && preview.value.attempt_id === attemptId
     && Date.parse(preview.value.expires_at) > clock && preview.authorityKey === authorityKey);
-  const validReason = reason.trim().length > 0 && new TextEncoder().encode(reason).length <= maxReasonBytes;
+  const optionalNote = isOwnerAcknowledgement(selectedAction);
+  const validReason = (optionalNote || reason.trim().length > 0) && new TextEncoder().encode(reason).length <= maxReasonBytes;
   const active = ['leased', 'running', 'executing'].includes(taskState.toLowerCase());
-  const blocked = active || unsettledEffects > 0 || pauseRequested || cancelRequested || !runAllowsExecution
+  const controlsBlocked = active || pauseRequested || cancelRequested
     || !Number.isSafeInteger(taskVersion) || taskVersion < 0 || !Number.isSafeInteger(runVersion) || runVersion < 0;
+  const blockedFor = (action: Action | undefined) => controlsBlocked || (
+    action === 'acknowledge_interrupted_git_preparation' && eligibleActions.includes(action) && taskState.toLowerCase() === 'reconciling'
+      ? false : unsettledEffects > 0 || !runAllowsExecution
+  );
+  const blocked = eligibleActions.length ? eligibleActions.every(blockedFor) : blockedFor(undefined);
 
   async function requestPreview(action: Action) {
-    if (busy.current || previewing || blocked || !eligibleActions.includes(action) || binding || storageError) return;
+    if (busy.current || previewing || blockedFor(action) || !eligibleActions.includes(action) || binding || storageError) return;
     const signal = lifecycle.current?.signal;
     if (!signal || signal.aborted) return;
     setPreviewing(true); setMessage(''); setPreview(null); setReceipt(null);
@@ -116,8 +124,8 @@ function TaskRecoveryInstance({ runId, taskId, attemptId, actorId, taskVersion, 
       setMessage('This preview has expired. Request a fresh preview before applying recovery.');
       return;
     }
-    if (busy.current || pending || blocked || !previewCurrent || !selectedAction || !validReason || binding || storageError || !actorId) {
-      if (!validReason && previewCurrent) setMessage('Operator reason is required');
+    if (busy.current || pending || blockedFor(selectedAction) || !previewCurrent || !selectedAction || !validReason || binding || storageError || !actorId) {
+      if (!validReason && previewCurrent) setMessage(optionalNote ? 'Recovery note is too long' : 'Operator reason is required');
       return;
     }
     const selected: RecoveryBinding = { actorId, runId, taskId, attemptId, key: crypto.randomUUID(), body: { action: selectedAction, preview_token: preview!.value.preview_token, reason: reason.trim() } };
@@ -179,7 +187,7 @@ function TaskRecoveryInstance({ runId, taskId, attemptId, actorId, taskVersion, 
     <p>Recovery can retry a saved result or correct the task’s approved instructions. A completed tool entry is past activity and does not mean a tool is still running.</p>
     {blocked ? <p>Recovery is unavailable while work is active, a stop is requested, or the run cannot continue. Refresh to check the current state.</p> : null}
     {!eligibleActions.length ? <p>No recovery action is available for the current task state.</p> : eligibleActions.map(action => <div key={action} className="space-y-1">
-      <p>{descriptions[action]}</p><button type="button" disabled={blocked || previewing || pending || !!binding || storageError} onClick={() => void requestPreview(action)}>{previewing ? 'Loading recovery preview…' : labels[action]}</button>
+      <p>{descriptions[action]}</p><button type="button" disabled={blockedFor(action) || previewing || pending || !!binding || storageError} onClick={() => void requestPreview(action)}>{previewing ? 'Loading recovery preview…' : labels[action]}</button>
     </div>)}
     {preview ? <div aria-label="Recovery preview" className="space-y-2 rounded border border-slate-300 p-3 [overflow-wrap:anywhere]">
       <h5 className="font-semibold">Preview · {labels[preview.value.action]}</h5>
@@ -188,10 +196,10 @@ function TaskRecoveryInstance({ runId, taskId, attemptId, actorId, taskVersion, 
         <p>Expires {preview.value.expires_at}</p><p>Changes: {preview.value.changes.join('; ') || 'None reported'}</p>
         <p>Retained evidence: {preview.value.retained_evidence.join('; ') || 'None reported'}</p>
         <p>Provider attempts: {preview.value.budget_impact.provider_attempts} · Repair units: {preview.value.budget_impact.repair_units}</p>
-        <label htmlFor={reasonId}>Recovery reason</label>
+        <label htmlFor={reasonId}>{optionalNote ? 'Recovery note (optional)' : 'Recovery reason'}</label>
         <textarea id={reasonId} rows={2} maxLength={512} value={reason} readOnly={!!binding || pending}
           onChange={event => setReason(event.target.value)} className="w-full rounded border border-slate-400 p-2" />
-        <button type="button" disabled={!previewCurrent || blocked || pending || !!binding || storageError} onClick={() => void submit()}>Apply recovery</button>
+        <button type="button" disabled={!previewCurrent || blockedFor(selectedAction) || pending || !!binding || storageError} onClick={() => void submit()}>Apply recovery</button>
         {!previewCurrent ? <p>This preview is expired or no longer matches current state. Request a fresh preview.</p> : null}
       </>}
     </div> : null}

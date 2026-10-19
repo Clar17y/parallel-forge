@@ -55,10 +55,12 @@ class FakeRecovery:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["repair_approved_plan_contract", "acknowledge_interrupted_check", "acknowledge_interrupted_git_preparation"])
 async def test_recovery_routes_bind_identity_auth_and_csrf(
     task10_client,
     task10_route_context,
     route_headers,
+    action,
 ):
     fake = FakeRecovery()
     task10_route_context.app.state.subscription_recovery_service = fake
@@ -66,7 +68,7 @@ async def test_recovery_routes_bind_identity_auth_and_csrf(
     url = f"/api/runs/{run_id}/subscription-tasks/{task_id}/attempts/{attempt_id}/recovery"
     preview = await task10_client.post(
         url + "/preview",
-        json={"action": "repair_approved_plan_contract"},
+        json={"action": action},
         headers=route_headers,
     )
     assert preview.status_code == 200
@@ -75,7 +77,7 @@ async def test_recovery_routes_bind_identity_auth_and_csrf(
     missing_key = await task10_client.post(
         url,
         json={
-            "action": "repair_approved_plan_contract",
+            "action": action,
             "preview_token": "signed-preview",
             "reason": "Correct objective",
         },
@@ -85,7 +87,7 @@ async def test_recovery_routes_bind_identity_auth_and_csrf(
     applied = await task10_client.post(
         url,
         json={
-            "action": "repair_approved_plan_contract",
+            "action": action,
             "preview_token": "signed-preview",
             "reason": "Correct objective",
         },

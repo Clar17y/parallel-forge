@@ -26,6 +26,7 @@ from forge.domain.paths import normalize_policy_paths
 
 PREPARE_GIT_COMMIT_KIND: Final = "git.commit.prepare.v1"
 PUBLISH_GIT_COMMIT_KIND: Final = "git.commit.publish.v1"
+GIT_PREPARATION_FAILED: Final = "Git preparation failed before publication"
 
 
 class GitCommitOperationError(RuntimeError):
@@ -41,23 +42,28 @@ class PrepareGitCommitAdapter:
 
     async def invoke(self, intent: OperationIntent) -> OperationOutcome:
         values = _prepare_request(intent, self._worktree)
-        paths = _primary_paths(values)
-        if paths is None:
-            prepared = await asyncio.to_thread(
-                self._git.prepare_commit, self._worktree, _text(values, "message")
-            )
-        else:
-            prepared = await asyncio.to_thread(
-                self._git.prepare_commit,
-                self._worktree,
-                _text(values, "message"),
-                allowed_paths=paths,
-            )
-        if not isinstance(prepared, PreparedGitCommit) or (
-            prepared.worktree_identity != self._worktree.identity
-        ):
-            raise GitCommitOperationError("controlled Git preparation result is invalid")
-        return OperationOutcome(payload=_prepare_receipt(intent, values, prepared))
+        try:
+            paths = _primary_paths(values)
+            if paths is None:
+                prepared = await asyncio.to_thread(
+                    self._git.prepare_commit, self._worktree, _text(values, "message")
+                )
+            else:
+                prepared = await asyncio.to_thread(
+                    self._git.prepare_commit,
+                    self._worktree,
+                    _text(values, "message"),
+                    allowed_paths=paths,
+                )
+            if not isinstance(prepared, PreparedGitCommit) or (
+                prepared.worktree_identity != self._worktree.identity
+            ):
+                raise GitCommitOperationError("controlled Git preparation result is invalid")
+            return OperationOutcome(payload=_prepare_receipt(intent, values, prepared))
+        except Exception:  # noqa: BLE001 - completed preparation cannot publish a commit
+            # The awaited preparation has returned, including its synchronous Git
+            # work. Cancellation is a BaseException and retains the owner fence.
+            return OperationOutcome(status=OperationStatus.FAILED, error=GIT_PREPARATION_FAILED)
 
     async def reconcile(self, intent: OperationIntent) -> OperationOutcome:
         # Reconciliation must never stage a potentially changed index.
