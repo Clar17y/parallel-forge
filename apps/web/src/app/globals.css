@@ -187,7 +187,7 @@
   .brand-mark { display: inline-block; width: 12px; height: 12px; background: var(--accent); transform: rotate(45deg); border-radius: 2px; box-shadow: 0 0 0 3px var(--accent-soft); }
   .topbar-context { border-left: 1px solid var(--border); padding-left: 20px; color: var(--muted); }
   .topbar-actions { display: flex; align-items: center; gap: 20px; margin-left: auto; }
-  .app-sidebar { background: var(--surface); border-right: 1px solid var(--border); padding: 22px 14px; min-width: 0; }
+  .app-sidebar { background: var(--surface); border-right: 1px solid var(--border); padding: 22px 14px; min-width: 0; position: sticky; top: 64px; height: calc(100dvh - 64px); overflow-y: auto; }
   .primary-navigation { display: grid; gap: 24px; }
   .nav-group { margin: 0; }
   .nav-group h2 { margin: 0 12px 8px; color: var(--muted); font-size: .6875rem; font-weight: 700; letter-spacing: .09em; text-transform: uppercase; }
@@ -666,6 +666,123 @@
     margin-top: 24px;
     padding-top: 16px;
     border-top: 1px solid var(--border);
+  }
+
+  /* Shared Readable UX & Disclosure Primitives */
+  .disclosure-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    margin: 8px 0;
+    overflow: hidden;
+  }
+  .disclosure-summary {
+    list-style: none;
+    cursor: pointer;
+    padding: 10px 14px;
+    user-select: none;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    font-weight: 500;
+    background: var(--surface-muted);
+    transition: background-color .15s ease;
+  }
+  .disclosure-summary::-webkit-details-marker {
+    display: none;
+  }
+  .disclosure-summary::after {
+    content: '';
+    width: 8px;
+    height: 8px;
+    flex: 0 0 8px;
+    border-right: 2px solid currentColor;
+    border-bottom: 2px solid currentColor;
+    transform: rotate(-45deg);
+  }
+  .disclosure-card[open] > .disclosure-summary::after {
+    transform: rotate(45deg);
+  }
+  .disclosure-summary:hover {
+    background: var(--neutral-soft);
+  }
+  .disclosure-summary:focus-visible {
+    outline: 3px solid var(--focus);
+    outline-offset: -2px;
+  }
+  .disclosure-body {
+    padding: 14px;
+    border-top: 1px solid var(--border-subtle);
+    display: grid;
+    gap: 12px;
+  }
+  .summary-line {
+    display: flex;
+    flex: 1;
+    min-width: 0;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px 16px;
+    width: 100%;
+  }
+  .summary-title {
+    display: flex;
+    flex-wrap: wrap;
+    min-width: 0;
+    overflow-wrap: anywhere;
+    align-items: center;
+    gap: 8px;
+    font-weight: 600;
+    color: var(--text);
+    font-size: .9375rem;
+  }
+  .summary-meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 12px;
+    font-size: .8125rem;
+    color: var(--muted);
+    font-weight: 400;
+  }
+  .detail-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 12px;
+    min-width: 0;
+  }
+  .detail-grid > * {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .readable-prose {
+    max-width: 72ch;
+    line-height: 1.6;
+    color: var(--text);
+    overflow-wrap: anywhere;
+  }
+  .readable-prose p {
+    margin: 6px 0;
+  }
+  .readable-prose .muted-text,
+  .readable-prose .help-text {
+    color: var(--muted);
+    font-size: .875rem;
+  }
+  .evidence-scroll {
+    max-width: 100%;
+    max-height: 360px;
+    overflow: auto;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface-muted);
+    padding: 10px 12px;
+    font-family: var(--font-mono);
+    font-size: .8125rem;
+    word-break: break-all;
+    white-space: pre-wrap;
   }
 
   /* Profiles Layout & Cards */

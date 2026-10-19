@@ -3,7 +3,7 @@
 import { LoadingStatus } from '@/components/ui/loading-status';
 import { Suspense, use, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useSearchParams } from 'next/navigation';
 import { EpicMutationProvider, useEpicMutations } from '@/hooks/epics/use-epic-mutations';
 import { EpicWorkspaceProvider, useEpicWorkspace } from '@/hooks/epics/use-epic-workspace';
 import { EvidenceDetails } from '@/components/epics/evidence-details';
@@ -20,26 +20,36 @@ type WorkspaceTab = 'brief' | 'graph' | 'authoring' | 'delivery';
 
 function EpicWorkspaceContent({ epicId }: { epicId: string }) {
   const searchParams = useSearchParams();
-  const router = useRouter();
-  const tab = searchParams.get('tab');
-  const initialTab: WorkspaceTab = tab && ['brief', 'graph', 'authoring', 'delivery'].includes(tab) ? tab as WorkspaceTab : 'authoring';
+  const urlTab = searchParams.get('tab');
+  const initialTab = urlTab && ['brief', 'graph', 'authoring', 'delivery'].includes(urlTab) ? urlTab as WorkspaceTab : null;
   const executionId = searchParams.get('execution_id');
 
-  const [activeTab, setActiveTab] = useState<WorkspaceTab>(initialTab);
+  const [chosenTab, setActiveTab] = useState<WorkspaceTab | null>(initialTab);
 
   const workspace = useEpicWorkspace(epicId);
   const mutations = useEpicMutations(epicId);
   const { registerCompletion } = mutations;
-  const replace = router.replace;
   const epic = workspace.epic;
 
-  const loadedRef = useRef(!!epic);
-  useEffect(() => { loadedRef.current = !!epic; }, [epic]);
+  const activeTab = chosenTab ?? (epic?.accepted_graph_revision_id ? 'delivery' : epic?.accepted_brief_revision_id ? 'brief' : 'authoring');
+
+  // Synchronize with browser back/forward navigation
+  useEffect(() => {
+    const handlePopState = () => {
+      if (typeof window === 'undefined') return;
+      const params = new URL(window.location.href).searchParams;
+      const t = params.get('tab');
+      setActiveTab(t && ['brief', 'graph', 'authoring', 'delivery'].includes(t) ? t as WorkspaceTab : null);
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
   const [confirmation, setConfirmation] = useState<string | null>(null);
   const confirmationRef = useRef<HTMLDivElement>(null);
   useEffect(() => registerCompletion('*', (receipt, request) => {
     setConfirmation(request.idempotencyKey);
-    if (loadedRef.current) return;
+    if (typeof window === 'undefined') return;
     const result = receipt as { execution_id?: string; conversation_id?: string; job_id?: string };
     const url = new URL(window.location.href);
     const pathSubject = request.path.split('/').at(-2);
@@ -59,8 +69,10 @@ function EpicWorkspaceContent({ epicId }: { epicId: string }) {
     }
     if (request.kind === 'job-submit') remember('job_id', result.job_id);
     if (['job-cancel', 'job-retry', 'proposal-adopt'].includes(request.kind ?? '')) remember('job_id', result.job_id ?? pathSubject);
-    if (remembered) replace(url.pathname + url.search, { scroll: false });
-  }), [registerCompletion, replace]);
+    if (remembered) {
+      window.history.replaceState(window.history.state, '', url.pathname + url.search);
+    }
+  }), [registerCompletion]);
   useEffect(() => { if (confirmation) confirmationRef.current?.focus(); }, [confirmation]);
 
   const recovery = <>
@@ -78,10 +90,13 @@ function EpicWorkspaceContent({ epicId }: { epicId: string }) {
   </>;
   const selectSection = (section: WorkspaceTab) => {
     setActiveTab(section);
-    const url = new URL(window.location.href);
-    url.searchParams.set('tab', section);
-    router.replace(url.pathname + url.search, { scroll: false });
+    if (typeof window !== 'undefined') {
+      const url = new URL(window.location.href);
+      url.searchParams.set('tab', section);
+      window.history.replaceState(window.history.state, '', url.pathname + url.search);
+    }
   };
+
 
 
   if (workspace.loading && !epic) {
@@ -178,16 +193,22 @@ function EpicWorkspaceContent({ epicId }: { epicId: string }) {
         <div hidden={activeTab !== 'brief'}><BriefEditor epicId={epicId} onBrainstorm={() => selectSection('authoring')} /></div>
         <div hidden={activeTab !== 'graph'}>
           <GraphEditor epicId={epicId} />
-          <Panel
-            title="Work-item graph decomposition"
-            description="Use assistant decomposition conversations to propose and adopt versioned work-item graphs."
+          <details
+            className="disclosure-card border border-[var(--border)] rounded bg-[var(--surface)] mt-6 group"
+            open={!epic.accepted_graph_revision_id}
           >
-            <DecompositionWorkspace
-              epicId={epicId}
-              projectId={epic.project_id}
-              epicVersion={epic.version}
-            />
-          </Panel>
+            <summary className="disclosure-summary p-4 cursor-pointer flex flex-wrap items-center justify-between gap-2 font-semibold text-sm hover:bg-[var(--surface-muted)] transition-colors rounded">
+              <span>Work-item graph decomposition assistant</span>
+              <span className="text-xs text-[var(--muted)] font-normal">Use assistant decomposition conversations to propose and adopt versioned work-item graphs</span>
+            </summary>
+            <div className="disclosure-body p-4 border-t border-[var(--border)]">
+              <DecompositionWorkspace
+                epicId={epicId}
+                projectId={epic.project_id}
+                epicVersion={epic.version}
+              />
+            </div>
+          </details>
         </div>
         <div hidden={activeTab !== 'authoring'}>
           <AuthoringWorkspace

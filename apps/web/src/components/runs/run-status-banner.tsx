@@ -1,6 +1,6 @@
 import { AlertTriangle, Check, Info, Loader2 } from 'lucide-react';
 import type { components } from '@/lib/api/schema';
-import { describeRunState, isActiveRunPhase } from './run-presentation';
+import { currentRunWaitReason, describeRunState, isActiveRunPhase } from './run-presentation';
 
 export function RunStatusBanner({
   projection,
@@ -10,9 +10,11 @@ export function RunStatusBanner({
   stale: boolean;
 }) {
   const status = describeRunState(projection);
+  const waitReason = currentRunWaitReason(projection);
   const isExecuting =
     !stale &&
     !projection.recovery_hold &&
+    !waitReason &&
     isActiveRunPhase(projection.run.state);
 
   const Icon =
@@ -28,7 +30,7 @@ export function RunStatusBanner({
       data-tone={stale && !projection.recovery_hold ? 'neutral' : status.tone}
       aria-label="Current run status"
       data-run-state={projection.run.state}
-      role={projection.recovery_hold ? 'alert' : undefined}
+      role={projection.recovery_hold || waitReason ? 'alert' : undefined}
     >
       {isExecuting ? (
         <Loader2 className="run-status-icon animate-spin motion-reduce:animate-none" aria-hidden="true" />

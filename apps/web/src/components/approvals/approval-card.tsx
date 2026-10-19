@@ -8,10 +8,12 @@ export function ApprovalCard({ item }: { item: components['schemas']['ApprovalIt
       <h2 className="approval-gate">{gateLabel} approval</h2>
       <p className="approval-task"><strong>{item.task_title}</strong> · {item.project_name}</p>
       <p className="meta">Run version {item.run_version} · Policy version {item.policy_version}</p>
-      <details className="evidence-details">
-        <summary>Evidence binding</summary>
-        <p>Queued evidence: <code>{item.evidence_digest}</code></p>
-        <p>Run ID: <code>{item.run_id}</code> · Task ID: <code>{item.task_id}</code></p>
+      <details className="evidence-details disclosure-card">
+        <summary className="disclosure-summary">Evidence binding</summary>
+        <div className="disclosure-body" style={{ fontSize: '0.8125rem' }}>
+          <p style={{ margin: 0 }}>Queued evidence: <code>{item.evidence_digest}</code></p>
+          <p style={{ margin: 0 }}>Run ID: <code>{item.run_id}</code> · Task ID: <code>{item.task_id}</code></p>
+        </div>
       </details>
     </div>
     <Link className="button approval-action" data-variant="primary" href={`/runs/${item.run_id}`}>Review {item.gate} evidence</Link>

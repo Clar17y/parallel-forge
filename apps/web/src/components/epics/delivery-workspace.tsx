@@ -1,7 +1,7 @@
 'use client';
 
 import { LoadingStatus } from '@/components/ui/loading-status';
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { Panel } from '@/components/ui/panel';
@@ -28,10 +28,63 @@ const blockerLabels: Record<string, string> = {
   integration_ref_changed: 'The integration branch changed during verification.',
   predecessor_not_started: 'The prerequisite work item has not started.',
   predecessor_failed: 'The prerequisite run failed or was cancelled.',
+  child_execution_failed: 'A prerequisite child run failed or was cancelled.',
+  budget_exhausted: 'The execution budget has been reached or exhausted.',
+  approval_required: 'Human approval is required before work can proceed.',
+  cancelled: 'The execution or run was cancelled.',
 };
 
-function blockerText(code: string | null | undefined): string {
+export function blockerText(code: string | null | undefined): string {
   return code ? blockerLabels[code] ?? `The server reported: ${code.replaceAll('_', ' ')}.` : 'The server has not provided a blocker.';
+}
+
+export interface BlockerTarget {
+  id: string;
+  label: string;
+  kind: 'execution' | 'item';
+}
+
+export interface GroupedBlocker {
+  code: string;
+  humanReason: string;
+  affectedCount: number;
+  targets: BlockerTarget[];
+}
+
+export function groupActiveBlockers(
+  executionBlocker: string | null | undefined,
+  children: Array<{ attempt: { run_id: string; item_id?: string; blocker_codes?: string[] } }>,
+  itemMap?: Map<string, string | { title?: string }>
+): GroupedBlocker[] {
+  const map = new Map<string, { humanReason: string; targets: BlockerTarget[] }>();
+
+  if (executionBlocker) {
+    const list = map.get(executionBlocker) ?? { humanReason: blockerText(executionBlocker), targets: [] };
+    list.targets.push({ id: 'execution', label: 'Execution', kind: 'execution' });
+    map.set(executionBlocker, list);
+  }
+
+  for (const child of children) {
+    const codes = child.attempt.blocker_codes ?? [];
+    const itemId = child.attempt.item_id ?? '';
+    const itemVal = itemMap?.get(itemId);
+    const itemLabel = typeof itemVal === 'string'
+      ? itemVal
+      : (itemVal as { title?: string } | undefined)?.title ?? (itemId || child.attempt.run_id);
+
+    for (const code of codes) {
+      const list = map.get(code) ?? { humanReason: blockerText(code), targets: [] };
+      list.targets.push({ id: child.attempt.run_id, label: itemLabel, kind: 'item' });
+      map.set(code, list);
+    }
+  }
+
+  return Array.from(map.entries()).map(([code, entry]) => ({
+    code,
+    humanReason: entry.humanReason,
+    affectedCount: entry.targets.length,
+    targets: entry.targets,
+  }));
 }
 
 function readinessLabel(status: string, blockerCode: string | null): string {
@@ -272,7 +325,11 @@ export function DeliveryWorkspace({
     ? workspace.graphRevisions.find(revision => revision.graph_revision_id === graphRevId)
       ?? (workspace.acceptedGraph?.graph_revision_id === graphRevId ? workspace.acceptedGraph : undefined)
     : undefined;
-  const frozenItems = new Map((frozenGraph?.items ?? []).map(item => [item.item_id, item]));
+  const frozenItems = useMemo(() => new Map((frozenGraph?.items ?? []).map(item => [item.item_id, item])), [frozenGraph]);
+  const groupedBlockers = useMemo(
+    () => groupActiveBlockers(blockerCode, children, frozenItems),
+    [blockerCode, children, frozenItems]
+  );
   const mutationPending = mutations.loading || mutations.hasPendingRetry;
   const isDeliveryAction = !mutations.actionKind || ['execution-start', 'execution-command', 'execution-dispatch'].includes(mutations.actionKind);
 
@@ -379,15 +436,15 @@ export function DeliveryWorkspace({
 
       {/* Discovered Executions Bar */}
       {executions.length > 0 && (
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 p-3 bg-[var(--surface-muted)] border border-[var(--border)] rounded text-sm">
-          <div className="flex items-center gap-2">
-            <label htmlFor="select-execution" className="font-medium text-xs text-[var(--muted)] uppercase">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 p-3 bg-[var(--surface-muted)] border border-[var(--border)] rounded text-sm min-w-0">
+          <div className="flex flex-wrap items-center gap-2 min-w-0">
+            <label htmlFor="select-execution" className="font-medium text-xs text-[var(--muted)] uppercase shrink-0">
               Discovered Executions:
             </label>
             <select
               id="select-execution"
               aria-label="Select Execution"
-              className="px-3 py-1.5 border border-[var(--control-border)] rounded text-sm bg-[var(--surface)]"
+              className="w-full sm:w-auto max-w-full sm:max-w-xs px-3 py-1.5 border border-[var(--control-border)] rounded text-sm bg-[var(--surface)] truncate min-w-0"
               value={executionId ?? ''}
               disabled={mutationPending}
               onChange={e => {
@@ -699,33 +756,71 @@ export function DeliveryWorkspace({
             </Panel>
 
             <Panel title="Active Blockers">
-              {!blockerCode && !children.some(c => c.attempt.blocker_codes?.length) ? (
+              {groupedBlockers.length === 0 ? (
                 <p className="text-sm text-[var(--muted)]">No active blockers.</p>
               ) : (
-                <ul className="list-disc pl-5 text-sm text-[var(--danger)] space-y-1">
-                  {blockerCode && <li>{blockerCode}</li>}
-                  {children.flatMap(c => c.attempt.blocker_codes ?? []).map((code, idx) => (
-                    <li key={`child-${idx}`}>{code}</li>
-                  ))}
-                </ul>
+                <div className="space-y-3">
+                  <div className="space-y-2">
+                    {groupedBlockers.map(group => (
+                      <div
+                        key={group.code}
+                        className="p-3 border border-[var(--danger)] bg-[var(--danger-soft)] rounded text-sm text-[var(--danger)] space-y-1"
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="font-semibold">{group.humanReason}</span>
+                          <span className="text-xs px-2 py-0.5 rounded bg-[var(--surface)] text-[var(--muted)] border border-[var(--border)]">
+                            {group.affectedCount} {group.affectedCount === 1 ? 'affected target' : 'affected targets'}
+                          </span>
+                        </div>
+                        <p className="text-xs text-[var(--muted)]">
+                          Affects: {group.targets.map(t => t.label).join(', ')}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+
+                  <EvidenceDetails summary={`Inspect all raw blocker codes (${groupedBlockers.reduce((acc, g) => acc + g.affectedCount, 0)})`}>
+                    <ul className="list-disc pl-5 text-xs text-[var(--muted)] space-y-1">
+                      {groupedBlockers.flatMap(group =>
+                        group.targets.map(t => (
+                          <li key={`${group.code}-${t.id}`}>
+                            <code>{group.code}</code> on {t.label} ({t.id})
+                          </li>
+                        ))
+                      )}
+                    </ul>
+                  </EvidenceDetails>
+                </div>
               )}
             </Panel>
           </div>
 
           <Panel
             title="Sequential Delivery"
-            description="When enabled, Forge may admit the next eligible saved item after integration is verified. Existing child plan, PR and merge gates remain in place."
+            description="When enabled, Forge may admit the next eligible saved item after integration is verified."
           >
             <div className="space-y-3 text-sm">
-              <p className="font-medium">Sequential delivery is {execution.dispatch?.enabled ? 'on.' : 'off.'}</p>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <p className="font-medium">
+                  Sequential delivery is {execution.dispatch?.enabled ? 'on.' : 'off.'}
+                </p>
+                <Button
+                  variant={execution.dispatch?.enabled ? 'secondary' : 'primary'}
+                  disabled={mutationPending || !executionSnapshot || (mutations.conflict && mutations.actionKind === 'execution-dispatch')}
+                  onClick={() => { void handleDispatchToggle(); }}
+                >
+                  {mutationPending && mutations.actionKind === 'execution-dispatch'
+                    ? 'Saving delivery setting…'
+                    : execution.dispatch?.enabled ? 'Disable Sequential Delivery' : 'Enable Sequential Delivery'}
+                </Button>
+              </div>
+
               {execution.dispatch?.blocker_code && (
                 <div role="status" className="p-3 border border-[var(--warning)] bg-[var(--warning-soft)] rounded text-[var(--warning)]">
                   {blockerText(execution.dispatch.blocker_code)} The server will decide whether the requested change can proceed.
                 </div>
               )}
-              <p className="text-[var(--muted)]">
-                The server currently reports {execution.dispatch?.enabled ? 'automatic sequential admission enabled' : 'automatic admission disabled'} for this execution. Enabling it does not approve a child run or declare integration complete.
-              </p>
+
               <EvidenceDetails summary="Inspect sequential delivery settings">
                 <span>dispatch version: {execution.dispatch?.version ?? 0}</span>
                 <span>profile_id: {execution.dispatch?.profile_id ?? 'null'}</span>
@@ -735,15 +830,6 @@ export function DeliveryWorkspace({
                 <span>claim_expires_at: {execution.dispatch?.claim_expires_at ?? 'null'}</span>
                 {execution.dispatch?.blocker_code && <span>blocker_code: {execution.dispatch.blocker_code}</span>}
               </EvidenceDetails>
-              <Button
-                variant={execution.dispatch?.enabled ? 'secondary' : 'primary'}
-                disabled={mutationPending || !executionSnapshot || (mutations.conflict && mutations.actionKind === 'execution-dispatch')}
-                onClick={() => { void handleDispatchToggle(); }}
-              >
-                {mutationPending && mutations.actionKind === 'execution-dispatch'
-                  ? 'Saving delivery setting…'
-                  : execution.dispatch?.enabled ? 'Disable Sequential Delivery' : 'Enable Sequential Delivery'}
-              </Button>
             </div>
           </Panel>
 
@@ -827,11 +913,11 @@ export function DeliveryWorkspace({
                         </p>
                         {run.attempt.blocker_codes.length > 0 && (
                           <p className="text-xs text-[var(--danger)]">
-                            Blockers: {run.attempt.blocker_codes.join(', ')}
+                            Blockers: {run.attempt.blocker_codes.map(c => blockerText(c)).join('; ')}
                           </p>
                         )}
                         {run.attempt.owner_override && (
-                          <p className="text-xs text-[var(--warning)]">
+                          <p className="text-xs text-[var(--warning)] font-medium">
                             Owner override: {run.attempt.override_note || 'Active'}
                           </p>
                         )}
@@ -839,6 +925,9 @@ export function DeliveryWorkspace({
                           <span>run_id: {run.attempt.run_id}</span>
                           <span>item_id: {run.attempt.item_id}</span>
                           <span>attempt_id: {run.attempt.attempt_id}</span>
+                          {run.attempt.blocker_codes.length > 0 && (
+                            <span>raw blocker codes: {run.attempt.blocker_codes.join(', ')}</span>
+                          )}
                           {run.retained_gate && <span>retained_gate: {run.retained_gate}</span>}
                         </EvidenceDetails>
                       </div>

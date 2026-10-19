@@ -493,9 +493,9 @@ describe('EpicBudgetPanel', () => {
     render(<EpicBudgetPanel epicId={epicId} />);
     await screen.findByText('Shared Epic Budget & Ceilings');
 
-    // 1800 seconds duration ceiling should be formatted as 1800s, not 2s or 1800ms
+    // 1800 seconds duration ceiling should be formatted as 30m, not 2s or 1800ms
     const durationCeiling = screen.getByTestId('ceiling-duration_ms');
-    expect(durationCeiling).toHaveTextContent('1800s');
+    expect(durationCeiling).toHaveTextContent('30m');
     expect(durationCeiling).not.toHaveTextContent('1800ms');
     expect(durationCeiling).not.toHaveTextContent('2s');
   });
@@ -649,7 +649,7 @@ describe('EpicBudgetPanel', () => {
     // Mandatory duration placeholder when enabled and blank must NOT claim "Unlimited (null)"
     expect(durationInput).toHaveAttribute('placeholder', 'Required numeric cap');
 
-    expect(screen.getAllByText('Unlimited (null)').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Unlimited').length).toBeGreaterThan(0);
     const inputCap = screen.getByLabelText('Input tokens ceiling');
     expect(inputCap).toHaveValue('');
     await userEvent.type(inputCap, '500000');

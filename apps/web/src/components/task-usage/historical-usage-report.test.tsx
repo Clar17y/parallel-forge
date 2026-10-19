@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { HistoricalUsageReport } from './historical-usage-report';
 import type { components } from '@/lib/api/schema';
@@ -16,7 +16,7 @@ const summary: components['schemas']['UsageHistorySummaryResponse'] = {
 const report: components['schemas']['TaskUsageHistoryResponse'] = {
   as_of: '2026-10-11T12:00:00Z', overview: summary,
   filters: { project_ids: [], history_limit: 50, minimum_comparables: 20, window_days: 30 },
-  comparable_references: { 'implementation:gemini:flash:medium': { ...summary, status: 'insufficient_history', sample_count: 4,
+  comparable_references: { 'project-a:run:implementation:configured:effective': { ...summary, status: 'insufficient_history', sample_count: 4,
     cohort_source: 'exact_route', labels: ['exact_route'], mean_tokens: null, median_tokens: null, p90_tokens: null,
     measured_coverage: null, checkpoint_threshold_tokens: null, phase_role_breakdown: [] } },
   by_task_type: { implementation: summary }, by_model: { 'flash-3.8': summary }, by_provider: { gemini: summary },
@@ -115,4 +115,51 @@ test('formats exact signed64 report counts, breakdowns, and window days without 
   expect(screen.getByText(/9,007,199,254,740,992-day window/)).toBeVisible();
   expect(screen.getByText(/Coverage: 9,007,199,254,740,992 measured of 9,007,199,254,740,993 eligible/)).toBeVisible();
   expect(screen.getByText(/primary · 9,223,372,036,854,775,807 tokens/i)).toBeVisible();
+});
+
+test('formats long compound comparable keys as structured reference with exact key secondary', async () => {
+  const projectId = '11111111-2222-4333-8444-555555555555';
+  const longKey = `${projectId}:run:implementation:${'a'.repeat(64)}:${'b'.repeat(64)}`;
+  const compoundReport = {
+    ...report,
+    comparable_references: {
+      [longKey]: {
+        ...summary,
+        status: 'ready' as const,
+        reference_tokens: 185000,
+        sample_count: 14,
+        cohort_source: 'exact_route',
+      },
+    },
+  };
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async input => new Response(JSON.stringify(
+    String(input).includes('/projects') ? [{ id: projectId, name: 'Readable Project' }] : compoundReport
+  ), { status: 200 }));
+  render(<HistoricalUsageReport />);
+  const comparableSection = await screen.findByRole('region', { name: 'Comparable checkpoint reference' });
+  expect(within(comparableSection).getByText(/185,000 tokens/i)).toBeVisible();
+  expect(within(comparableSection).getByText(/Learned reference/i)).toBeVisible();
+  expect(within(comparableSection).getByText(longKey)).toBeInTheDocument();
+  expect(within(comparableSection).getByText(longKey)).not.toBeVisible();
+  expect(await within(comparableSection).findByText('Implementation · Readable Project')).toBeVisible();
+  await userEvent.click(within(comparableSection).getByText('Exact key & provenance'));
+  expect(within(comparableSection).getByText(longKey)).toBeVisible();
+});
+
+
+test('provides an authorized project chooser alongside exact project input', async () => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.includes('/projects')) {
+      return new Response(JSON.stringify([
+        { id: 'proj-uuid-1', name: 'Alpha Project' },
+        { id: 'proj-uuid-2', name: 'Beta Project' },
+      ]), { status: 200 });
+    }
+    return new Response(JSON.stringify(report), { status: 200 });
+  });
+  render(<HistoricalUsageReport />);
+  expect(await screen.findByRole('heading', { name: 'Pooled overview · mixed routes' })).toBeVisible();
+  expect(await screen.findByRole('combobox', { name: /Authorized project chooser/i })).toBeInTheDocument();
+  expect(screen.getByRole('option', { name: /Alpha Project/i })).toBeInTheDocument();
 });

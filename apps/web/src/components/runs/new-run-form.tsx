@@ -7,6 +7,8 @@ import type { components } from '@/lib/api/schema';
 import { useApi } from '@/hooks/use-api';
 import { Button } from '@/components/ui/button';
 import { ProviderBadge, getProviderCue } from '@/components/ui/provider-badge';
+import { formatDurationSeconds } from '@/lib/format';
+import { profileLabel, profileVersionLabel } from '@/components/subscription-profiles/labels';
 
 type Project = components['schemas']['ProjectResponse'];
 type TaskInput = components['schemas']['TaskCreateRequest'];
@@ -141,12 +143,14 @@ export function NewRunForm({ projects, initialProjectId, onCreated }: {
                 onChange={event => setProfileChoice(event.target.value)}>
                 <option value="default">Project default</option>
                 {profiles.map(profile => <option key={`${profile.profile_id}:${profile.version}`} value={`${profile.profile_id}:${profile.version}`}>
-                  Version {profile.version} · {profile.profile_id}
+                  {profileVersionLabel(profile)}
                 </option>)}
               </select>
               <span className="field-hint">
                 {profilesLoading ? 'Loading immutable profile versions…' : choice
-                  ? `Override: ${choice.preferences.map(profilePreferenceLabel).join(', ')}`
+                  ? (choice.preferences.length <= 2
+                      ? `Override: ${choice.preferences.map(profilePreferenceLabel).join(', ')}`
+                      : `Override: ${choice.preferences.slice(0, 2).map(profilePreferenceLabel).join(', ')} (+${choice.preferences.length - 2} more roles)`)
                   : 'Uses the project default profile.'}
               </span>
             </div>
@@ -242,7 +246,7 @@ export function NewRunForm({ projects, initialProjectId, onCreated }: {
         </div>
 
         <aside className="new-run-aside">
-          {project && <ProjectRunSummary project={project} />}
+          {project && <ProjectRunSummary project={project} selectedProfile={choice} />}
         </aside>
       </div>
     </form>
@@ -251,7 +255,7 @@ export function NewRunForm({ projects, initialProjectId, onCreated }: {
 
 function profilePreferenceLabel(value: Record<string, unknown>): string {
   const route = value.preferred_route;
-  const purpose = typeof value.purpose === 'string' ? value.purpose : 'role';
+  const purpose = profileLabel(value.purpose ?? 'role');
   if (!route || typeof route !== 'object') return purpose;
   const details = route as Record<string, unknown>;
   const provider = typeof details.provider === 'string' ? details.provider : 'provider unknown';
@@ -259,7 +263,7 @@ function profilePreferenceLabel(value: Record<string, unknown>): string {
   return `${purpose} ${provider}/${model}`;
 }
 
-function ProjectRunSummary({ project }: { project: Project }) {
+function ProjectRunSummary({ project, selectedProfile }: { project: Project; selectedProfile?: Profile }) {
   const policy = project.policy;
   const commands = policy?.commands as components['schemas']['CommandSpec'][] | undefined;
   const roles = [
@@ -291,9 +295,40 @@ function ProjectRunSummary({ project }: { project: Project }) {
         </div>
       </dl>
 
+      {selectedProfile && (
+        <div className="selected-profile-summary" style={{ marginBottom: '16px', padding: '10px 12px', borderRadius: '6px', border: '1px solid var(--border)', background: 'var(--surface-muted)', fontSize: '0.8125rem' }}>
+          <div style={{ fontWeight: 600, marginBottom: '4px' }}>Selected CLI profile</div>
+          <div className="meta">
+            Version {selectedProfile.version} · {selectedProfile.preferences.length > 0
+              ? (selectedProfile.preferences.length <= 2
+                  ? selectedProfile.preferences.map(pref => profilePreferenceLabel(pref as Record<string, unknown>)).join(', ')
+                  : `${selectedProfile.preferences.slice(0, 2).map(pref => profilePreferenceLabel(pref as Record<string, unknown>)).join(', ')} (+${selectedProfile.preferences.length - 2} more roles)`)
+              : 'No route overrides specified in this profile.'}
+          </div>
+          <details style={{ marginTop: '8px' }}>
+            <summary style={{ cursor: 'pointer', fontWeight: 500, color: 'var(--muted)' }}>Route details & identifier</summary>
+            <div style={{ marginTop: '6px' }}>
+              <p className="meta" style={{ marginBottom: '6px' }}>Profile ID: <code>{selectedProfile.profile_id}</code></p>
+              {selectedProfile.preferences.length > 0 ? (
+                <ul style={{ margin: '0', paddingLeft: '18px' }}>
+                  {selectedProfile.preferences.map((pref, i) => (
+                    <li key={i}>{profilePreferenceLabel(pref as Record<string, unknown>)}</li>
+                  ))}
+                </ul>
+              ) : <p className="meta" style={{ margin: '0' }}>No route overrides specified in this profile.</p>}
+            </div>
+          </details>
+        </div>
+      )}
+
       <h3 style={{ marginTop: '16px', marginBottom: '8px', fontSize: '0.8125rem', textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--muted)' }}>
-        Assigned Agent Roles
+        {selectedProfile ? 'Configured Project Policy (API Models)' : 'Assigned Agent Roles (Project Policy)'}
       </h3>
+      {selectedProfile && (
+        <p className="meta" style={{ fontSize: '0.75rem', marginBottom: '10px' }}>
+          These API models apply to runs without a CLI profile override. The chosen CLI profile above takes precedence for subscription runtime tasks.
+        </p>
+      )}
       {roles.map(({ key, name }) => {
         const model = policy?.[`${key}_model` as keyof typeof policy] as components['schemas']['AgentModelPolicy'] | undefined;
         const cue = getProviderCue(model?.provider);
@@ -311,36 +346,21 @@ function ProjectRunSummary({ project }: { project: Project }) {
             {model ? (
               <>
                 <div className="role-card-model">{model.model}</div>
-                <div className="role-budget-grid">
-                  <div className="role-budget-item">
-                    <span className="role-budget-label">Tokens</span>
-                    <span className="role-budget-value">
-                      {model.max_input_tokens?.toLocaleString() ?? '—'} in / {model.max_output_tokens?.toLocaleString() ?? '—'} out
-                    </span>
+                {model.reasoning_effort && (
+                  <div className="meta" style={{ fontSize: '0.75rem', marginTop: '2px' }}>
+                    Reasoning effort: {model.reasoning_effort}
                   </div>
-                  <div className="role-budget-item">
-                    <span className="role-budget-label">Tool calls</span>
-                    <span className="role-budget-value">{model.max_tool_calls ?? '—'}</span>
-                  </div>
-                  <div className="role-budget-item">
-                    <span className="role-budget-label">Max time</span>
-                    <span className="role-budget-value">{model.max_duration_seconds ? `${model.max_duration_seconds}s` : '—'}</span>
-                  </div>
-                  <div className="role-budget-item">
-                    <span className="role-budget-label">Cost limit</span>
-                    <span className="role-budget-value">{model.max_cost_minor != null ? `${model.max_cost_minor} minor units` : '—'}</span>
-                  </div>
-                </div>
-                <details className="agent-policy-details">
-                  <summary>All policy limits</summary>
-                  <dl className="key-values">
+                )}
+                <details className="agent-policy-details" style={{ marginTop: '8px' }}>
+                  <summary style={{ cursor: 'pointer', fontSize: '0.8125rem', fontWeight: 600 }}>All policy limits</summary>
+                  <dl className="key-values" style={{ marginTop: '6px' }}>
                     <div><dt>Provider</dt><dd>{model.provider}</dd></div>
                     <div><dt>Model</dt><dd>{model.model}</dd></div>
-                    <div><dt>Max input tokens</dt><dd>{model.max_input_tokens ?? 'unavailable'}</dd></div>
-                    <div><dt>Max output tokens</dt><dd>{model.max_output_tokens ?? 'unavailable'}</dd></div>
-                    <div><dt>Max tool calls</dt><dd>{model.max_tool_calls ?? 'unavailable'}</dd></div>
-                    <div><dt>Max duration</dt><dd>{model.max_duration_seconds ? `${model.max_duration_seconds} seconds` : 'unavailable'}</dd></div>
-                    <div><dt>Cost limit</dt><dd>{model.max_cost_minor != null ? `${model.max_cost_minor} minor currency units` : 'unavailable'}</dd></div>
+                    <div><dt>Max input tokens</dt><dd>{model.max_input_tokens != null ? BigInt(model.max_input_tokens).toLocaleString() : 'Unbounded'}</dd></div>
+                    <div><dt>Max output tokens</dt><dd>{model.max_output_tokens != null ? BigInt(model.max_output_tokens).toLocaleString() : 'Unbounded'}</dd></div>
+                    <div><dt>Max tool calls</dt><dd>{model.max_tool_calls != null ? model.max_tool_calls.toLocaleString() : 'Unbounded'}</dd></div>
+                    <div><dt>Max duration</dt><dd>{model.max_duration_seconds != null ? formatDurationSeconds(model.max_duration_seconds) : 'Unbounded'}</dd></div>
+                    <div><dt>Cost limit</dt><dd>{model.max_cost_minor != null ? `${model.max_cost_minor.toLocaleString()} minor currency units` : 'Unbounded'}</dd></div>
                   </dl>
                 </details>
               </>

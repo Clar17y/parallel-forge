@@ -428,6 +428,18 @@ export function describeAuthoringOutcome(
     }
 
     case 'proposed':
+      if (outcome.adopted_revision_id) {
+        return {
+          state: 'proposed',
+          title: 'Proposal adopted',
+          description: 'The assistant proposal has been adopted as an authoritative revision.',
+          tone: 'success',
+          isExecuting: false,
+          isTerminal: true,
+          isWaiting: false,
+          actionRequired: null,
+        };
+      }
       return {
         state: 'proposed',
         title: 'Proposal ready for review',

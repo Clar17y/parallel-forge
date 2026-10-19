@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, test, vi } from 'vitest';
 import { SubscriptionUsageSummary } from './usage-summary';
@@ -46,13 +46,78 @@ function assessed(): Page {
   };
   return value;
 }
-afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); window.history.replaceState(null, '', '/'); });
+
+test('inactive usage reports stop requesting and polling while filters survive reactivation', async () => {
+  vi.useFakeTimers();
+  const fetcher = vi.spyOn(globalThis, 'fetch').mockImplementation(async input => response(
+    String(input).startsWith('/api/subscription-usage') ? empty : { items: [], truncated: false }));
+  render(<UsagePage />);
+  await act(async () => {});
+  const requests = () => fetcher.mock.calls.map(([path]) => String(path));
+  expect(requests()).toEqual(['/api/task-usage-report', '/api/projects']);
+  const projectFilter = screen.getByLabelText('Project filter');
+  fireEvent.change(projectFilter, { target: { value: 'unsaved-project' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Subscription assessment' }));
+  await act(async () => {});
+  const subscriptionRequests = () => requests().filter(path => path.startsWith('/api/subscription-usage'));
+  expect(subscriptionRequests()).toHaveLength(1);
+  await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+  expect(subscriptionRequests()).toHaveLength(2);
+  fireEvent.click(screen.getByRole('button', { name: 'Historical baselines' }));
+  await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
+  expect(subscriptionRequests()).toHaveLength(2);
+  expect(projectFilter).toBeVisible();
+  expect(projectFilter).toHaveValue('unsaved-project');
+  expect(requests().filter(path => path === '/api/task-usage-report')).toHaveLength(2);
+  fireEvent.click(screen.getByRole('button', { name: 'Subscription assessment' }));
+  await act(async () => {});
+  expect(subscriptionRequests()).toHaveLength(3);
+  expect(requests().some(path => path.startsWith('/api/usage?'))).toBe(false);
+});
+
+test('opens one usage report and restores hash-selected views without discarding mounted filters', async () => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async () => response(empty));
+  render(<UsagePage />);
+  expect(screen.getByRole('button', { name: 'Historical baselines' })).toHaveAttribute('aria-pressed', 'true');
+  expect(screen.getByRole('region', { name: 'Subscription usage', hidden: true })).not.toBeVisible();
+  const projectFilter = screen.getByLabelText('Project filter');
+  await userEvent.type(projectFilter, 'draft-project');
+  await userEvent.click(screen.getByRole('button', { name: 'Subscription assessment' }));
+  expect(screen.getByRole('region', { name: 'Subscription usage' })).toBeVisible();
+  await act(async () => {
+    window.history.replaceState(null, '', '/usage');
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+  });
+  expect(screen.getByRole('button', { name: 'Historical baselines' })).toHaveAttribute('aria-pressed', 'true');
+  expect(projectFilter).toBeVisible();
+  expect(projectFilter).toHaveValue('draft-project');
+});
+
+test('group measurements start closed while result and coverage warnings remain visible', async () => {
+  vi.spyOn(globalThis, 'fetch').mockResolvedValue(response(assessed()));
+  render(<SubscriptionUsageSummary />);
+  const article = await screen.findByRole('article');
+  expect(within(article).getByText(/3 attempts · 2 recorded results/)).toBeVisible();
+  expect(within(article).getByText('Cost currency unknown.')).toBeVisible();
+  expect(within(article).getByText(/Coverage incomplete/)).toBeVisible();
+  expect(within(article).getByText(/Confirmed quota/)).toBeVisible();
+  const measurement = within(article).getByText('Output tokens').parentElement!;
+  expect(measurement).not.toBeVisible();
+  const summary = within(article).getByText('Measurements, route and outcome details');
+  await userEvent.click(summary);
+  expect(measurement).toBeVisible();
+  expect(measurement).toHaveTextContent('0 · 1 of 3 attempts measured; 2 unknown');
+  await userEvent.click(summary);
+  expect(measurement).not.toBeVisible();
+  expect(measurement).toBeInTheDocument();
+});
 
 test('shows route, result counts and coverage beside zero and unknown measurements', async () => {
   vi.spyOn(globalThis, 'fetch').mockImplementation(async () => response(page()));
   render(<SubscriptionUsageSummary runId="run-1" />);
   const article = await screen.findByRole('article');
-  expect(article).toHaveTextContent('routine_implementation · google / flash');
+  expect(article).toHaveTextContent('Implementer · google / flash');
   expect(article).toHaveTextContent('Client: gemini_cli · Effort: medium · subscription · allowance_only');
   expect(article).toHaveTextContent('3 attempts · 2 recorded results (1 failed) · 1 without a recorded result');
   expect(within(article).getByText('Output tokens').parentElement).toHaveTextContent('0 · 1 of 3 attempts measured; 2 unknown');
@@ -111,10 +176,11 @@ test('a failed projection is retryable and does not invent an empty result', asy
   expect(await screen.findByText('No subscription attempts on this page.')).toBeInTheDocument();
 });
 
-test('the global usage page loads both subscription and API projections', async () => {
+test('the all-reports view loads both subscription and API projections', async () => {
   const fetcher = vi.spyOn(globalThis, 'fetch').mockImplementation(async input => response(
     String(input).startsWith('/api/subscription-usage') ? empty : { items: [], truncated: false }));
   render(<UsagePage />);
+  await userEvent.click(screen.getByRole('button', { name: 'All reports' }));
   expect(await screen.findByText('No subscription attempts on this page.')).toBeInTheDocument();
   expect(await screen.findByText('No usage on this page.')).toBeInTheDocument();
   expect(fetcher.mock.calls.map(([path]) => path)).toContain('/api/subscription-usage?offset=0&limit=25&include_assessment=true');
@@ -137,6 +203,7 @@ test('renders unknown primary measurements with complete coverage and inspection
   expect(outcome).toHaveTextContent('Tasks accepted by primary: 1');
   expect(outcome).toHaveTextContent('Latest recorded disposition: handoff_completed');
   expect(outcome).toHaveTextContent('Confirmed quota; probe pending');
+  await userEvent.click(within(outcome).getByText('Measurements, route and outcome details'));
   expect(within(outcome).getByRole('link', { name: 'Inspect tasks and attempts for run run-1' })).toHaveAttribute('href', '/runs/run-1#subscription-tasks');
   expect(fetcher.mock.calls[0][0]).toContain('include_assessment=true');
 });
@@ -169,4 +236,37 @@ test('keeps route outcome identities distinct and shows continued, open and ende
   expect(region).toHaveTextContent('1 measured intervals · 2 unknown');
   expect(screen.getAllByText(/Client:/)).toHaveLength(2);
   expect(errors).not.toHaveBeenCalled();
+});
+
+test('empty assessment with zero admitted attempts shows concise empty message and hides redundant pager without sea of unknown metrics', async () => {
+  const emptyAssessed: Page = {
+    items: [],
+    has_more: false,
+    assessment: {
+      primary_turns: 0,
+      all_attempts: 0,
+      delegation_decisions: 0,
+      wait_decisions: 0,
+      repair_debits: 0,
+      fallback_attempts: 0,
+      preferred_attempts: 0,
+      unknown_route_attempts: 0,
+      unverified_decisions: 0,
+      shares: {
+        input_tokens: { numerator: null, denominator: null, primary_attempts: 0, all_attempts: 0, numerator_measured_attempts: 0, numerator_unknown_attempts: 0, denominator_measured_attempts: 0, denominator_unknown_attempts: 0, coverage: null, share: null },
+        output_tokens: { numerator: null, denominator: null, primary_attempts: 0, all_attempts: 0, numerator_measured_attempts: 0, numerator_unknown_attempts: 0, denominator_measured_attempts: 0, denominator_unknown_attempts: 0, coverage: null, share: null },
+        duration_ms: { numerator: null, denominator: null, primary_attempts: 0, all_attempts: 0, numerator_measured_attempts: 0, numerator_unknown_attempts: 0, denominator_measured_attempts: 0, denominator_unknown_attempts: 0, coverage: null, share: null },
+      },
+      waits: { decisions: 0, continued: 0, unfinished: 0, ended_without_continuation: 0, measured_intervals: 0, unknown_intervals: 0, elapsed_ms: null },
+      outcomes: [],
+      outcomes_has_more: false,
+    },
+  };
+  vi.spyOn(globalThis, 'fetch').mockResolvedValue(response(emptyAssessed));
+  render(<SubscriptionUsageSummary />);
+  const assessment = await screen.findByRole('region', { name: 'Subscription usage assessment' });
+  expect(assessment).toHaveTextContent(/No admitted attempts/i);
+  expect(screen.queryByText(/primary measured share: Unknown/i)).not.toBeInTheDocument();
+  expect(screen.queryByText(/0 of 0 measured/i)).not.toBeInTheDocument();
+  expect(screen.queryByRole('navigation', { name: 'Subscription usage pages' })).not.toBeInTheDocument();
 });

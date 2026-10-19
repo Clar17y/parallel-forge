@@ -507,3 +507,37 @@ test('allows explicit removal of Jev default when appending profile version', as
     jev: null,
   }));
 });
+
+test('uses independent native role disclosures with purpose, model, and reasoning in summary, retaining values across collapse and reopen', async () => {
+  render(<ProfileEditor onSave={vi.fn()} />);
+  const roleDisclosures = document.querySelectorAll('details[data-testid^="role-disclosure-"]');
+  expect(roleDisclosures).toHaveLength(9);
+
+  // Each summary contains purpose, model, and reasoning
+  const primarySummary = roleDisclosures[0].querySelector('summary')!;
+  expect(primarySummary).toHaveTextContent('Primary');
+  expect(primarySummary).toHaveTextContent(/Reasoning/i);
+
+  // Role disclosures are independent: opening role 0 does not open role 1
+  expect(roleDisclosures[0]).not.toHaveAttribute('open');
+  expect(roleDisclosures[1]).not.toHaveAttribute('open');
+
+  await userEvent.click(primarySummary);
+  expect(roleDisclosures[0]).toHaveAttribute('open');
+  expect(roleDisclosures[1]).not.toHaveAttribute('open');
+
+  // Edit token cap inside primary role
+  await userEvent.click(roleDisclosures[0].querySelector('summary:is(:not(:scope > summary))') || screen.getAllByText('Advanced')[0]);
+  const inputCap = screen.getByRole('textbox', { name: 'Primary input token budget' });
+  await userEvent.type(inputCap, '42000');
+  expect(inputCap).toHaveValue('42000');
+
+  // Collapse and reopen primary role disclosure
+  await userEvent.click(primarySummary);
+  expect(roleDisclosures[0]).not.toHaveAttribute('open');
+  expect(screen.getByRole('textbox', { name: 'Primary input token budget' })).toHaveValue('42000');
+
+  await userEvent.click(primarySummary);
+  expect(roleDisclosures[0]).toHaveAttribute('open');
+  expect(screen.getByRole('textbox', { name: 'Primary input token budget' })).toHaveValue('42000');
+});

@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, test, vi } from 'vitest';
 import ProjectPage from './page';
@@ -17,7 +17,7 @@ function response(value: unknown, status = 200) {
   return Response.json(value, { status });
 }
 
-function installHttp({ initial = policy, latestPolicy = policy, firstPostConflict = false, deferProjectRefresh = false }: { initial?: typeof policy | null; latestPolicy?: typeof policy; firstPostConflict?: boolean; deferProjectRefresh?: boolean } = {}) {
+function installHttp({ initial = policy, latestPolicy = policy, firstPostConflict = false, deferProjectRefresh = false, policyVersion = 0 }: { initial?: typeof policy | null; latestPolicy?: typeof policy; firstPostConflict?: boolean; deferProjectRefresh?: boolean; policyVersion?: number } = {}) {
   let refreshCount = 0;
   let postCount = 0;
   let projectReadCount = 0;
@@ -48,7 +48,21 @@ function installHttp({ initial = policy, latestPolicy = policy, firstPostConflic
     if (url === `/api/projects/${projectId}`) {
       projectReadCount++;
       if (deferProjectRefresh && projectReadCount === 2) return pendingProjectRefresh;
-      return response({ id: projectId, name: 'Project', repository_path: 'C:/repo', github_repository: 'owner/repo', default_branch: 'main', policy_version: 0 });
+      return response({ id: projectId, name: 'Project', repository_path: 'C:/repo', github_repository: 'owner/repo', default_branch: 'main', policy_version: policyVersion });
+    }
+    if (url.startsWith(`/api/projects/${projectId}/policy-versions/`)) {
+      return response({
+        id: 'policy-1',
+        project_id: projectId,
+        version: 1,
+        policy_digest: 'sha256:' + 'a'.repeat(64),
+        document_schema_version: 1,
+        document: {
+          runner_mode: 'docker',
+          trusted_project: false,
+          commands: [],
+        },
+      });
     }
     if (url === '/api/subscription-profiles') return response([]);
     if (url === `/api/projects/${projectId}/subscription-profile`) return response(null);
@@ -159,4 +173,26 @@ test('guides a freshly registered project through its remaining setup steps', as
   expect(screen.getByText(/Choose how agents run/)).toBeInTheDocument();
   expect(screen.getByRole('link', { name: 'Manage profiles' })).toHaveAttribute('href', '/subscription-profiles');
   expect(screen.getByRole('link', { name: 'Start a run' })).toHaveAttribute('href', `/runs/new?project_id=${projectId}`);
+});
+
+test('renders current policy summary and explicit editor disclosure when policy exists', async () => {
+  installHttp({ policyVersion: 1 });
+  render(<ProjectPage />);
+  expect(await screen.findByLabelText('Policy summary')).toBeInTheDocument();
+  expect(screen.getByText(/Edit project policy · Create version 2/i)).toBeInTheDocument();
+});
+
+test('renders subscription profile and monitoring policy as readable summaries first with explicit editable disclosures', async () => {
+  installHttp({ policyVersion: 1 });
+  render(<ProjectPage />);
+  expect(await screen.findByLabelText('Policy summary')).toBeInTheDocument();
+
+  // Monitoring policy summary and disclosure
+  expect(screen.getByRole('region', { name: 'Monitoring policy summary' })).toBeInTheDocument();
+  expect(screen.getByText(/Edit monitoring policy/i)).toBeInTheDocument();
+
+  // Project subscription profile summary and disclosure
+  const profileRegion = screen.getByRole('region', { name: 'Project subscription profile' });
+  expect(profileRegion).toBeInTheDocument();
+  expect(within(profileRegion).getByText(/Select a subscription profile|Change subscription profile/i)).toBeInTheDocument();
 });

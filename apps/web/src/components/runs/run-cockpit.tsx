@@ -16,8 +16,9 @@ import { ChangesPanel } from './changes-panel';
 import Link from 'next/link';
 import { ExternalLink, GitBranch, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Disclosure } from '@/components/ui/disclosure';
 import { ChecksSummary } from './checks-summary';
-import { readableLabel } from './run-presentation';
+import { currentRunWaitReason, readableLabel } from './run-presentation';
 import { RunContext } from './run-context';
 import { RunStatusBanner } from './run-status-banner';
 import { WorkflowProgress } from './workflow-progress';
@@ -96,6 +97,7 @@ export function RunCockpit({ initial, tasks, queueDiagnostics, onRefreshTasks, s
     sectionNavigation.current?.querySelector<HTMLButtonElement>(`[data-section="${next}"]`)?.focus();
   };
   const stale = failed || connection !== 'connected';
+  const waitReason = currentRunWaitReason(value);
   const sections = hasTasks ? SECTIONS : SECTIONS.filter((item): item is Exclude<Section, 'tasks'> => item !== 'tasks');
   // The PR outcome belongs to the overview; above the section navigation it
   // repeated on every section and pushed the actual evidence down the page.
@@ -111,12 +113,14 @@ export function RunCockpit({ initial, tasks, queueDiagnostics, onRefreshTasks, s
   </section> : null;
   return <div className="run-page">
     <header className="run-heading">
-      <div className="run-identity"><h1>{value.task.title}</h1>
+      <div className="run-identity" style={{ width: '100%' }}><h1>{value.task.title}</h1>
         <div className="run-metadata">
           <Link href={`/projects/${value.project.id}`}>{value.project.name}</Link>
-          <span><GitBranch aria-hidden="true" />{value.resource.branch_name ?? 'Branch not yet created'}</span>
+          {value.resource.branch_name && <span><GitBranch aria-hidden="true" />{value.resource.branch_name}</span>}
           <span>Run <code>{value.run.id.slice(0, 8)}</code></span>
-          <span>Head <code>{value.candidate.commit?.slice(0, 7) ?? 'not yet recorded'}</code></span>
+          {value.candidate.commit && <span>Head <code>{value.candidate.commit.slice(0, 7)}</code></span>}
+          <span role="status">Events: {connection}{connection !== 'connected' && ' · Live updates are unavailable. Actions stay disabled until the event connection is restored.'}</span>
+          {value.security.runner_mode === 'trusted_host' && <span className="text-[var(--warning)]">Trusted host · unsandboxed execution. Commands are not isolated in Docker.</span>}
         </div>
       </div>
       <div className="run-heading-actions">
@@ -128,13 +132,13 @@ export function RunCockpit({ initial, tasks, queueDiagnostics, onRefreshTasks, s
     {failed && <p className="run-notice" role="alert">Current run state could not be refreshed. Actions are disabled until a successful refresh.</p>}
     <RunStatusBanner projection={value} stale={stale || reading} />
     {section === 'overview' && queueDiagnostics ? queueDiagnostics : null}
-    {value.stall_reason ? <p className="run-notice" role="alert" aria-label="Run is waiting">{value.stall_reason}</p> : null}
+    {value.stall_reason && (!waitReason
+      ? <Disclosure summary="Earlier wait reason"><p>{value.stall_reason}</p></Disclosure>
+      : value.recovery_hold ? <p className="run-notice" role="alert">{value.stall_reason}</p> : null)}
     {value.subscription_recovery_attention ? <section className="run-notice" role="alert" aria-label="Workflow recovery attention">
       <p>This workflow needs recovery review. The last completed tool is historical activity and does not mean it is still executing.</p>
       {tasks ? <Button variant="quiet" onClick={() => openSection('tasks')}>Review recovery</Button> : <p>Task recovery details are unavailable in this view.</p>}
     </section> : null}
-    <p className="meta" role="status">Events: {connection}{connection !== 'connected' && ' · Live updates are unavailable. Actions stay disabled until the event connection is restored.'}</p>
-    {value.security.runner_mode === 'trusted_host' && <p className="run-notice">Trusted host · unsandboxed execution. Commands are not isolated in Docker.</p>}
     <WorkflowProgress projection={value} stale={stale} />
     <nav ref={sectionNavigation} className="run-sections" aria-label="Run sections">
       {sections.map(item => <button key={item} type="button" data-section={item} aria-pressed={section === item} aria-controls={item === 'tasks' ? 'run-tasks-panel' : 'run-section-panel'}
