@@ -97,6 +97,8 @@ class LocalCliMcp:
     def cancel_checks(self) -> None:
         """Request bounded check settlement without interrupting cleanup twice."""
         self._closed = True
+        if self._checks_cancelled.is_set():
+            return
         self._checks_cancelled.set()
         for task in self._inflight.values():
             if not task.done() and not task.cancelling():

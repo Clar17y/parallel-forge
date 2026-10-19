@@ -492,7 +492,8 @@ async def test_cancelled_close_stops_the_checks_it_was_waiting_for():
 
 
 @pytest.mark.parametrize("during_close", [False, True])
-async def test_explicit_check_cancellation_settles_without_the_normal_finish_wait(during_close):
+@pytest.mark.parametrize("uncancel", [False, True])
+async def test_explicit_check_cancellation_settles_without_the_normal_finish_wait(during_close, uncancel):
     import asyncio
 
     cancelled, settled = asyncio.Event(), asyncio.Event()
@@ -502,6 +503,8 @@ async def test_explicit_check_cancellation_settles_without_the_normal_finish_wai
             await asyncio.Event().wait()
         except asyncio.CancelledError:
             cancelled.set()
+            if uncancel:
+                asyncio.current_task().uncancel()
             await asyncio.sleep(0.02)
             settled.set()
             raise
