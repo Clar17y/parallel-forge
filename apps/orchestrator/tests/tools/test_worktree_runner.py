@@ -29,6 +29,25 @@ from forge.tools.runner import RunnerExecutionError
 from forge.tools.worktree_runner import WorktreeRunnerFactory
 
 
+@pytest.fixture
+def stubbed_docker_access_lease(monkeypatch):
+    """These process-contract tests mock ACL grants, covered by native path tests."""
+    from forge.tools.docker import DockerRunner
+
+    calls = []
+
+    @contextlib.contextmanager
+    def lease(_self, cwd):
+        calls.append(("enter", cwd))
+        try:
+            yield
+        finally:
+            calls.append(("exit", cwd))
+
+    monkeypatch.setattr(DockerRunner, "managed_access_lease", lease)
+    return calls
+
+
 def test_terminal_result_is_immutable_and_validated() -> None:
     result = CommandResult(
         command_name="named-test",
@@ -408,6 +427,7 @@ def test_writer_lock_admission_deadline_is_bounded_without_real_waits(managed_ca
 
 def test_bound_docker_runner_uses_one_capability_mount_and_ownership_label(
     managed_case: tuple[ControlledGit, ManagedWorktree, ProjectPolicy, _Process],
+    stubbed_docker_access_lease,
 ) -> None:
     controlled, worktree, policy, _ = managed_case
     docker_policy = policy.model_copy(update={"runner_mode": RunnerMode.DOCKER})
@@ -425,6 +445,7 @@ def test_bound_docker_runner_uses_one_capability_mount_and_ownership_label(
 
     launch = process.calls[1][0]
     assert terminal.result.exit_code == 0
+    assert stubbed_docker_access_lease == [("enter", worktree.path), ("exit", worktree.path)]
     assert launch.count("--mount") == 1
     mount = launch[launch.index("--mount") + 1]
     assert "dst=/workspace" in mount
@@ -448,6 +469,7 @@ def test_bound_docker_runner_uses_one_capability_mount_and_ownership_label(
 
 def test_bound_docker_cleanup_refuses_foreign_replacement(
     managed_case: tuple[ControlledGit, ManagedWorktree, ProjectPolicy, _Process],
+    stubbed_docker_access_lease,
 ) -> None:
     controlled, worktree, policy, _ = managed_case
     docker_policy = policy.model_copy(update={"runner_mode": RunnerMode.DOCKER})
@@ -464,6 +486,8 @@ def test_bound_docker_cleanup_refuses_foreign_replacement(
             runner.run_terminal(RunCommandRequest(command_name="bound-test", kind=StepKind.TEST))
         )
 
+    assert process.launched
+    assert stubbed_docker_access_lease == [("enter", worktree.path), ("exit", worktree.path)]
     assert not any(call[0][:3] == ("docker", "rm", "-f") for call in process.calls)
 
 

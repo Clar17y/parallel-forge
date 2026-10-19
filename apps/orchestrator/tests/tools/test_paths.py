@@ -23,6 +23,37 @@ def _make_root(tmp_path: Path) -> Path:
     return root
 
 
+@pytest.fixture
+def controller_principal() -> None:
+    """Real controller filesystem operations require separation from the runner."""
+    if os.name == "posix" and os.getuid() == 10001:
+        pytest.skip("native controller filesystem test requires a host UID distinct from runner10001")
+
+
+@pytest.mark.parametrize(
+    ("host_uid", "owner_uid", "mode", "allowed"),
+    [
+        (10001, 10001, stat.S_IFDIR | 0o700, False),
+        (5327, 5327, stat.S_IFDIR | 0o700, True),
+        (5327, 5328, stat.S_IFDIR | 0o700, False),
+        (5327, 5327, stat.S_IFDIR | 0o755, False),
+        (5327, 5327, stat.S_IFREG | 0o700, False),
+    ],
+)
+def test_private_stage_requires_a_distinct_controller_and_owner_only_directory(
+    monkeypatch, host_uid, owner_uid, mode, allowed
+):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(paths, "_current_posix_uid", lambda: host_uid)
+    monkeypatch.setattr(paths.os, "fstat", lambda _fd: SimpleNamespace(st_uid=owner_uid, st_mode=mode))
+    if allowed:
+        paths._verify_private_posix_mutation_directory(123)
+    else:
+        with pytest.raises(RepositoryAccessDenied, match="private repository mutation staging"):
+            paths._verify_private_posix_mutation_directory(123)
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows mutation lock API")
 @pytest.mark.parametrize("code", [32, 33, 5, None])
 def test_windows_mutation_lock_distinguishes_contention_from_access_errors(
@@ -793,6 +824,7 @@ def test_normalize_and_contains_use_repository_relative_forward_slashes(tmp_path
     assert root.contains("src/../outside.txt") is False
 
 
+@pytest.mark.usefixtures("controller_principal")
 def test_exact_digest_delete_and_rename_are_regular_file_only(tmp_path: Path) -> None:
     root_path = _make_root(tmp_path)
     root = CanonicalRoot(root_path)
@@ -819,6 +851,7 @@ def test_exact_digest_delete_and_rename_are_regular_file_only(tmp_path: Path) ->
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX rename race")
+@pytest.mark.usefixtures("controller_principal")
 def test_rename_preserves_destination_created_after_absence_check(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -858,6 +891,7 @@ def test_rename_preserves_destination_created_after_absence_check(
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX staged mutation protocol")
 @pytest.mark.parametrize("operation", ["delete", "rename"])
+@pytest.mark.usefixtures("controller_principal")
 def test_posix_source_change_is_retained_in_operation_stage(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
 ) -> None:
@@ -901,6 +935,7 @@ def test_posix_source_change_is_retained_in_operation_stage(
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX staged mutation protocol")
+@pytest.mark.usefixtures("controller_principal")
 def test_posix_rename_retains_stage_when_destination_appears_after_staging(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -933,6 +968,7 @@ def test_posix_rename_retains_stage_when_destination_appears_after_staging(
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX staged mutation protocol")
+@pytest.mark.usefixtures("controller_principal")
 def test_posix_mutation_stage_collision_or_symlink_preserves_source(tmp_path: Path) -> None:
     root_path = _make_root(tmp_path)
     root = CanonicalRoot(root_path)
@@ -942,10 +978,11 @@ def test_posix_mutation_stage_collision_or_symlink_preserves_source(tmp_path: Pa
     stage = root_path / ".forge" / "mutations" / f".forge-mutation-{mutation_id.hex}"
     outside = tmp_path / "outside-stage"
     outside.write_bytes(b"outside")
-    stage.parent.mkdir(parents=True, mode=0o700)
+    (root_path / ".forge").mkdir(mode=0o700)
+    stage.parent.mkdir(mode=0o700)
     _make_symlink(stage, outside, directory=False)
 
-    with pytest.raises(RepositoryAccessDenied):
+    with pytest.raises(RepositoryAccessDenied, match="repository mutation staging is unavailable"):
         root.delete_file(
             "src/main.py",
             expected_digest=paths._repository_file_digest(original),
@@ -959,6 +996,7 @@ def test_posix_mutation_stage_collision_or_symlink_preserves_source(tmp_path: Pa
 @pytest.mark.skipif(os.name == "nt", reason="POSIX staged mutation protocol")
 @pytest.mark.parametrize("operation", ["delete", "rename"])
 @pytest.mark.parametrize("replacement", [b"external replacement", b"print('ok')\n"])
+@pytest.mark.usefixtures("controller_principal")
 def test_posix_replaced_private_stage_is_never_completed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str, replacement: bytes
 ) -> None:
@@ -999,6 +1037,7 @@ def test_posix_replaced_private_stage_is_never_completed(
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX staged mutation protocol")
+@pytest.mark.usefixtures("controller_principal")
 def test_private_mutation_stage_is_owner_only_and_excluded_from_reader(tmp_path: Path) -> None:
     root_path = _make_root(tmp_path)
     root = CanonicalRoot(root_path)
@@ -1026,6 +1065,7 @@ def test_private_mutation_stage_is_owner_only_and_excluded_from_reader(tmp_path:
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX staged mutation protocol")
+@pytest.mark.usefixtures("controller_principal")
 def test_private_stage_directory_entries_are_durable_before_source_rename(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -3583,6 +3623,7 @@ def test_repaired_docker_file_acl_requires_the_exact_host_and_runner_entries(
 
 
 @pytest.mark.skipif(os.name == "nt", reason="requires Linux POSIX ACLs")
+@pytest.mark.usefixtures("controller_principal")
 def test_docker_access_lease_restores_files_and_directory_defaults(tmp_path: Path) -> None:
     root_path = _make_root(tmp_path)
     leaf = root_path / "leaf"

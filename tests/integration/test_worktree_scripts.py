@@ -318,17 +318,24 @@ def test_bash_wrapper_forwards_lifecycle_arguments_and_failure_exit(
     subcommand: str,
     extra: str,
 ) -> None:
-    fake_bin = tmp_path / "fake python with spaces"
-    fake_bin.mkdir()
     capture = tmp_path / "captured arguments.txt"
-    fake_python = fake_bin / "python"
-    fake_python.write_text(
-        '#!/usr/bin/env bash\nprintf \'%s\\n\' "$@" > "$FORGE_CAPTURE"\nexit "$FORGE_FAKE_EXIT"\n',
+    fake_package = tmp_path / "fake package with spaces"
+    cli = fake_package / "forge" / "cli"
+    cli.mkdir(parents=True)
+    (cli.parent / "__init__.py").write_text("", encoding="utf-8")
+    (cli / "__init__.py").write_text("", encoding="utf-8")
+    (cli / "main.py").write_text(
+        "import os, sys\nfrom pathlib import Path\n"
+        "assert __spec__ is not None and __spec__.name == 'forge.cli.main'\n"
+        "Path(os.environ['FORGE_CAPTURE']).write_text(\n"
+        "    '\\n'.join(['-m', __spec__.name, *sys.argv[1:]]), encoding='utf-8')\n"
+        "raise SystemExit(int(os.environ['FORGE_FAKE_EXIT']))\n",
         encoding="utf-8",
     )
-    fake_python.chmod(0o700)
-    environment = dict(os.environ)
-    environment["PATH"] = str(fake_bin) + os.pathsep + environment.get("PATH", "")
+    # Use the current interpreter and a readable fake module. A synthetic
+    # executable under /tmp would be skipped by PATH on a noexec mount.
+    environment = _environment()
+    environment["PYTHONPATH"] = str(fake_package)
     environment["FORGE_CAPTURE"] = str(capture)
     environment["FORGE_FAKE_EXIT"] = "23"
     spaced_cwd = tmp_path / "repository with spaces"
