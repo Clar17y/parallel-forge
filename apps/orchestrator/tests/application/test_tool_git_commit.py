@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID
 
@@ -15,9 +16,10 @@ from forge.domain.operation import OperationStatus
 from forge.domain.resource import WorktreeIdentity
 from forge.domain.tool import ToolCallStatus, ToolName, ToolRequest
 from forge.persistence.models import Run
+from forge.persistence.models.execution import OperationIntent as OperationIntentRecord
 from forge.persistence.repositories.operations import PostgresOperationRepository
 from forge.persistence.unit_of_work import PostgresUnitOfWork
-from sqlalchemy import update
+from sqlalchemy import select, update
 
 from apps.orchestrator.tests.persistence.test_tool_write_invocation import (
     _ControlledArtifactStore,
@@ -73,6 +75,192 @@ class _BlockedCommitGit(_CommitGit):
         self.entered.set()
         assert self.release.wait(5)
         return super().prepare_commit(worktree, message)
+
+
+@pytest.mark.parametrize(
+    "prepare_fails,cancel_caller", [(True, False), (True, True), (False, False)]
+)
+async def test_git_settlement_under_run_lock_contention(
+    session_factory: object, tmp_path: Path, prepare_fails: bool, cancel_caller: bool
+) -> None:
+    from forge.application.adapters.git_commit import GIT_PREPARATION_FAILED
+    from forge.domain.actor import AgentRole
+    from forge.domain.tool import ToolAuthorizationContext
+
+    project_id, run_id, step_id, execution_id, base_sha, branch, _, path, _ = (
+        await _seed_test_database(session_factory, tmp_path)  # type: ignore[arg-type]
+    )
+    identity = WorktreeIdentity.for_run(project_id, run_id, branch, False)
+    worktree = ManagedWorktree(identity=identity, path=Path(path), base_sha=base_sha)
+    adapter_returned = asyncio.Event()
+
+    class Git(_BlockedCommitGit):
+        def prepare_commit(self, worktree, message):
+            prepared = super().prepare_commit(worktree, message)
+            if prepare_fails:
+                raise RuntimeError("completed preparation failure")
+            return prepared
+
+    class Executor(OperationExecutor):
+        async def invoke_admitted(self, intent, adapter):
+            outcome = await super().invoke_admitted(intent, adapter)
+            adapter_returned.set()
+            return outcome
+
+    git = Git(worktree)
+    store = _ControlledArtifactStore(tmp_path / "artifacts")
+    service = ControlledToolService(
+        lambda: PostgresUnitOfWork(session_factory),
+        controlled_git=git,
+        worktree=worktree,
+        artifact_store=store,
+        operation_executor=Executor(
+            PostgresOperationRepository(session_factory), execution_lease_seconds=1
+        ),
+    )  # type: ignore[arg-type]
+    context = ToolAuthorizationContext(
+        role=AgentRole.DEVELOPER,
+        run_id=run_id,
+        worktree_id=identity.worktree_name,
+        policy_version=1,
+        step_id=step_id,
+        agent_execution_id=execution_id,
+        invocation_id=UUID("f1111111-1111-4111-8111-111111111111"),
+    )
+    request = ToolRequest(name=ToolName.GIT_COMMIT, arguments={"message": "feat: contended run"})
+    caller = asyncio.create_task(service.invoke(context, request))
+    try:
+        await asyncio.wait_for(asyncio.to_thread(git.entered.wait), timeout=2)
+        async with session_factory() as locked:  # type: ignore[operator]
+            await locked.execute(select(Run).where(Run.id == run_id).with_for_update())
+            git.release.set()
+            await asyncio.wait_for(adapter_returned.wait(), timeout=2)
+            if cancel_caller:
+                caller.cancel()
+            # The operation owner stops renewing at adapter return. The run
+            # lock must not delay persisting its actual completed failure.
+            await asyncio.sleep(1.2)
+            assert not caller.done()
+            async with PostgresUnitOfWork(session_factory) as work:  # type: ignore[arg-type]
+                call = await work.tool_calls.get(context.invocation_id)
+                preparation = await work.operations.get(call.operation_intent_id)
+                if prepare_fails:
+                    assert preparation.status is OperationStatus.FAILED
+                    assert preparation.error == GIT_PREPARATION_FAILED
+                    assert preparation.execution_owner is None
+                else:
+                    assert preparation.status is OperationStatus.PENDING
+                    assert preparation.execution_lease_expires_at < datetime.now(UTC)
+                assert preparation.outcome is None
+                assert call.status is ToolCallStatus.RUNNING
+                assert (
+                    await work.operations.get_by_idempotency_key(f"git.commit:{call.id}:publish")
+                    is None
+                )
+            await locked.rollback()
+        if cancel_caller:
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(caller, timeout=5)
+        elif not prepare_fails:
+            # Success still requires atomic publication admission under the run
+            # lock and a valid operation lease. Losing that lease stays uncertain.
+            with pytest.raises(ToolInvocationError):
+                await asyncio.wait_for(caller, timeout=5)
+            async with PostgresUnitOfWork(session_factory) as work:  # type: ignore[arg-type]
+                call = await work.tool_calls.get(context.invocation_id)
+                preparation = await work.operations.get(call.operation_intent_id)
+                assert preparation.status is OperationStatus.PENDING
+                assert preparation.outcome is None
+                assert call.status is ToolCallStatus.RUNNING and not call.artifact_digests
+                assert (
+                    await work.operations.get_by_idempotency_key(f"git.commit:{call.id}:publish")
+                    is None
+                )
+            assert (git.prepares, git.publishes) == (1, 0)
+            return
+        else:
+            result = await asyncio.wait_for(caller, timeout=5)
+            assert result.status is ToolCallStatus.FAILED
+        replay = await service.invoke(context, request)
+        assert replay.status is ToolCallStatus.FAILED
+        assert replay.error is not None and replay.error.message == GIT_PREPARATION_FAILED
+        assert len(replay.artifact_digests) == 1
+        assert await store.verify(replay.artifact_digests[0])
+        assert "new_sha" not in replay.metadata
+        assert (git.prepares, git.publishes) == (1, 0)
+    finally:
+        git.release.set()
+        await asyncio.gather(caller, return_exceptions=True)
+
+
+@pytest.mark.parametrize("ownership", ["expired", "released", "different"])
+async def test_completed_git_failure_cannot_settle_after_operation_ownership_loss(
+    session_factory: object, tmp_path: Path, ownership: str
+) -> None:
+    from forge.domain.actor import AgentRole
+    from forge.domain.tool import ToolAuthorizationContext
+
+    project_id, run_id, step_id, execution_id, base_sha, branch, _, path, _ = (
+        await _seed_test_database(session_factory, tmp_path)  # type: ignore[arg-type]
+    )
+    identity = WorktreeIdentity.for_run(project_id, run_id, branch, False)
+    worktree = ManagedWorktree(identity=identity, path=Path(path), base_sha=base_sha)
+
+    class Git(_CommitGit):
+        def prepare_commit(self, worktree, message):
+            super().prepare_commit(worktree, message)
+            raise RuntimeError("completed preparation failure")
+
+    class Executor(OperationExecutor):
+        async def invoke_admitted(self, intent, adapter):
+            outcome = await super().invoke_admitted(intent, adapter)
+            # Change durable ownership after the adapter has completed and its
+            # renewal has stopped, before the service can persist the failure.
+            values = (
+                {"execution_lease_expires_at": datetime.now(UTC) - timedelta(seconds=1)}
+                if ownership == "expired"
+                else {"execution_owner": None, "execution_lease_expires_at": None}
+                if ownership == "released"
+                else {"execution_owner": "different-owner"}
+            )
+            async with session_factory() as session:  # type: ignore[operator]
+                await session.execute(
+                    update(OperationIntentRecord)
+                    .where(OperationIntentRecord.id == intent.id)
+                    .values(**values)
+                )
+                await session.commit()
+            return outcome
+
+    git = Git(worktree)
+    service = ControlledToolService(
+        lambda: PostgresUnitOfWork(session_factory),
+        controlled_git=git,
+        worktree=worktree,
+        artifact_store=_ControlledArtifactStore(tmp_path / "artifacts"),
+        operation_executor=Executor(PostgresOperationRepository(session_factory)),
+    )  # type: ignore[arg-type]
+    context = ToolAuthorizationContext(
+        role=AgentRole.DEVELOPER,
+        run_id=run_id,
+        worktree_id=identity.worktree_name,
+        policy_version=1,
+        step_id=step_id,
+        agent_execution_id=execution_id,
+        invocation_id=UUID("f1111111-1111-4111-8111-111111111111"),
+    )
+    with pytest.raises(ToolInvocationError):
+        await service.invoke(
+            context, ToolRequest(name=ToolName.GIT_COMMIT, arguments={"message": "feat: stale"})
+        )
+    async with PostgresUnitOfWork(session_factory) as work:  # type: ignore[arg-type]
+        call = await work.tool_calls.get(context.invocation_id)
+        preparation = await work.operations.get(call.operation_intent_id)
+        assert preparation.status is OperationStatus.PENDING
+        assert preparation.outcome is None and preparation.error is None
+        assert call.status is ToolCallStatus.RUNNING and not call.artifact_digests
+        assert await work.operations.get_by_idempotency_key(f"git.commit:{call.id}:publish") is None
+    assert (git.prepares, git.publishes) == (1, 0)
 
 
 async def test_git_phase_failure_rolls_back_publication_admission(

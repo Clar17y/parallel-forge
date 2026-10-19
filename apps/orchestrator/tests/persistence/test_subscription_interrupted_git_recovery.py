@@ -39,7 +39,7 @@ from forge.persistence.models.subscription_usage import SubscriptionAttemptConsu
 from forge.persistence.queries.recovery import startup_intervention_hold
 from forge.persistence.queries.subscription_tasks import SubscriptionTaskQuery
 from forge.persistence.repositories.subscription_recovery import RecoveryConflict
-from sqlalchemy import func, select
+from sqlalchemy import JSON, func, select
 from test_scheduler_acceptance import _remove_disposable_subscription_rows  # noqa: F401
 from test_subscription_review_selection import selection_case
 
@@ -521,10 +521,20 @@ async def test_unstarted_read_reservation_is_retained_without_replay_or_claimed_
                         arguments_digest=canonical_digest({}),
                     )
                 ),
-                **({"receipt_payload": None} if json_null else {}),
+                **({"receipt_payload": JSON.NULL} if json_null else {}),
             )
         )
         await work.commit()
+    async with factory() as work:
+        stored_null = (
+            await work.session.execute(
+                select(
+                    SubscriptionOperationBinding.receipt_payload.is_(None),
+                    func.jsonb_typeof(SubscriptionOperationBinding.receipt_payload),
+                ).where(SubscriptionOperationBinding.durable_operation_id == operation_id)
+            )
+        ).one()
+        assert tuple(stored_null) == ((False, "null") if json_null else (True, None))
     actor = AuthenticatedActor(actor_id=uuid4(), actor_class="operator", session_id=uuid4())
     service = SubscriptionRecoveryService(factory)
     args = {

@@ -2033,10 +2033,11 @@ class ControlledToolService:
         prepare_adapter = PrepareGitCommitAdapter(self._git, self._worktree)
         outcome = await executor.invoke_admitted(preparation, prepare_adapter)
         if outcome.status is OperationStatus.FAILED and outcome.error == GIT_PREPARATION_FAILED:
-            # Retain the completed failure before artifact IO. If that IO fails,
-            # recovery can settle the audit without repeating staging or publication.
+            # Settle under the operation lease before waiting for run serialization
+            # or artifact IO. Renewal stopped at adapter return: a contended run
+            # lock must not erase this completed failure. The transaction releases
+            # the operation lock before audit finalization acquires the run lock.
             async with self._open_uow() as failed_work:
-                await failed_work.runs.get_for_update(context.run_id)
                 current = await failed_work.tool_calls.get(call_id)
                 if current.status is not ToolCallStatus.RUNNING or (
                     await failed_work.operations.get_by_idempotency_key(
