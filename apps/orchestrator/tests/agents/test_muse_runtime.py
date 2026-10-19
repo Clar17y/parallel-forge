@@ -1312,8 +1312,12 @@ def test_muse_home_cleanup_identity_mismatch_and_missing_path(tmp_path: Path) ->
     info = home.path.lstat()
     home._identity = (info.st_dev, info.st_ino)
 
-    shutil.rmtree(home.path)
+    # Keep the original inode allocated so the replacement has a distinct identity.
+    original = home.path.with_name("original-authoring-home")
+    home.path.rename(original)
     home.path.mkdir(mode=0o700)
+    replacement = home.path.lstat()
+    assert (replacement.st_dev, replacement.st_ino) != home._identity
     (home.path / "foreign.txt").write_text("keep", encoding="utf-8")
     with pytest.raises(OSError):
         home.cleanup()
