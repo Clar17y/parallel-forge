@@ -30,7 +30,7 @@ export function PlanApprovalEvidence({
           {evidence.local_remediation_limit} {evidence.local_remediation_limit === 1 ? 'attempt' : 'attempts'}
         </dd>
         <dt>Token limit</dt>
-        <dd>{evidence.token_budget} tokens</dd>
+        <dd>{evidence.token_budget === null ? 'Unlimited' : `${evidence.token_budget} tokens`}</dd>
         <dt>Cost limit</dt>
         <dd>{evidence.cost_budget_minor} minor currency units</dd>
         <dt>Duration limit</dt>

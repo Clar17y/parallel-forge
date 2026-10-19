@@ -30,9 +30,9 @@ test('cockpit layout, task navigation and mobile drawer remain accessible', asyn
   const tasks = page.getByRole('button', { name: 'Tasks', exact: true });
   await tasks.click();
   await expect(tasks).toHaveAttribute('aria-pressed', 'true');
-  await expect(page.getByRole('region', { name: 'Subscription tasks' })).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Run usage and subscription tasks', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Overview', exact: true }).click();
-  await expect(page.getByRole('region', { name: 'Subscription tasks' })).not.toBeVisible();
+  await expect(page.getByRole('region', { name: 'Run usage and subscription tasks', exact: true })).not.toBeVisible();
   await page.getByRole('button', { name: 'View checks', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Checks', exact: true })).toBeFocused();
 });

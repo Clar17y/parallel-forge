@@ -9,7 +9,6 @@ import pytest
 from alembic import command
 from forge.persistence.database import create_engine
 from sqlalchemy import text
-from sqlalchemy.exc import DBAPIError
 
 from apps.orchestrator.tests.epic_run_bridge.test_eligibility import BridgeWork
 from apps.orchestrator.tests.epic_run_bridge.test_eligibility import (
@@ -44,7 +43,7 @@ async def test_nonempty_verified_handoff_refuses_downgrade_without_losing_proof(
 
     before = await snapshot()
     assert len(before) == 1
-    with pytest.raises(DBAPIError, match="cannot discard epic completion handoffs"):
+    with pytest.raises(RuntimeError, match="durable subject admission snapshots must not be discarded"):
         await asyncio.to_thread(
             command.downgrade, alembic_config_factory(migrated_database_url), "20261005_0035"
         )
@@ -56,7 +55,8 @@ async def test_nonempty_dispatch_authority_refuses_downgrade_and_retains_exact_r
     session_factory, migrated_database_url, alembic_config_factory, tmp_path
 ) -> None:
     # The real-Git producer supplies a valid frozen execution FK. The row is
-    # deliberately nonempty so migration 0037 must refuse a lossy rollback.
+    # deliberately nonempty. The newer usage-snapshot guard must refuse first;
+    # the retained handoff and dispatch authority must still survive intact.
     await _produce_verified_handoff(
         session_factory, lambda: BridgeWork(session_factory), tmp_path
     )
@@ -84,7 +84,7 @@ async def test_nonempty_dispatch_authority_refuses_downgrade_and_retains_exact_r
 
         before = await snapshot()
         assert len(before) == 1 and before[0][2:4] == (3, False)
-        with pytest.raises(DBAPIError, match="cannot discard epic dispatch authority"):
+        with pytest.raises(RuntimeError, match="durable subject admission snapshots must not be discarded"):
             await asyncio.to_thread(
                 command.downgrade,
                 alembic_config_factory(migrated_database_url),

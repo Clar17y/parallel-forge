@@ -13,7 +13,7 @@ export type PlanApprovalEvidenceData = {
   required_checks: Record<string, string>;
   runner_mode: 'docker' | 'trusted_host';
   local_remediation_limit: number;
-  token_budget: number;
+  token_budget: number | null;
   cost_budget_minor: number;
   duration_budget_seconds: number;
 };
@@ -154,7 +154,7 @@ export function parsePlanEvidence(value: Record<string, unknown>): PlanEvidence 
   }
 
   const tokenBudget = value.token_budget;
-  if (!Number.isSafeInteger(tokenBudget) || Number(tokenBudget) < 0) {
+  if (tokenBudget !== null && (!Number.isSafeInteger(tokenBudget) || Number(tokenBudget) < 0)) {
     throw new Error('Plan evidence unavailable');
   }
 
@@ -181,7 +181,7 @@ export function parsePlanEvidence(value: Record<string, unknown>): PlanEvidence 
     required_checks: requiredChecks as Record<string, string>,
     runner_mode: runnerMode,
     local_remediation_limit: Number(localRemediationLimit),
-    token_budget: Number(tokenBudget),
+    token_budget: tokenBudget === null ? null : Number(tokenBudget),
     cost_budget_minor: Number(costBudgetMinor),
     duration_budget_seconds: Number(durationBudgetSeconds),
   };

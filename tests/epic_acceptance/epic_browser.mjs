@@ -19,9 +19,11 @@ try {
   await expect(page.getByText('Sequential Delivery', { exact: true })).toBeVisible({ timeout: 30000 });
   await expect(page.getByText('Work-Item Progression', { exact: true })).toBeVisible();
   await expect(page.getByText('Linked Child Runs & Human Approval Gates', { exact: true })).toBeVisible();
-  await expect(page.getByText('#1 Deliver item 1')).toBeVisible();
-  await expect(page.getByText('#2 Deliver item 2')).toBeVisible();
-  await expect(page.getByText('#3 Deliver item 3')).toBeVisible();
+  const progression = page.getByRole('region', { name: 'Work-Item Progression', exact: true });
+  const children = page.getByRole('region', { name: 'Linked Child Runs & Human Approval Gates', exact: true });
+  for (const number of [1, 2, 3]) {
+    await expect(progression.getByText(`#${number} Deliver item ${number}`, { exact: true })).toBeVisible();
+  }
   expect(new URL(page.url()).hash).toBe('');
   if (phase === 'enable') {
     await expect(page.getByText('Sequential delivery is off.')).toBeVisible();
@@ -32,15 +34,15 @@ try {
     await expect(page.getByText('Sequential delivery is on.')).toBeVisible();
   } else if (phase === 'plan') {
     await expect(page.getByText('Sequential delivery is on.')).toBeVisible();
-    await expect(page.getByRole('link', { name: 'Review Gate at plan' })).toHaveAttribute('href', /\/runs\//);
-    await expect(page.getByText('Blocked: The prerequisite work item has not started.')).toBeVisible();
+    await expect(children.getByRole('link', { name: 'Review Gate at plan', exact: true })).toHaveAttribute('href', /\/runs\//);
+    await expect(progression.getByText('Blocked: The prerequisite work item has not started.', { exact: true })).toBeVisible();
   } else if (phase === 'finished') {
     await expect(page.getByText('Execution completed (status SUCCEEDED).')).toBeVisible();
     await expect(page.getByText('Sequential delivery is off.')).toBeVisible();
     for (const number of [1, 2, 3]) {
-      await expect(page.getByRole('link', { name: `Run for Deliver item ${number}` })).toBeVisible();
+      await expect(children.getByRole('link', { name: `Run for Deliver item ${number}`, exact: true })).toBeVisible();
     }
-    await expect(page.getByText('Integrated and verified')).toHaveCount(3);
+    await expect(progression.getByText('Integrated and verified', { exact: true })).toHaveCount(3);
   } else throw new Error(`unknown phase ${phase}`);
   process.stdout.write(JSON.stringify({ phase, epicId, executionId, observed: true }));
 } finally {

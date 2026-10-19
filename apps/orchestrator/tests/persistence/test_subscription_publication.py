@@ -131,7 +131,9 @@ async def test_acceptance_opens_pr_gate_without_inventing_a_reviewer(session_fac
         assert await dispatch._store.open_bytes(evidence.diff_digest) == diff_text.encode()
         diff = await work.artifacts.get_by_digest(evidence.diff_digest, run_id=run.id)
         assert diff.media_type == "text/plain" and not diff.truncated
-        assert diff.metadata["head_sha"] == evidence.candidate_commit
+        assert not diff.metadata
+        assert evidence.candidate_commit == proposal.review.candidate.head_sha
+        assert evidence.candidate_tree_digest == proposal.review.candidate.tree_digest
         acceptance = decode_evidence_manifest(
             await dispatch._store.open_bytes(evidence.acceptance_digest)
         )

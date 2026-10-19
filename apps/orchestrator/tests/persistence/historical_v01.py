@@ -108,7 +108,9 @@ def historical_source():
     )
 
 
-async def historical_process(source, database_url, payload, *, auth_state=None):
+async def historical_process(
+    source, database_url, payload, *, auth_state=None, duration_seconds=45
+):
     assert re.fullmatch(r"forge_test_[0-9a-f]{32}", make_url(database_url).database or "")
     environment = {
         key: os.environ[key] for key in ("PATH", "TEMP", "TMP", "PATHEXT") if key in os.environ
@@ -124,7 +126,7 @@ async def historical_process(source, database_url, payload, *, auth_state=None):
         cwd=source.root,
         environment=environment,
         allowed_environment=frozenset(environment),
-        duration_seconds=45,
+        duration_seconds=duration_seconds,
     )
     session = await ClientProcessSupervisor().start(spec)
     response = None
@@ -174,6 +176,10 @@ async def _historical_case(
     data = tmp_path / "data"
     data.mkdir()
     auth_state = {}
+    commands = get_acceptance_command_specs()
+    # The pinned v0.1 client predates optional command path scopes. Do not
+    # silently discard a real restriction when constructing its old wire shape.
+    assert all(item.path_scope is None for item in commands)
     seeded = await historical_process(
         source,
         database_url,
@@ -185,10 +191,18 @@ async def _historical_case(
             "data_root": str(data),
             "task": fixture.case_contract.task,
             "commands": TypeAdapter(tuple[CommandSpec, ...]).dump_python(
-                get_acceptance_command_specs(), mode="json"
+                commands, mode="json", exclude={"__all__": {"path_scope"}}
             ),
         },
         auth_state=auth_state,
+        # Review executes the unit check once through the developer and every
+        # configured check again through validation. Keep the process deadline
+        # outside those real command budgets plus the existing startup allowance.
+        duration_seconds=(
+            45 + sum(item.timeout_seconds for item in commands)
+            + next(item.timeout_seconds for item in commands if item.name == "unit")
+            if scenario == "review" else 45
+        ),
     )
     assert seeded["schema_revision"] == "20260909_0006"
     engine = create_engine(database_url)

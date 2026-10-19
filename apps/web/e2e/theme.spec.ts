@@ -7,6 +7,7 @@ async function mockSession(page: Page) {
     if (path.endsWith('/auth/session')) return route.fulfill({ json: { actor_id: 'appearance-check', actor_class: 'operator' } });
     if (path.endsWith('/auth/csrf')) return route.fulfill({ json: { csrf_token: 'appearance-check' } });
     if (path.endsWith('/run-projections')) return route.fulfill({ json: { items: [], truncated: false } });
+    if (path.endsWith('/approvals')) return route.fulfill({ json: { items: [], offset: 0, limit: 25, truncated: false } });
     if (path.endsWith('/dashboard/summary')) return route.fulfill({ json: { total_runs: 0, runs: {} } });
     return route.fulfill({ json: [] });
   });

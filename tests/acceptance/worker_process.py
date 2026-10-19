@@ -389,10 +389,17 @@ class ScriptedObservedSubscriptionAdapter:
                         tokens=TokenCounts(input_tokens=60, output_tokens=40),
                     ))
                     logger.info("[DELEGATED OBSERVED] usage persisted while process live")
-                    await asyncio.sleep(3)
+                    if check_task is not None:
+                        # Keep the observed invocation active until checkpoint
+                        # cancellation. A three-second sleep races the runner's
+                        # five-second renewal and can leave this catch too early.
+                        await asyncio.shield(check_task)
+                    else:
+                        await asyncio.sleep(3)
                 except asyncio.CancelledError:
                     logger.info("[DELEGATED OBSERVED] invocation cancelled")
                     result = await process.close()
+                    assert result.stop_confirmed
                     logger.info("[DELEGATED OBSERVED] cancelled process settled")
                     if check_task is not None:
                         receipt = await asyncio.wait_for(asyncio.shield(check_task), timeout=10)

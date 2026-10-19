@@ -154,6 +154,7 @@ def test_v02_selected_profile_survives_epic_upgrade_reupgrade_and_safe_downgrade
                     id=run_id, project_id=project_id, task_id=task_id, policy_version=1,
                     state="AWAITING_PLAN_APPROVAL", version=1, pending_gate="plan",
                     pending_evidence_digest="c" * 64,
+                    token_budget=0,  # Required old-schema default, before optional budgets.
                 ))
                 await session.flush()
                 session.add(Approval(

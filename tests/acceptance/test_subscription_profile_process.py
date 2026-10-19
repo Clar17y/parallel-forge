@@ -236,7 +236,12 @@ def test_profile_edits_and_queued_resume_preserve_frozen_runs_across_process_res
                         ["profile", "show", "--profile-id", profile_id, "--version", "1"]
                     )
                 )
-                == profile
+                == {
+                    **profile,
+                    "preferences": [
+                        {"token_budget": None, **item} for item in profile["preferences"]
+                    ],
+                }
             )
             selected = _mutation(
                 client,
@@ -249,7 +254,10 @@ def test_profile_edits_and_queued_resume_preserve_frozen_runs_across_process_res
                     "expected_profile_version": 1,
                 },
             )
-            assert selected == appended
+            assert {
+                **selected,
+                "preferences": [{"token_budget": None, **item} for item in selected["preferences"]],
+            } == appended
             luna_profile = _mutation(
                 client, "POST", "/api/subscription-profiles",
                 _profile(ASTRA, worker=LUNA, fallback=TERRA),
@@ -285,7 +293,7 @@ def test_profile_edits_and_queued_resume_preserve_frozen_runs_across_process_res
             luna_frozen = asyncio.run(_stored(test_database_url))["envelopes"][luna_id]
             assert luna_frozen["routes"]["routine_implementation"] == LUNA
             assert luna_frozen["fallbacks"]["routine_implementation"] == [TERRA]
-            assert client.get(selection_path).json() == appended
+            assert client.get(selection_path).json() == selected
             cli_task = _mutation(
                 client, "POST", "/api/tasks",
                 {"project_id": project["id"], "title": "CLI Luna override", "body": "CLI fixture"},
@@ -328,7 +336,7 @@ def test_profile_edits_and_queued_resume_preserve_frozen_runs_across_process_res
             primary_after = _queued_primary(client, original_id, ASTRA)
             assert primary_after["task_id"] == primary_before["task_id"]
             _queued_primary(client, future_id, SOL)
-            assert client.get(selection_path).json() == appended
+            assert client.get(selection_path).json() == selected
             assert (
                 json.loads(
                     harness.run_cli(["profile", "project-show", "--project-id", project["id"]])
@@ -338,7 +346,7 @@ def test_profile_edits_and_queued_resume_preserve_frozen_runs_across_process_res
             settled = asyncio.run(_stored(test_database_url))
             assert settled["envelopes"] == before_restart["envelopes"]
             assert {row["profile_version"] for row in settled["envelopes"].values()} == {1, 2}
-            assert client.get(selection_path).json() == appended
+            assert client.get(selection_path).json() == selected
             assert all(value == 0 for value in settled["execution_counts"].values())
             assert settled["run_controls"][original_id] == {"run.paused": 1, "run.resumed": 1}
             assert settled["profile_versions"] == 3

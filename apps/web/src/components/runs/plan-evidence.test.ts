@@ -56,6 +56,19 @@ describe('parsePlanEvidence', () => {
     expect(parsed).toEqual(subscriptionEvidence);
   });
 
+  test.each([legacyEvidence, subscriptionEvidence])('preserves an explicitly unlimited token budget', evidence => {
+    const unlimited = { ...evidence, token_budget: null };
+    expect(parsePlanEvidence(unlimited)).toEqual(unlimited);
+  });
+
+  test.each([undefined, -1, 1.5, NaN, Infinity, '100', false])('rejects invalid token budget %s', token_budget => {
+    expect(() => parsePlanEvidence({ ...legacyEvidence, token_budget })).toThrow('Plan evidence unavailable');
+  });
+
+  test('preserves an explicit zero token budget', () => {
+    expect(parsePlanEvidence({ ...legacyEvidence, token_budget: 0 }).token_budget).toBe(0);
+  });
+
   test('rejects unexpected extra keys', () => {
     expect(() =>
       parsePlanEvidence({ ...legacyEvidence, extra_key: 'forbidden' } as unknown as Record<string, unknown>),

@@ -6,6 +6,7 @@ from uuid import uuid4
 
 import pytest
 from alembic import command
+from alembic.script import ScriptDirectory
 from forge.domain.operation import canonical_digest
 from forge.persistence.database import create_engine
 from forge.persistence.models.base import Base
@@ -128,7 +129,7 @@ async def test_dispatch_and_control_checks_reject_partial_authority(
             alembic_config_factory(migrated_database_url), "20261007_0036",
         )
     async with session_factory() as session:
-        assert await session.scalar(text("SELECT version_num FROM alembic_version")) == "20261010_0038"
+        assert await session.scalar(text("SELECT version_num FROM alembic_version")) == ScriptDirectory.from_config(alembic_config_factory(migrated_database_url)).get_current_head()
 
 
 @pytest.mark.integration
@@ -186,11 +187,11 @@ async def test_handoff_hash_checks_immutability_and_nonempty_downgrade_refusal(
         with pytest.raises(DBAPIError, match="epic completion handoffs are immutable"):
             async with session_factory() as session, session.begin():
                 await session.execute(text(statement), {"id": values["id"]})
-    with pytest.raises(DBAPIError, match="cannot discard epic completion handoffs"):
+    with pytest.raises(RuntimeError, match="durable subject admission snapshots must not be discarded"):
         await asyncio.to_thread(
             command.downgrade, alembic_config_factory(migrated_database_url),
             "20261005_0035",
         )
     async with session_factory() as session:
         assert await session.scalar(text("SELECT count(*) FROM epic_completion_handoffs")) == 1
-        assert await session.scalar(text("SELECT version_num FROM alembic_version")) == "20261010_0038"
+        assert await session.scalar(text("SELECT version_num FROM alembic_version")) == ScriptDirectory.from_config(alembic_config_factory(migrated_database_url)).get_current_head()

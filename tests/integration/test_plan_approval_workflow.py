@@ -87,7 +87,7 @@ async def test_restart_returns_refreshed_bindings_and_rolls_back_event_failure(
         assert run.version == before.version + (0 if fail_event else 1)
         assert run.base_sha == (before.base_sha if fail_event else "b" * 40)
         assert (run.token_budget, run.cost_budget_minor, run.duration_budget_seconds) == (
-            (100, 10, 60) if fail_event else (0, 0, 0)
+            (100, 10, 60) if fail_event else (None, 0, 0)
         )
 
 

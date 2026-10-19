@@ -410,16 +410,14 @@ class SubscriptionPublicationController:
                 or not await self._store.verify(digest)
             ):
                 raise CommandRecoveryRequired("subscription candidate diff storage differs")
-            await work.artifacts.record(
+            # Raw diff bytes may recur after a retry or base update. Their
+            # first provenance is immutable; the new approval evidence binds
+            # this verified candidate, base and producing attempt separately.
+            await work.artifacts.record_content_reference(
                 descriptor,
                 run_id=source.decision.run_id,
                 producer_type="subscription_candidate_diff",
                 producer_id=source.attempt_id,
-                metadata={
-                    "head_sha": source.review.candidate.head_sha,
-                    "base_sha": source.review.candidate.base_sha,
-                    "candidate_tree_digest": source.review.candidate.tree_digest,
-                },
             )
         return digest
 

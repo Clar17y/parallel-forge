@@ -208,3 +208,74 @@ async def test_database_integrity_error_is_translated_without_raw_context(
     assert error.__context__ is None
     assert secret not in rendered
     assert "INSERT INTO artifacts" not in rendered
+
+@pytest.mark.integration
+async def test_raw_candidate_diff_reference_preserves_original_lineage_across_attempts_and_runs(
+    tmp_path, session_factory, persisted_run
+):
+    from forge.persistence.unit_of_work import PostgresUnitOfWork
+
+    other = type(persisted_run)(
+        id=uuid4(), project_id=persisted_run.project_id, task_id=persisted_run.task_id
+    )
+    async with PostgresUnitOfWork(session_factory) as work:
+        await work.runs.create(other)
+        await work.commit()
+    store = FilesystemArtifactStore(tmp_path)
+    descriptor = await store.put_bytes(b'diff --git a/a b/a\n-old\n+new\n', media_type='text/plain')
+    repo = ArtifactRepository(session_factory)
+    original = await repo.record(
+        descriptor, run_id=persisted_run.id, producer_type='subscription_candidate_diff',
+        producer_id=uuid4(), metadata={'head_sha': 'a' * 40, 'base_sha': 'b' * 40,
+                                      'candidate_tree_digest': 'c' * 64},
+    )
+    later_attempt = uuid4()
+    replay = await repo.record_content_reference(
+        descriptor, run_id=persisted_run.id, producer_type='subscription_candidate_diff',
+        producer_id=later_attempt,
+    )
+    cross_run = await repo.record_content_reference(
+        descriptor, run_id=other.id, producer_type='subscription_candidate_diff',
+        producer_id=later_attempt,
+    )
+    assert replay == original
+    assert cross_run.producer_id == later_attempt and cross_run.run_id == other.id
+    assert cross_run.metadata == original.metadata
+    assert await repo.get_by_digest(descriptor.digest, run_id=persisted_run.id) == original
+    assert await store.open_bytes(descriptor.digest) == b'diff --git a/a b/a\n-old\n+new\n'
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize('mismatch', ['kind', 'ordinary', 'parents', 'media', 'size', 'schema'])
+async def test_raw_content_reference_rejects_other_authority_or_descriptor(
+    tmp_path, session_factory, persisted_run, mismatch
+):
+    from dataclasses import replace
+
+    store = FilesystemArtifactStore(tmp_path)
+    descriptor = await store.put_bytes(b'diff body', media_type='text/plain')
+    repo = ArtifactRepository(session_factory)
+    parents = ()
+    if mismatch == 'parents':
+        parent = await store.put_bytes(b'parent', media_type='text/plain')
+        await repo.record(parent, run_id=persisted_run.id, producer_type='test')
+        parents = (parent.digest,)
+    original = await repo.record(
+        descriptor, run_id=persisted_run.id,
+        producer_type='ordinary_receipt' if mismatch == 'ordinary' else (
+            'other_authority' if mismatch == 'kind' else 'subscription_candidate_diff'
+        ),
+        producer_id=uuid4(), parent_digests=parents,
+    )
+    candidate = {
+        'media': replace(descriptor, media_type='application/json'),
+        'size': replace(descriptor, byte_count=10, original_byte_count=10),
+        'schema': replace(descriptor, schema_version=2),
+    }.get(mismatch, descriptor)
+    with pytest.raises(ArtifactMetadataConflict):
+        await repo.record_content_reference(
+            candidate, run_id=persisted_run.id,
+            producer_type='ordinary_receipt' if mismatch == 'ordinary' else 'subscription_candidate_diff',
+            producer_id=uuid4(),
+        )
+    assert await repo.get_by_digest(descriptor.digest, run_id=persisted_run.id) == original

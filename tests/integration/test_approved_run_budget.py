@@ -48,7 +48,7 @@ async def test_approval_atomically_persists_exact_frozen_run_budgets(
         assert row.duration_budget_seconds == (
             0 if fail_event else evidence.duration_budget_seconds
         )
-        assert row.token_budget == (0 if fail_event else evidence.token_budget)
+        assert row.token_budget == (None if fail_event else evidence.token_budget)
         assert row.cost_budget_minor == (0 if fail_event else evidence.cost_budget_minor)
         assert row.state == ("AWAITING_PLAN_APPROVAL" if fail_event else "PREPARING_WORKTREE")
         assert await work.runs.duration_deadline(case.run_id) == row.created_at + timedelta(
