@@ -169,6 +169,7 @@ class DockerRunner:
             "docker",
             "run",
             "--rm",
+            "--init",
             "--name",
             name,
             "--pull=never",

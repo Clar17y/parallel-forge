@@ -4,9 +4,11 @@ import json
 import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from capability_support import fake_capability_evidence
+from forge.agents import gemini_gateway
 from forge.agents.capability_verification import capability_scope
 from forge.agents.client_process import ClientProcessSupervisor, ProcessIdentityStatus
 from forge.agents.gemini_gateway import GeminiCapabilityReport, GeminiGateway, GeminiInstallation
@@ -466,14 +468,45 @@ async def test_repeated_cancellation_waits_for_admitted_effect_reconciliation(tm
     assert not list(tmp_path.glob(".forge-gemini-*"))
 
 
-async def test_deadline_settles_inflight_callback_and_process_tree(tmp_path):
+async def test_deadline_settles_inflight_callback_and_process_tree(tmp_path, monkeypatch):
     broker, lifecycle = _Broker(block=True), _Lifecycle()
-    broker.allow_reconciliation.set()
-    result = await _gateway(
-        tmp_path, "tool", broker=broker, lifecycle=lifecycle, duration=1.5
-    ).execute(
-        _google_request(tools=frozenset({ToolName.REPOSITORY_READ_FILE})),
+    # Arm the real deadline only once the callback is in flight. Provider startup
+    # time in the constrained runner is independent of the settlement invariant.
+    deadline = asyncio.timeout(None)
+    configured_duration = 9.0
+    observed_durations = []
+
+    def controlled_deadline(duration):
+        observed_durations.append(duration)
+        return deadline
+
+    monkeypatch.setattr(
+        gemini_gateway,
+        "asyncio",
+        SimpleNamespace(**(vars(asyncio) | {"timeout": controlled_deadline})),
     )
+    task = asyncio.create_task(
+        _gateway(
+            tmp_path, "tool", broker=broker, lifecycle=lifecycle, duration=configured_duration
+        ).execute(
+            _google_request(tools=frozenset({ToolName.REPOSITORY_READ_FILE})),
+        )
+    )
+    try:
+        await asyncio.wait_for(broker.called.wait(), 10)
+        assert observed_durations == [configured_duration]
+        assert not deadline.expired() and not task.done() and not broker.reconciled
+        deadline.reschedule(asyncio.get_running_loop().time())
+        await asyncio.wait_for(broker.reconciling.wait(), 2)
+        assert deadline.expired() and broker.revoked
+        assert not task.done() and not broker.reconciled
+        broker.allow_reconciliation.set()
+        result = await asyncio.wait_for(task, 5)
+    finally:
+        broker.allow_reconciliation.set()
+        if not task.done():
+            task.cancel()
+            await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 5)
     assert broker.reconciled and broker.revoked
     assert result.failure is SubscriptionFailure.DEADLINE and result.telemetry.tool_call_count == 1
     assert result.launch_proof.stop_confirmed and lifecycle.results[0].stop_confirmed

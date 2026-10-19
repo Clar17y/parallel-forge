@@ -22,6 +22,19 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[4]
 TEST_DATABASE_NAME = re.compile(r"\Aforge_test_[0-9a-f]{32}\Z")
 
 
+@pytest.hookimpl(tryfirst=True)
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Classify real database prerequisites before pytest applies ``-m``.
+
+    Fixture names include transitive dependencies. Database-free helpers in
+    this plugin remain unit tests; consuming the disposable database requires
+    integration infrastructure regardless of the caller's test directory.
+    """
+    for item in items:
+        if "test_database_url" in getattr(item, "fixturenames", ()):
+            item.add_marker(pytest.mark.integration)
+
+
 def validated_test_database_name(value: str) -> str:
     """Return a safe test database identifier or fail before destructive SQL."""
 

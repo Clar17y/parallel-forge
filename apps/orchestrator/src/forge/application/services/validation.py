@@ -73,8 +73,14 @@ class ValidationError(RuntimeError):
     """Validation lacks complete, current controller evidence."""
 
 
-async def _fence_command(command: CommandEnvelope, work: UnitOfWork) -> None:
-    fenced = await work.commands.assert_current_lease(command)
+async def _fence_command(
+    command: CommandEnvelope, work: UnitOfWork, *, wait: bool = True
+) -> None:
+    fenced = (
+        await work.commands.assert_current_lease(command)
+        if wait
+        else await work.commands.assert_current_lease(command, wait=False)
+    )
     if (
         fenced.command_type != command.command_type
         or fenced.idempotency_key != command.idempotency_key
@@ -191,7 +197,11 @@ class ValidationService:
             or self._executor is None
         ):
             raise ValidationError("validation execution is not configured")
-        await _fence_command(command, work)
+        await _fence_command(command, work, wait=False)
+        # Candidate/receipt observations can outlast a lease. Release this
+        # initial fence so the worker can renew; each durable boundary below
+        # reacquires the exact delivery before committing or admitting an effect.
+        await work.commit()
         origin = await resume_origin(work, command)
         attempt, prior_review_id = validation_command_binding(command, origin)
         approved = await self._approved_plans.load(work, command.run_id)
@@ -266,6 +276,7 @@ class ValidationService:
             run.id, "validate"
         ):
             raise CommandRecoveryRequired("validation semantic attempt is not next")
+        await _fence_command(command, work, wait=False)
         step = await work.controller_steps.admit(run.id, step_id, "validate", attempt)
         binding = {
             "command_id": str(command.id),
@@ -308,14 +319,13 @@ class ValidationService:
         )
         results = []
         for spec in approved.policy.required_checks:
-            await _fence_command(command, work)
             current = await self._approved_plans.load(work, run.id)
             if (
                 current.run != run
                 or current.approval_id != approved.approval_id
                 or not await current_candidate()
             ):
-                if await controlled_stop(work, command, run):
+                if await controlled_stop(work, command, run, wait=False):
                     await self._finish_stopped_step(work, command, run, step_id)
                 raise CommandRecoveryRequired("validation authority changed before check")
             if await pending_current_control_stop(work, current.run):
@@ -335,6 +345,7 @@ class ValidationService:
                     if prior.status is OperationStatus.FAILED:
                         raise CommandRecoveryRequired("validation check is terminally failed")
                     owner = f"forge-validate-recovery-{uuid4().hex}"
+                    await _fence_command(command, work, wait=False)
                     claim = await work.operations.claim_for_recovery(
                         prior.id, owner_id=owner, lease_seconds=30
                     )
@@ -367,14 +378,14 @@ class ValidationService:
                     )
                 ):
                     raise CommandRecoveryRequired("validation receipt cannot establish the result")
-                await _fence_command(command, work)
                 latest = await self._approved_plans.load(work, run.id)
                 if latest.run != run or not await current_candidate():
-                    if await controlled_stop(work, command, run):
+                    if await controlled_stop(work, command, run, wait=False):
                         if owner is not None:
                             await work.operations.complete(prior.id, recovered, owner_id=owner)
                         await self._finish_stopped_step(work, command, run, step_id)
                     raise CommandRecoveryRequired("validation authority changed during recovery")
+                await _fence_command(command, work, wait=False)
                 if owner is not None:
                     await work.operations.complete(prior.id, recovered, owner_id=owner)
                 await work.commit()
@@ -403,6 +414,7 @@ class ValidationService:
                 candidate_tree_digest=None if candidate is None else candidate.tree_digest,
                 environment=values,
             )
+            await _fence_command(command, work, wait=False)
             intent = await work.operations.begin(
                 run_id=run.id,
                 operation_type=request.kind,
@@ -468,15 +480,15 @@ class ValidationService:
                 or "command_result_digest" not in outcome.payload
             ):
                 raise CommandRecoveryRequired("validation check has no terminal result")
-            await _fence_command(command, work)
             current = await self._approved_plans.load(work, run.id)
             if current.run != run or not await current_candidate():
-                if await controlled_stop(work, command, run):
+                if await controlled_stop(work, command, run, wait=False):
                     await work.operations.complete(
                         intent.id, outcome, owner_id=intent.execution_owner
                     )
                     await self._finish_stopped_step(work, command, run, step_id)
                 raise CommandRecoveryRequired("validation authority changed after check")
+            await _fence_command(command, work, wait=False)
             await work.operations.complete(intent.id, outcome, owner_id=intent.execution_owner)
             await work.commit()
             result = decode_command_result(
@@ -492,10 +504,9 @@ class ValidationService:
             )
             if outcome.payload["caller_cancelled"] is True:
                 raise CommandRecoveryRequired("validation check was cancelled")
-        await _fence_command(command, work)
         current = await self._approved_plans.load(work, run.id)
         if current.run != run or not await current_candidate():
-            if await controlled_stop(work, command, run):
+            if await controlled_stop(work, command, run, wait=False):
                 await self._finish_stopped_step(work, command, run, step_id)
             raise CommandRecoveryRequired("validation authority changed before publication")
         if await pending_current_control_stop(work, current.run):
@@ -511,7 +522,6 @@ class ValidationService:
             prior_review_evidence_set_id=prior_review_id,
             candidate=candidate,
         )
-        await _fence_command(command, work)
         current = await self._approved_plans.load(work, run.id)
         if (
             current.run != run
@@ -519,6 +529,7 @@ class ValidationService:
             or not await current_candidate()
         ):
             raise CommandRecoveryRequired("validation authority changed during publication")
+        await _fence_command(command, work, wait=False)
         await work.commit()
         return evidence
 
@@ -561,10 +572,10 @@ class ValidationService:
     ) -> EvidenceSetDescriptor:
         """Project already reconciled receipts; caller owns authority and commit.
 
-        The delivery controller fences its command and verifies the current HEAD
-        before calling this method. Runner invocation and receipt reconciliation
-        precede publication. A completed controller can contain failed checks;
-        downstream decisions must inspect each member's status.
+        The delivery controller verifies the current HEAD before calling this
+        method and fences its command before committing. Runner invocation and
+        receipt reconciliation precede publication. A completed controller can
+        contain failed checks; downstream decisions must inspect each status.
         """
         run = await work.runs.get_for_update(run_id)
         step = await work.controller_steps.get(run_id, step_id)

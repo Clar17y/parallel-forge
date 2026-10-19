@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any, Literal, cast
 from uuid import uuid4
 
@@ -506,11 +507,11 @@ async def test_adk_runtime_scripted_agent_config(
         assert config.thinking_config.thinking_budget == expected_budget
 
 
-def test_all_three_roles_policy_binding() -> None:
+def test_all_three_roles_policy_binding(tmp_path: Path) -> None:
     policy = ProjectPolicy(
         id=uuid4(),
         version=1,
-        repository_path="C:/dev/repo",
+        repository_path=str(tmp_path),
         github_repository="test/repo",
         default_branch="main",
         planner_model=AgentModelPolicy(model="gemini-3.8-flash", reasoning_effort="low"),
@@ -553,13 +554,13 @@ def test_exact_allowlist_matrix_domain_and_runtime(model: str, effort: str) -> N
         assert config.thinking_budget is None
 
 
-def test_legacy_policy_digest_preservation() -> None:
+def test_legacy_policy_digest_preservation(tmp_path: Path) -> None:
     from forge.domain.operation import canonical_digest
 
     legacy_raw = {
         "id": str(uuid4()),
         "version": 1,
-        "repository_path": "C:/dev/repo",
+        "repository_path": str(tmp_path),
         "github_repository": "test/repo",
         "default_branch": "main",
         "planner_model": {

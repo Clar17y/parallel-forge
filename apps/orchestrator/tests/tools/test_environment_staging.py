@@ -869,6 +869,51 @@ def test_linux_docker_staging_publishes_and_inspects_real_uid_10001_acl(tmp_path
     assert inspected.evidence == plan.evidence
 
 
+def test_acl_text_requests_numeric_ids_and_frees_the_result() -> None:
+    import ctypes
+
+    from forge.tools import paths as path_tools
+
+    class FakeLibrary:
+        def __init__(self):
+            self.buffer = ctypes.create_string_buffer(b"user:10001:r--\n")
+            self.freed = []
+
+        def acl_to_any_text(self, acl, prefix, separator, options):
+            assert (acl, prefix, separator, options) == (123, None, b"\n", 0x08)
+            return ctypes.addressof(self.buffer)
+
+        def acl_free(self, pointer):
+            self.freed.append(pointer)
+
+    library = FakeLibrary()
+    assert path_tools._acl_text(library, 123) == "user:10001:r--\n"
+    assert library.freed == [ctypes.addressof(library.buffer)]
+
+
+@pytest.mark.parametrize("text", [None, b"", b"\xff"])
+def test_acl_text_rejects_invalid_serialization_and_frees_allocations(text) -> None:
+    import ctypes
+
+    from forge.tools import paths as path_tools
+
+    class FakeLibrary:
+        def __init__(self):
+            self.buffer = ctypes.create_string_buffer(text) if text is not None else None
+            self.freed = []
+
+        def acl_to_any_text(self, *_args):
+            return ctypes.addressof(self.buffer) if self.buffer is not None else None
+
+        def acl_free(self, pointer):
+            self.freed.append(pointer)
+
+    library = FakeLibrary()
+    with pytest.raises(path_tools.RepositoryAccessDenied, match="ACL verification failed"):
+        path_tools._acl_text(library, 123)
+    assert len(library.freed) == (0 if text is None else 1)
+
+
 @pytest.mark.skipif(__import__("sys").platform != "linux", reason="native Linux libacl")
 def test_linux_acl_verification_requires_exact_uid_10001_entries() -> None:
     import ctypes
@@ -882,8 +927,8 @@ def test_linux_acl_verification_requires_exact_uid_10001_entries() -> None:
         def acl_get_fd(self, _descriptor: int):
             return ctypes.c_void_p(1)
 
-        def acl_to_text(self, _acl, length) -> int:
-            length._obj.value = len(self.buffer.value)
+        def acl_to_any_text(self, _acl, prefix, separator, options) -> int:
+            assert (prefix, separator, options) == (None, b"\n", 0x08)
             return ctypes.addressof(self.buffer)
 
         def acl_free(self, _value) -> int:

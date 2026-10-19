@@ -25,11 +25,12 @@ _READ_CHUNK = 64 * 1024
 
 
 class _BoundedStream:
-    """Drain one pipe while retaining no more than its configured prefix."""
+    """Drain one pipe, retaining its head and rolling tail within one byte budget."""
 
     def __init__(self, stream: IO[bytes], limit: int) -> None:
         self._stream = stream
         self._limit = limit
+        self._head_limit = limit // 2
         self.data = bytearray()
         self.original_byte_count = 0
         self.error: BaseException | None = None
@@ -41,14 +42,27 @@ class _BoundedStream:
                 if not chunk:
                     return
                 self.original_byte_count += len(chunk)
-                if len(self.data) < self._limit:
-                    self.data.extend(chunk[: self._limit - len(self.data)])
+                head_needed = max(0, self._head_limit - len(self.data))
+                self.data.extend(chunk[:head_needed])
+                remainder = chunk[head_needed:]
+                if remainder:
+                    tail = remainder[-(self._limit - self._head_limit) :]
+                    discard = max(0, len(self.data) + len(tail) - self._limit)
+                    del self.data[self._head_limit : self._head_limit + discard]
+                    self.data.extend(tail)
         except (OSError, ValueError, RuntimeError) as error:
             self.error = error
 
     @property
     def truncated(self) -> bool:
         return self.original_byte_count > self._limit
+
+    def decode(self) -> tuple[str, int | None]:
+        if not self.truncated:
+            return self.data.decode("utf-8", errors="replace"), None
+        head = self.data[: self._head_limit].decode("utf-8", errors="replace")
+        tail = self.data[self._head_limit :].decode("utf-8", errors="replace")
+        return head + tail, len(head)
 
 
 class ProcessRunner:
@@ -283,15 +297,19 @@ def _collect(
             stderr.close()
     if stdout_capture.error is not None or stderr_capture.error is not None:
         raise ProcessExecutionError()
+    stdout_text, stdout_boundary = stdout_capture.decode()
+    stderr_text, stderr_boundary = stderr_capture.decode()
     return ProcessResult(
         return_code=return_code,
-        stdout=bytes(stdout_capture.data).decode("utf-8", errors="replace"),
-        stderr=bytes(stderr_capture.data).decode("utf-8", errors="replace"),
+        stdout=stdout_text,
+        stderr=stderr_text,
         timed_out=timed_out,
         stdout_original_byte_count=stdout_capture.original_byte_count,
         stderr_original_byte_count=stderr_capture.original_byte_count,
         stdout_truncated=stdout_capture.truncated,
         stderr_truncated=stderr_capture.truncated,
+        stdout_capture_boundary=stdout_boundary,
+        stderr_capture_boundary=stderr_boundary,
     )
 
 

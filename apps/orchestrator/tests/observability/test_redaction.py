@@ -4,7 +4,97 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from forge.observability.redaction import RedactionPolicy, Redactor, redact_value
+
+
+@pytest.mark.parametrize("limit", [64, 65, 128])
+def test_head_tail_string_bounding_is_opt_in_utf8_safe_and_redacts_before_cut(limit):
+    text = "START secret-value\n" + "é😀" * 200 + "\nsecret-value END"
+    redactor = Redactor(
+        secrets=("secret-value",),
+        policy=RedactionPolicy(max_string_bytes=limit, string_bounding="head_tail"),
+    )
+    bounded, truncated = redactor.redact_text(text)
+    assert truncated
+    assert len(bounded.encode()) <= limit
+    assert "secret-value" not in bounded
+    assert bounded.startswith("START ") and bounded.endswith(" END")
+    assert bounded.count("[TRUNCATED ") == 1
+    assert "\ufffd" not in bounded
+    prefix = Redactor(secrets=("secret-value",), policy=RedactionPolicy(max_string_bytes=limit))
+    assert not prefix.redact(text).endswith(" END")
+    assert (
+        redactor.with_minimum_policy(RedactionPolicy(max_string_bytes=256)).policy.string_bounding
+        == "head_tail"
+    )
+
+
+def test_redact_text_reports_post_redaction_truncation_not_original_length():
+    redactor = Redactor(secrets=("x",), policy=RedactionPolicy(max_string_bytes=64))
+    assert redactor.redact_text("x" * 20)[1] is True
+    assert redactor.redact_text("visible") == ("visible", False)
+
+
+@pytest.mark.parametrize(
+    ("head", "tail", "expected_head", "expected_tail"),
+    [
+        ("BEGIN private-", "END", "BEGIN [REDACTED]", "[REDACTED]"),
+        ("BEGIN", "ve-value END", "BEGIN", "[REDACTED] END"),
+        ("BEGIN private-", "ve-value END", "BEGIN [REDACTED]", "[REDACTED] END"),
+        ("private-", "sensitive-value", "[REDACTED]", "[REDACTED]"),
+    ],
+)
+def test_capture_cuts_redact_known_fragments_before_joining_with_omission_marker(
+    head, tail, expected_head, expected_tail
+):
+    redactor = Redactor(secrets=("private-sensitive-value",))
+    safe, bounded = redactor.redact_text(
+        head + tail, capture_truncated=True, capture_boundary=len(head)
+    )
+    assert safe == expected_head + "\n[... output omitted ...]\n" + expected_tail
+    assert not bounded
+
+
+def test_capture_edge_redaction_cannot_split_an_overlapping_complete_secret():
+    head, tail = "START ababab", "bababa END"
+    safe, _ = Redactor(secrets=("ababa",)).redact_text(
+        head + tail, capture_truncated=True, capture_boundary=len(head)
+    )
+    assert safe == "START [REDACTED]\n[... output omitted ...]\n[REDACTED] END"
+
+
+@pytest.mark.parametrize(
+    "credential",
+    [
+        "Bearer " + "Z" * 30,
+        "Basic\n" + "Z" * 30,
+        "ghp_" + "Z" * 30,
+        "github_pat_" + "Z" * 30,
+        "password\n=\n" + "Z" * 30,
+        "access-token: Bearer\n" + "Z" * 30,
+        "postgresql://user:" + "Z" * 30 + "@db/",
+        "password='" + "Z" * 15 + "\n" + "Z" * 15 + "'",
+        "-----BEGIN RSA PRIVATE KEY-----\n" + "Z" * 15 + "\n" + "Z" * 15
+        + "\n-----END RSA PRIVATE KEY-----",
+    ],
+    ids=["bearer", "basic", "github", "pat", "assignment", "auth-value", "url", "quoted", "pem"],
+)
+def test_pattern_credentials_are_redacted_at_every_capture_cut(credential):
+    redactor = Redactor()
+    for cut in range(1, len(credential)):
+        head, tail = "BEGIN\n" + credential[:cut], "\npublic context\nFINAL SUMMARY\n"
+        safe, _ = redactor.redact_text(
+            head + tail, capture_truncated=True, capture_boundary=len(head)
+        )
+        assert "Z" not in safe, ("head", cut, safe)
+        assert safe.startswith("BEGIN\n") and safe.endswith("\nFINAL SUMMARY\n")
+        head, tail = "BEGIN\n", credential[cut:] + "\nFINAL SUMMARY\n"
+        safe, _ = redactor.redact_text(
+            head + tail, capture_truncated=True, capture_boundary=len(head)
+        )
+        assert "Z" not in safe, ("tail", cut, safe)
+        assert safe.startswith("BEGIN\n") and safe.endswith("\nFINAL SUMMARY\n")
 
 
 def test_redacts_nested_case_insensitive_keys_and_durable_text_patterns() -> None:

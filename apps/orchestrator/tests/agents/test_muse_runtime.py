@@ -146,14 +146,14 @@ def _muse_request(
 # ---------------------------------------------------------------------------
 
 
-def test_muse_installation_spec_and_quota_route() -> None:
+def test_muse_installation_spec_and_quota_route(tmp_path: Path) -> None:
     digest = "a" * 64
     account = "b" * 64
     spec = MuseInstallationSpec(
         client="muse_code",
-        executable="C:/Programs/muse/muse.cmd",
-        cwd="C:/work/repo",
-        home="C:/Users/test",
+        executable=str(tmp_path / "muse.cmd"),
+        cwd=str(tmp_path),
+        home=str(tmp_path),
         model="muse-wonder-1.0",
         effort="medium",
         account=account,
@@ -371,15 +371,15 @@ def test_manifest_loads_muse_under_operator_trust_and_unsupported_in_verified(tm
     assert diag_v.readiness[0].reason is ReadinessReason.PROVIDER_UNSUPPORTED
 
 
-def test_configured_catalogs_includes_meta_muse_code() -> None:
+def test_configured_catalogs_includes_meta_muse_code(tmp_path: Path) -> None:
     digest = "a" * 64
     account = "b" * 64
     specs = [
         MuseInstallationSpec(
             client="muse_code",
-            executable="C:/Programs/muse/muse.cmd",
-            cwd="C:/work/repo",
-            home="C:/Users/test",
+            executable=str(tmp_path / "muse.cmd"),
+            cwd=str(tmp_path),
+            home=str(tmp_path),
             model="muse-wonder-1.0",
             effort="medium",
             account=account,
@@ -389,9 +389,9 @@ def test_configured_catalogs_includes_meta_muse_code() -> None:
         ),
         MuseInstallationSpec(
             client="muse_code",
-            executable="C:/Programs/muse/muse.cmd",
-            cwd="C:/work/repo",
-            home="C:/Users/test",
+            executable=str(tmp_path / "muse.cmd"),
+            cwd=str(tmp_path),
+            home=str(tmp_path),
             model="muse-wonder-full-1.0",
             effort="high",
             account=account,
