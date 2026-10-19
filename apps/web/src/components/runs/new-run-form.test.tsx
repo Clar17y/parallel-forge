@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { NewRunForm } from './new-run-form';
@@ -275,6 +275,84 @@ test('renders provider-tinted compact role cards with explicit provider labels a
   // Grouped budget details exist rather than single dense sentence
   expect(screen.queryByText(/Input 100000 tokens · Output 8000 tokens · 30 tools · 300 seconds · Cost limit 150 minor currency units/)).not.toBeInTheDocument();
   expect(screen.getAllByText(/All policy limits/i)).toHaveLength(3);
+});
+
+test.each([
+  [9007199254740991, '9,007,199,254,740,991'],
+  ['9007199254740993', '9,007,199,254,740,993'],
+  ['9223372036854775807', '9,223,372,036,854,775,807'],
+] as const)('preserves exact input and output policy limits at %s', (value, expected) => {
+  render(<NewRunForm projects={[{ ...project, policy: {
+    ...project.policy,
+    planner_model: { provider: 'fixture', model: 'exact-policy', max_input_tokens: value, max_output_tokens: value },
+  } }]} onCreated={vi.fn()} />);
+  const limits = screen.getByRole('region', { name: 'planner policy' });
+  for (const label of ['Max input tokens', 'Max output tokens']) {
+    expect(within(limits).getByText(label).nextElementSibling).toHaveTextContent(expected);
+  }
+});
+
+test('role cards format human durations and keep full limits independently expandable', () => {
+  const modelProject: components['schemas']['ProjectResponse'] = {
+    ...project,
+    policy: {
+      runner_mode: 'docker',
+      commands: [],
+      planner_model: {
+        provider: 'google',
+        model: 'gemini-3.8-flash',
+        reasoning_effort: 'medium',
+        max_input_tokens: 100000,
+        max_output_tokens: null,
+        max_tool_calls: 30,
+        max_duration_seconds: 300,
+        max_cost_minor: 150,
+      },
+    },
+  };
+  render(<NewRunForm projects={[modelProject]} onCreated={vi.fn()} />);
+
+  // Reasoning effort summary is visible
+  expect(screen.getByText('Reasoning effort: medium')).toBeInTheDocument();
+
+  // No duplicate role-budget-grid
+  expect(document.querySelector('.role-budget-grid')).toBeNull();
+
+  // Expandable details contains human duration and unbounded token ceiling
+  const details = screen.getByRole('region', { name: 'planner policy' }).querySelector('details');
+  expect(details).not.toBeNull();
+  expect(details).toHaveTextContent('5m');
+  expect(details).toHaveTextContent('Unbounded');
+  expect(details).toHaveTextContent('150 minor currency units');
+});
+
+test('selected CLI profile shows concise route summary and keeps UUID and route lines in secondary disclosure', async () => {
+  vi.mocked(api).mockResolvedValueOnce([{
+    profile_id: '11111111-2222-3333-4444-555555555555',
+    version: 4,
+    preferences: [
+      { purpose: 'primary', preferred_route: { provider: 'openai', model: 'gpt-4o' } },
+      { purpose: 'reviewer', preferred_route: { provider: 'anthropic', model: 'claude-3-5-sonnet' } },
+      { purpose: 'planner', preferred_route: { provider: 'google', model: 'gemini-1.5-pro' } },
+    ],
+    approved_mappings: [],
+    default_billing_mode: 'allowance_only',
+    jev: null,
+  }]);
+
+  render(<NewRunForm projects={[project]} onCreated={vi.fn()} />);
+  await screen.findByRole('option', { name: /11111111/ });
+  const user = userEvent.setup();
+  await user.selectOptions(screen.getByLabelText('Subscription profile'), '11111111-2222-3333-4444-555555555555:4');
+
+  // Summary row shows version and concise route summary with overflow count
+  expect(screen.getByText(/Version 4 · Primary openai\/gpt-4o, Reviewer anthropic\/claude-3-5-sonnet \(\+1 more roles\)/)).toBeInTheDocument();
+
+  // Profile ID and complete preference items are inside secondary details
+  const details = document.querySelector('.selected-profile-summary details');
+  expect(details).not.toBeNull();
+  expect(details).toHaveTextContent('11111111-2222-3333-4444-555555555555');
+  expect(details).toHaveTextContent('Planner google/gemini-1.5-pro');
 });
 
 test('displays project policy models heading and explanatory help before and after selecting a profile override', async () => {

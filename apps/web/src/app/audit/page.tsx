@@ -8,18 +8,16 @@ import { AuditEventCard } from '@/components/audit/audit-event-card';
 import { Button } from '@/components/ui/button';
 
 const pageSize = 25;
-const ids = [
-  ['run_id', 'Run ID'],
-  ['project_id', 'Project ID'],
-  ['actor_id', 'Actor ID'],
-  ['operation_id', 'Operation ID'],
-] as const;
 
 export default function AuditPage() {
   const [offset, setOffset] = useState(0);
   const [filters, setFilters] = useState('');
+  const [projectId, setProjectId] = useState('');
   const formRef = useRef<HTMLFormElement>(null);
   const page = Math.floor(offset / pageSize) + 1;
+
+  const projects = useApi<components['schemas']['ProjectResponse'][]>('/projects');
+  const projectList = Array.isArray(projects.value) ? projects.value : [];
 
   const audit = useApi<components['schemas']['ListPage_AuditItem_']>(
     `/audit?offset=${offset}&limit=${pageSize}${filters ? `&${filters}` : ''}`
@@ -40,6 +38,7 @@ export default function AuditPage() {
 
   function handleClearFilters() {
     formRef.current?.reset();
+    setProjectId('');
     setOffset(0);
     setFilters('');
   }
@@ -56,19 +55,51 @@ export default function AuditPage() {
       <section className="filter-panel" aria-label="Audit filters">
         <form ref={formRef} onSubmit={handleFilterSubmit}>
           <div className="filter-grid">
-            {ids.map(([name, label]) => (
-              <div key={name} className="form-field">
-                <label htmlFor={name}>{label}</label>
-                <input
-                  id={name}
-                  name={name}
-                  pattern="[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
-                  title="Enter a UUID"
-                  placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-                />
-                <span className="field-hint">Exact UUID (8-4-4-4-12 hex)</span>
-              </div>
-            ))}
+            <div className="form-field">
+              <label htmlFor="project_id">Project ID</label>
+              <input
+                id="project_id"
+                name="project_id"
+                value={projectId}
+                onChange={e => setProjectId(e.target.value)}
+                pattern="[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+                title="Enter a UUID"
+                placeholder="All accessible projects or exact UUID"
+                list="audit-project-options"
+              />
+              <datalist id="audit-project-options">
+                {projectList.map(p => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </datalist>
+              {projectList.length > 0 && (
+                <select
+                  aria-label="Authorized project picker"
+                  value={projectList.some(p => p.id === projectId) ? projectId : ''}
+                  onChange={e => setProjectId(e.target.value)}
+                  style={{ fontSize: '0.75rem', marginTop: '4px' }}
+                >
+                  <option value="">Choose an authorized project…</option>
+                  {projectList.map(p => (
+                    <option key={p.id} value={p.id}>{p.name} ({p.id})</option>
+                  ))}
+                </select>
+              )}
+              <span className="field-hint">Select accessible project or enter exact UUID</span>
+            </div>
+
+            <div className="form-field">
+              <label htmlFor="run_id">Run ID</label>
+              <input
+                id="run_id"
+                name="run_id"
+                pattern="[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+                title="Enter a UUID"
+                placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+              />
+              <span className="field-hint">Optional exact UUID</span>
+            </div>
+
             <div className="form-field">
               <label htmlFor="operation_status">Current operation status</label>
               <select id="operation_status" name="operation_status" defaultValue="">
@@ -79,6 +110,34 @@ export default function AuditPage() {
               </select>
               <span className="field-hint">Current state of linked operation</span>
             </div>
+
+            <details className="disclosure-card" style={{ gridColumn: '1 / -1', marginTop: '4px' }}>
+              <summary className="disclosure-summary" style={{ fontSize: '0.8125rem', cursor: 'pointer' }}>Advanced exact filters</summary>
+              <div className="filter-grid" style={{ marginTop: '8px' }}>
+                <div className="form-field">
+                  <label htmlFor="actor_id">Actor ID</label>
+                  <input
+                    id="actor_id"
+                    name="actor_id"
+                    pattern="[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+                    title="Enter a UUID"
+                    placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+                  />
+                  <span className="field-hint">Optional exact UUID</span>
+                </div>
+                <div className="form-field">
+                  <label htmlFor="operation_id">Operation ID</label>
+                  <input
+                    id="operation_id"
+                    name="operation_id"
+                    pattern="[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+                    title="Enter a UUID"
+                    placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+                  />
+                  <span className="field-hint">Optional exact UUID</span>
+                </div>
+              </div>
+            </details>
           </div>
           <div className="filter-actions">
             <Button type="submit" variant="primary">Apply filters</Button>

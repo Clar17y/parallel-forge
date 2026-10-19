@@ -14,7 +14,12 @@ export function ChecksPanel({ projection }: { projection: components['schemas'][
       <button onClick={history.refresh} disabled={history.loading}>Refresh check history</button>
       {history.loading && <LoadingStatus>Loading check history…</LoadingStatus>}
       {history.failed && <p role="alert">Check history unavailable. <button onClick={history.refresh}>Retry</button></p>}
-      {history.value && !history.value.items.length && <p>No local validation checks recorded.</p>}
+      {history.value && !history.value.items.length && (
+        <div className="empty-state-notice">
+          <p>No local validation checks recorded.</p>
+          <p className="meta">Validation commands will run once implementation is ready for verification.</p>
+        </div>
+      )}
       {history.value?.items.map(check => <article key={check.id}><h4>{check.name}</h4>
         <p>Attempt {check.attempt ?? 'unavailable'} · Duration: {check.duration_ms === null ? (['PENDING', 'RUNNING'].includes(check.status.toUpperCase()) ? 'Pending' : 'Unknown') : `${check.duration_ms} ms`}</p>
         {check.source === 'subscription' && <p>Subscription task <code>{check.subscription_task_id}</code> · Attempt <code>{check.subscription_attempt_id}</code></p>}
@@ -29,7 +34,12 @@ export function ChecksPanel({ projection }: { projection: components['schemas'][
         <button disabled={!history.value?.truncated || history.loading} onClick={() => setOffset(offset + 25)}>Next checks</button></nav>
     </section>
     <section><h3>GitHub checks</h3>
-      {!remote ? <p>No remote observation recorded.</p> : <><ObservationEvidence observation={remote} />
+      {!remote ? (
+        <div className="empty-state-notice">
+          <p>No remote observation recorded.</p>
+          <p className="meta">Remote GitHub checks will be monitored after a pull request is published.</p>
+        </div>
+      ) : <><ObservationEvidence observation={remote} />
         {!remote.checks.length && <p>No checks returned in this observation.</p>}
         {remote.checks.map((check, index) => <article key={`${check.name}:${index}`}><h4>{check.name}</h4>
           <p>{check.status} · <span>{check.conclusion ?? 'Pending'}</span></p>

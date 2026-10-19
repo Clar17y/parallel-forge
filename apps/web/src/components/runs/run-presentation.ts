@@ -92,11 +92,32 @@ export function remediationOrigin(projection: Projection): RemediationOrigin {
   return isRemote ? 'remote' : 'local';
 }
 
+const terminalStates = new Set<string>(['COMPLETED', 'FAILED', 'CANCELLED']);
+const explicitGateStates = new Set<string>([
+  'AWAITING_PLAN_APPROVAL',
+  'AWAITING_PR_APPROVAL',
+  'AWAITING_MERGE_APPROVAL',
+  'AWAITING_HUMAN_INTERVENTION',
+]);
+
+export function currentRunWaitReason(projection: Projection): string | null {
+  const state = projection.run.state;
+  return terminalStates.has(state) || state === 'PAUSED' || explicitGateStates.has(state)
+    ? null : projection.stall_reason || null;
+}
+
 export function describeRunState(projection: Projection): RunDescription {
   if (projection.recovery_hold) return {
     title: 'Recovery needs attention', tone: 'danger',
     description: 'An earlier operation has an unresolved outcome. Resume and resource teardown are held until its evidence is reconciled. Review the activity before taking further action.',
   };
+  const waitReason = currentRunWaitReason(projection);
+  if (waitReason) return {
+    title: 'Run waiting',
+    description: waitReason,
+    tone: 'warning',
+  };
+
   if (projection.run.state === 'REMEDIATING') {
     const origin = remediationOrigin(projection);
     if (origin === 'remote') {

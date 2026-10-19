@@ -131,4 +131,44 @@ describe('PlanContent', () => {
     expect(screen.getByRole('heading', { name: 'Writable paths' })).toBeInTheDocument();
     expect(screen.getByText('No writable paths.')).toBeInTheDocument();
   });
+
+  test('consolidates empty optional sections into a concise summary', () => {
+    const emptyOptionalPlan: Plan = {
+      summary: 'Focused plan',
+      affected_components: ['Web client'],
+      steps: ['Build UI'],
+      required_checks: ['lint'],
+      risks: ['UI regression'],
+      assumptions: [],
+      security_considerations: [],
+      dependency_changes: [],
+    };
+    render(<PlanContent plan={emptyOptionalPlan} />);
+    // Core sections present
+    expect(screen.getByRole('heading', { name: 'Steps' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Required checks' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Risks' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Affected components' })).toBeInTheDocument();
+
+    // No separate empty headings for optional sections
+    expect(screen.queryByRole('heading', { name: 'Assumptions' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Security considerations' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Dependency changes' })).toBeNull();
+
+    // Consolidated summary present
+    expect(screen.getByRole('heading', { name: 'Supporting considerations' })).toBeInTheDocument();
+    expect(screen.getByText('None recorded for: Assumptions, Security considerations, Dependency changes.')).toBeInTheDocument();
+  });
+
+  test('renders readable disclosure for long supporting lists', () => {
+    const longListPlan: Plan = {
+      ...basePlan,
+      assumptions: ['Assump 1', 'Assump 2', 'Assump 3', 'Assump 4', 'Assump 5'],
+    };
+    render(<PlanContent plan={longListPlan} />);
+    const details = screen.getByRole('heading', { name: 'Assumptions' }).parentElement?.querySelector('details.plan-section-disclosure');
+    expect(details).not.toBeNull();
+    expect(details).toHaveTextContent('5 assumptions');
+    expect(screen.getByText('Assump 5')).toBeInTheDocument();
+  });
 });

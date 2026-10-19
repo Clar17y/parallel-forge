@@ -9,6 +9,7 @@ import { useEpicBudget } from '@/hooks/epics/use-epic-budget';
 import { EvidenceDetails } from './evidence-details';
 import type { TaskBudget } from '@/hooks/epics/types';
 import { validateSafeInteger } from '@/lib/api/monitoring-policy';
+import { formatDurationMs, formatDurationSeconds } from '@/lib/format';
 
 interface DimensionConfig {
   key: string;
@@ -27,8 +28,8 @@ const DIMENSIONS: DimensionConfig[] = [
     key: 'duration_ms',
     label: 'Duration',
     mandatory: true,
-    formatUsage: val => `${Math.round(val / 1000)}s (${val}ms)`,
-    formatCeiling: val => `${val}s`,
+    formatUsage: val => formatDurationMs(val),
+    formatCeiling: val => formatDurationSeconds(typeof val === 'number' ? val : Number(val)),
     getCeilingVal: c => c?.max_duration_seconds,
     setCeilingVal: (c, val) => ({ ...(c ?? {}), max_duration_seconds: (val as number) ?? c?.max_duration_seconds ?? 0 } as TaskBudget),
     inputLabel: 'Duration ceiling (seconds)',
@@ -350,54 +351,60 @@ export function EpicBudgetPanel({
           </div>
         )}
 
-        {/* 6 Dimensions Grid */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-          {DIMENSIONS.map(dim => {
-            const unlimited = isUnlimited(dim.key);
-            const knownVal = getKnown(dim.key);
-            const heldVal = getHeld(dim.key);
-            const rawCeiling = dim.getCeilingVal(budget.ceiling);
+        {/* Compact 6 Dimensions Comparison Table */}
+        <div className="overflow-x-auto border border-[var(--border)] rounded">
+          <table className="w-full text-left text-sm border-collapse">
+            <thead>
+              <tr className="border-b border-[var(--border)] bg-[var(--surface-muted)] text-xs text-[var(--muted)]">
+                <th className="py-2.5 px-3 font-semibold">Resource</th>
+                <th className="py-2.5 px-3 font-semibold">Ceiling</th>
+                <th className="py-2.5 px-3 font-semibold">Known Usage</th>
+                <th className="py-2.5 px-3 font-semibold">Held Capacity</th>
+                <th className="py-2.5 px-3 font-semibold">Status</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[var(--border)]">
+              {DIMENSIONS.map(dim => {
+                const unlimited = isUnlimited(dim.key);
+                const knownVal = getKnown(dim.key);
+                const heldVal = getHeld(dim.key);
+                const rawCeiling = dim.getCeilingVal(budget.ceiling);
 
-            return (
-              <div key={dim.key} className="p-3 bg-[var(--surface-muted)] border border-[var(--border)] rounded space-y-1 text-sm">
-                <div className="flex items-center justify-between">
-                  <span className="font-semibold">{dim.label}</span>
-                  {unlimited ? (
-                    <StatusBadge label="Disabled (shared unlimited)" tone="info" />
-                  ) : rawCeiling == null ? (
-                    <StatusBadge label="Unlimited (null)" tone="info" />
-                  ) : null}
-                </div>
+                let ceilingDisplay = 'Unlimited';
+                if (unlimited) {
+                  ceilingDisplay = 'Disabled shared cap (unlimited)';
+                } else if (rawCeiling != null) {
+                  ceilingDisplay = rawCeiling === 0 ? dim.formatCeiling(0, currency) : dim.formatCeiling(rawCeiling, currency);
+                }
 
-                <div className="text-xs text-[var(--muted)] space-y-0.5">
-                  <p data-testid={`ceiling-${dim.key}`}>
-                    Ceiling:{' '}
-                    <span className="font-medium text-[var(--foreground)]">
-                      {unlimited
-                        ? 'Disabled shared cap (unlimited)'
-                        : rawCeiling == null
-                        ? 'Unlimited (null)'
-                        : rawCeiling === 0
-                        ? dim.formatCeiling(0, currency)
-                        : dim.formatCeiling(rawCeiling, currency)}
-                    </span>
-                  </p>
-                  <p data-testid={`known-${dim.key}`}>
-                    Known usage:{' '}
-                    <span className="font-medium text-[var(--foreground)]">
+                return (
+                  <tr key={dim.key} className="hover:bg-[var(--surface-muted)] transition-colors">
+                    <td className="py-2.5 px-3 font-medium text-[var(--foreground)]">
+                      {dim.label}
+                    </td>
+                    <td className="py-2.5 px-3 font-medium text-[var(--foreground)]" data-testid={`ceiling-${dim.key}`}>
+                      {ceilingDisplay}
+                    </td>
+                    <td className="py-2.5 px-3 text-[var(--foreground)]" data-testid={`known-${dim.key}`}>
                       {dim.formatUsage(knownVal, currency)}
-                    </span>
-                  </p>
-                  <p data-testid={`held-${dim.key}`}>
-                    Held capacity:{' '}
-                    <span className="font-medium text-[var(--foreground)]">
+                    </td>
+                    <td className="py-2.5 px-3 text-[var(--muted)]" data-testid={`held-${dim.key}`}>
                       {dim.formatUsage(heldVal, currency)}
-                    </span>
-                  </p>
-                </div>
-              </div>
-            );
-          })}
+                    </td>
+                    <td className="py-2.5 px-3">
+                      {unlimited ? (
+                        <StatusBadge label="Disabled (shared unlimited)" tone="info" />
+                      ) : rawCeiling == null ? (
+                        <StatusBadge label="Unlimited" tone="info" />
+                      ) : (
+                        <span className="text-xs text-[var(--muted)]">Enforced</span>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
 
         {/* Unknown exposure info */}
@@ -452,7 +459,7 @@ export function EpicBudgetPanel({
                       inputMode="numeric"
                       className="w-full px-3 py-1.5 border border-[var(--control-border)] rounded text-sm bg-[var(--surface)] disabled:opacity-50"
                       value={ceilingDrafts[dim.key] ?? ''}
-                      placeholder={unlimited ? 'Unlimited' : dim.mandatory ? 'Required numeric cap' : 'Unlimited (null)'}
+                      placeholder={unlimited ? 'Unlimited' : dim.mandatory ? 'Required numeric cap' : 'Unlimited'}
                       disabled={unlimited || mutationPending}
                       onChange={e => {
                         const raw = e.target.value;

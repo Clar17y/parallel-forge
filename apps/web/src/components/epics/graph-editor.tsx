@@ -17,10 +17,11 @@ export interface GraphProposal {
   items: ItemInput[];
 }
 
-export function GraphEditor({ epicId, proposedGraph }: { epicId: string; proposedGraph?: GraphProposal }) {
+export function GraphEditor({ epicId, proposedGraph, initialView }: { epicId: string; proposedGraph?: GraphProposal; initialView?: 'editor' | 'accepted' | 'history' }) {
   const workspace = useEpicWorkspace(epicId);
-  const [viewTab, setViewTab] = useState<'editor' | 'accepted' | 'history'>('editor');
+  const [chosenView, setViewTab] = useState<'editor' | 'accepted' | 'history' | null>(initialView ?? null);
   const [saveSuccess, setSaveSuccess] = useState<string | null>(null);
+
 
   const {
     epic,
@@ -76,7 +77,11 @@ export function GraphEditor({ epicId, proposedGraph }: { epicId: string; propose
   }), [registerCompletion]);
   const statusRef = useRef<HTMLDivElement>(null);
   useEffect(() => { if (saveSuccess) statusRef.current?.focus(); }, [saveSuccess]);
+
+  const viewTab = chosenView ?? (!proposedGraph && userItems === null && epic?.accepted_graph_revision_id ? 'accepted' : 'editor');
+
   const serverChanged = editBase !== null && !!epic && (epic.version !== editBase.version || epic.accepted_brief_revision_id !== editBase.briefId || epic.accepted_brief_digest !== editBase.briefDigest);
+
   const editItems = (next: ItemInput[]) => {
     if (!editBase) setEditBase({ version: epic?.version ?? 1, briefId: epic?.accepted_brief_revision_id ?? null, briefDigest: epic?.accepted_brief_digest ?? null });
     setUserItems(next);
@@ -323,22 +328,6 @@ export function GraphEditor({ epicId, proposedGraph }: { epicId: string; propose
                       </div>
                     </div>
 
-                    <div>
-                      <span className="block text-xs font-medium mb-1">Item acceptance criteria</span>
-                      {item.acceptance_criteria.map((criterion, criterionIndex) => <div key={criterionIndex} className="flex gap-2 mb-2"><input aria-label={`Criterion ${criterionIndex + 1} for item ${idx + 1}`} className="flex-1 px-3 py-1.5 border rounded" value={criterion} onChange={event => updateItem(idx, { acceptance_criteria: item.acceptance_criteria.map((value, index) => index === criterionIndex ? event.target.value : value) })} /><Button type="button" variant="quiet" aria-label={`Remove criterion ${criterionIndex + 1} for item ${idx + 1}`} onClick={() => updateItem(idx, { acceptance_criteria: item.acceptance_criteria.filter((_, index) => index !== criterionIndex) })}>Remove</Button></div>)}
-                      <Button type="button" variant="quiet" onClick={() => updateItem(idx, { acceptance_criteria: [...item.acceptance_criteria, ''] })}>Add criterion</Button>
-                    </div>
-
-                    <EvidenceDetails summary="Inspect item ID">
-                      <span>item_id: {item.item_id}</span>
-                    </EvidenceDetails>
-
-                    {readiness && (
-                      <p className="text-xs text-[var(--muted)] bg-[var(--surface-muted)] p-2 rounded">
-                        <strong>Readiness projection:</strong> {readiness.reason}
-                      </p>
-                    )}
-
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       <div>
                         <label htmlFor={`item-title-${item.item_id}`} className="block text-xs font-medium text-[var(--muted)] mb-1">
@@ -360,11 +349,11 @@ export function GraphEditor({ epicId, proposedGraph }: { epicId: string; propose
                         <label htmlFor={`item-outcome-${item.item_id}`} className="block text-xs font-medium text-[var(--muted)] mb-1">
                           Outcome / deliverable
                         </label>
-                        <input
+                        <textarea
                           id={`item-outcome-${item.item_id}`}
                           aria-label={`Item outcome ${idx + 1}`}
-                          type="text"
-                          className="w-full px-3 py-1.5 border border-[var(--control-border)] rounded text-sm bg-[var(--surface)]"
+                          rows={2}
+                          className="w-full px-3 py-1.5 border border-[var(--control-border)] rounded text-sm bg-[var(--surface)] min-h-[52px] focus:outline-none focus:border-[var(--focus)]"
                           maxLength={5000}
                           value={item.outcome}
                           onChange={e => updateItem(idx, { outcome: e.target.value })}
@@ -394,6 +383,12 @@ export function GraphEditor({ epicId, proposedGraph }: { epicId: string; propose
                       </label>
                     </fieldset>
 
+                    {readiness && (
+                      <p className="text-xs text-[var(--muted)] bg-[var(--surface-muted)] p-2 rounded">
+                        <strong>Readiness projection:</strong> {readiness.reason}
+                      </p>
+                    )}
+
                     {/* Source Requirements Selection */}
                     <div className="space-y-1">
                       <span className="block text-xs font-medium text-[var(--muted)]">
@@ -405,7 +400,7 @@ export function GraphEditor({ epicId, proposedGraph }: { epicId: string; propose
                         <p className="text-xs text-[var(--muted)] italic">No requirements in accepted brief.</p>
                       ) : (
                         <div className="flex flex-wrap gap-2 pt-1">
-                          {availableRequirements.map(req => {
+                          {availableRequirements.map((req, rIdx) => {
                             const isSelected = item.source_requirement_ids.includes(req.requirement_id);
                             return (
                               <button
@@ -417,6 +412,7 @@ export function GraphEditor({ epicId, proposedGraph }: { epicId: string; propose
                                     : 'bg-[var(--surface)] text-[var(--muted)] border-[var(--border)] hover:border-[var(--control-border)]'
                                 }`}
                                 aria-pressed={isSelected}
+                                title={`requirement_id: ${req.requirement_id}`}
                                 onClick={() => {
                                   const updated = isSelected
                                     ? item.source_requirement_ids.filter(id => id !== req.requirement_id)
@@ -425,7 +421,7 @@ export function GraphEditor({ epicId, proposedGraph }: { epicId: string; propose
                                 }}
                               >
                                 {isSelected ? '✓ ' : '+ '}
-                                {req.text.slice(0, 30)}...
+                                R{rIdx + 1}: {req.text.slice(0, 30)}...
                               </button>
                             );
                           })}
@@ -468,6 +464,45 @@ export function GraphEditor({ epicId, proposedGraph }: { epicId: string; propose
                           })}
                       </div>
                     </div>
+
+                    {/* Acceptance criteria now placed after item specification */}
+                    <div className="space-y-2 pt-2 border-t border-[var(--border)]">
+                      <span className="block text-xs font-medium text-[var(--muted)]">Item acceptance criteria</span>
+                      {item.acceptance_criteria.map((criterion, criterionIndex) => (
+                        <div key={criterionIndex} className="flex items-start gap-2 mb-2">
+                          <textarea
+                            rows={2}
+                            aria-label={`Criterion ${criterionIndex + 1} for item ${idx + 1}`}
+                            className="flex-1 px-3 py-1.5 border rounded text-sm bg-[var(--surface)] min-h-[44px] focus:outline-none focus:border-[var(--focus)]"
+                            value={criterion}
+                            onChange={event => updateItem(idx, {
+                              acceptance_criteria: item.acceptance_criteria.map((value, index) => index === criterionIndex ? event.target.value : value),
+                            })}
+                          />
+                          <Button
+                            type="button"
+                            variant="quiet"
+                            aria-label={`Remove criterion ${criterionIndex + 1} for item ${idx + 1}`}
+                            onClick={() => updateItem(idx, {
+                              acceptance_criteria: item.acceptance_criteria.filter((_, index) => index !== criterionIndex),
+                            })}
+                          >
+                            Remove
+                          </Button>
+                        </div>
+                      ))}
+                      <Button
+                        type="button"
+                        variant="quiet"
+                        onClick={() => updateItem(idx, { acceptance_criteria: [...item.acceptance_criteria, ''] })}
+                      >
+                        Add criterion
+                      </Button>
+                    </div>
+
+                    <EvidenceDetails summary="Inspect item ID">
+                      <span>item_id: {item.item_id}</span>
+                    </EvidenceDetails>
                   </div>
                 );
               })}
@@ -506,18 +541,109 @@ export function GraphEditor({ epicId, proposedGraph }: { epicId: string; propose
                 </EvidenceDetails>
               </div>
 
-              <div className="space-y-2">
-                {acceptedGraph.items.map((it, idx) => (
-                  <div key={it.item_id} className="p-3 border border-[var(--border)] rounded text-sm space-y-1">
-                    <div className="flex items-center space-x-2">
-                      <span className="font-semibold">#{idx + 1} {it.title}</span>
-                      <StatusBadge label={it.disposition} tone={it.disposition === 'required' ? 'neutral' : 'warning'} />
-                    </div>
-                    <p className="text-xs text-[var(--muted)]">Outcome: {it.outcome}</p>
-                  </div>
-                ))}
+              <div className="space-y-3">
+                {(() => {
+                  const reqLookup = new Map((acceptedBrief?.requirements ?? []).map((r, idx) => [r.requirement_id, { label: `R${idx + 1}`, text: r.text }]));
+                  const itemLookup = new Map(acceptedGraph.items.map((item, idx) => [item.item_id, { title: item.title, ordinal: idx + 1 }]));
+
+                  return acceptedGraph.items.map((it, idx) => {
+                    const readiness = readinessMap.get(it.item_id);
+                    return (
+                      <details key={it.item_id} className="disclosure-card border border-[var(--border)] rounded bg-[var(--surface)] group">
+                        <summary className="disclosure-summary p-3 cursor-pointer flex flex-wrap items-center justify-between gap-2 hover:bg-[var(--surface-muted)] transition-colors rounded">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="font-semibold text-sm">#{idx + 1} {it.title}</span>
+                            <StatusBadge label={it.disposition} tone={it.disposition === 'required' ? 'neutral' : 'warning'} />
+                            {readiness && (
+                              <StatusBadge
+                                label={readiness.status}
+                                tone={readiness.status === 'ready' ? 'success' : readiness.status === 'blocked' ? 'danger' : 'neutral'}
+                              />
+                            )}
+                          </div>
+                          <span className="text-xs text-[var(--muted)]">
+                            {it.dependency_item_ids?.length ? `${it.dependency_item_ids.length} dependencies` : 'No prerequisites'}
+                          </span>
+                        </summary>
+
+                        <div className="disclosure-body p-4 border-t border-[var(--border)] space-y-3 bg-[var(--surface)]">
+                          <div className="space-y-1">
+                            <h4 className="text-xs font-semibold text-[var(--muted)] uppercase tracking-wider">Outcome</h4>
+                            <p className="text-sm readable-prose whitespace-pre-wrap leading-relaxed">{it.outcome}</p>
+                          </div>
+
+                          {readiness && (
+                            <p className="text-xs text-[var(--muted)] bg-[var(--surface-muted)] p-2 rounded">
+                              <strong>Structural readiness projection:</strong> {readiness.status} · {readiness.reason}
+                            </p>
+                          )}
+
+                          <div className="space-y-1">
+                            <h4 className="text-xs font-semibold text-[var(--muted)] uppercase tracking-wider">Source requirements</h4>
+                            {(!it.source_requirement_ids || it.source_requirement_ids.length === 0) ? (
+                              <p className="text-xs text-[var(--muted)]">No source requirements bound.</p>
+                            ) : (
+                              <ul className="space-y-1.5">
+                                {(it.source_requirement_ids ?? []).map(rId => {
+                                  const req = reqLookup.get(rId);
+                                  return (
+                                    <li key={rId} className="text-sm bg-[var(--surface-muted)] p-2 rounded border border-[var(--border)] space-y-1">
+                                      <p className="readable-prose whitespace-pre-wrap">
+                                        {req?.label ? `${req.label}: ` : 'Requirement: '}{req?.text ?? rId}
+                                      </p>
+                                      <EvidenceDetails summary="Inspect requirement ID">
+                                        <span>requirement_id: {rId}</span>
+                                      </EvidenceDetails>
+                                    </li>
+                                  );
+                                })}
+                              </ul>
+                            )}
+                          </div>
+
+                          <div className="space-y-1">
+                            <h4 className="text-xs font-semibold text-[var(--muted)] uppercase tracking-wider">Acceptance criteria</h4>
+                            {(!it.acceptance_criteria || it.acceptance_criteria.length === 0) ? (
+                              <p className="text-xs text-[var(--muted)]">No acceptance criteria specified.</p>
+                            ) : (
+                              <ul className="list-disc pl-5 text-sm text-[var(--muted)] space-y-1 leading-relaxed">
+                                {(it.acceptance_criteria ?? []).map((crit, cIdx) => (
+                                  <li key={cIdx} className="text-sm text-[var(--foreground)]">{crit}</li>
+                                ))}
+                              </ul>
+                            )}
+                          </div>
+
+                          <div className="space-y-1">
+                            <h4 className="text-xs font-semibold text-[var(--muted)] uppercase tracking-wider">Dependencies</h4>
+                            {(!it.dependency_item_ids || it.dependency_item_ids.length === 0) ? (
+                              <p className="text-xs text-[var(--muted)]">No prerequisites (root item).</p>
+                            ) : (
+                              <ul className="list-disc pl-5 text-sm text-[var(--muted)] space-y-0.5">
+                                {(it.dependency_item_ids ?? []).map(dId => {
+                                  const dep = itemLookup.get(dId);
+                                  return (
+                                    <li key={dId}>
+                                      {dep ? `#${dep.ordinal}: ${dep.title}` : dId}
+                                    </li>
+                                  );
+                                })}
+                              </ul>
+                            )}
+                          </div>
+
+                          <EvidenceDetails summary="Inspect item ID and digest">
+                            <p>item_id: {it.item_id}</p>
+                            {it.item_digest && <p>item_digest: {it.item_digest}</p>}
+                          </EvidenceDetails>
+                        </div>
+                      </details>
+                    );
+                  });
+                })()}
               </div>
             </div>
+
           )}
         </Panel>
       )}

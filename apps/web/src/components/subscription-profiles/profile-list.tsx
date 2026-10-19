@@ -5,7 +5,7 @@ import type { components } from '@/lib/api/schema';
 import { ApiError, api } from '@/lib/api/client';
 import { stringifyExactJson } from '@/lib/api/exact-integer';
 import { ProfileEditor } from './profile-editor';
-import { profileLabel } from './labels';
+import { profileLabel, deriveProfileSummaryLabel } from './labels';
 import { Button } from '@/components/ui/button';
 import { StatusBadge } from '@/components/ui/status-badge';
 import { ProviderBadge, getProviderCue } from '@/components/ui/provider-badge';
@@ -28,6 +28,30 @@ export function ProfileList({ profiles, refresh, unverified = false }: { profile
     () => [...profiles].sort((a, b) => a.profile_id.localeCompare(b.profile_id) || b.version - a.version),
     [profiles]
   );
+  const latestProfiles = useMemo(() => {
+    return orderedProfiles.filter(
+      (profile, index) => index === 0 || orderedProfiles[index - 1].profile_id !== profile.profile_id
+    );
+  }, [orderedProfiles]);
+  const historicalProfiles = useMemo(() => {
+    return orderedProfiles.filter(
+      (profile, index) => !(index === 0 || orderedProfiles[index - 1].profile_id !== profile.profile_id)
+    );
+  }, [orderedProfiles]);
+
+  const [editorOpen, setEditorOpen] = useState(false);
+
+  useEffect(() => {
+    function checkHash() {
+      if (typeof window !== 'undefined' && window.location.hash === '#profile-editor') {
+        setEditorOpen(true);
+      }
+    }
+    checkHash();
+    window.addEventListener('hashchange', checkHash);
+    return () => window.removeEventListener('hashchange', checkHash);
+  }, []);
+
   const projectionKey = useMemo(
     () => profiles.map(profile => `${profile.profile_id}:${profile.version}`).join(','),
     [profiles]
@@ -73,6 +97,118 @@ export function ProfileList({ profiles, refresh, unverified = false }: { profile
     }
   }
 
+  function renderProfileCard(profile: Profile, latest: boolean) {
+    return (
+      <article
+        key={`${profile.profile_id}:${profile.version}`}
+        className="profile-version-card"
+        data-latest={latest}
+      >
+        <div className="profile-card-header">
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 style={{ margin: 0 }}>
+                <span>{deriveProfileSummaryLabel(profile.preferences)}</span>
+                <span className="meta ml-2 font-normal text-sm">
+                  Profile {profile.profile_id.slice(0, 8)} · version {profile.version}
+                </span>
+              </h3>
+            </div>
+            <p className="meta" style={{ margin: '4px 0 0' }}>
+              Default billing: <strong>{profileLabel(profile.default_billing_mode)}</strong>
+              {' · '}
+              Jev default:{' '}
+              <strong>
+                {profile.jev ? `${profileLabel(profile.jev.mode)} (${profile.jev.model})` : 'None'}
+              </strong>
+              {profile.jev?.allow_remote ? ' · remote processing allowed' : ''}
+            </p>
+          </div>
+          <div>
+            {latest ? (
+              <StatusBadge label="Latest version" tone="success" />
+            ) : (
+              <StatusBadge label="Historical version" tone="neutral" />
+            )}
+          </div>
+        </div>
+
+        <details>
+          <summary>{latest ? 'Assigned roles' : 'Show historical roles'} <span className="meta">({profile.preferences.length})</span></summary>
+          <div className="profile-roles-grid">
+            {profile.preferences.map((preference, index) => {
+              const preferred = (preference.preferred_route ?? {}) as Record<string, unknown>;
+              const provider = String(preferred.provider ?? '');
+              const cue = getProviderCue(provider);
+              const fallbacks = ((preference.fallback_routes as Record<string, unknown>[]) ?? []);
+              const friendlyPurpose = profileLabel(preference.purpose);
+
+              return (
+                <details
+                  key={index}
+                  className="disclosure-card card-provider"
+                  data-provider={cue.tone}
+                >
+                  <summary className="disclosure-summary">
+                    <div className="summary-line">
+                      <div className="summary-title">
+                        <span>{friendlyPurpose}</span>
+                        <ProviderBadge provider={provider} />
+                        <code>{String(preferred.model ?? '')}</code>
+                      </div>
+                      <div className="summary-meta">
+                        <span>Reasoning: {profileLabel(preferred.effort)}</span>
+                        {fallbacks.length > 0 && <span>{fallbacks.length} {fallbacks.length === 1 ? 'fallback' : 'fallbacks'}</span>}
+                      </div>
+                    </div>
+                  </summary>
+                  <div className="disclosure-body">
+                    <div>
+                      <span className="meta">Client: </span>
+                      <span>{profileLabel(preferred.client)}</span>
+                    </div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                      <span className="meta">
+                        Auth: <strong>{profileLabel(preferred.auth_mode)}</strong>
+                      </span>
+                      <span className="meta">
+                        Billing: <strong>{profileLabel(preferred.billing_mode)}</strong>
+                      </span>
+                    </div>
+                    <div>
+                      <span className="meta">Fallbacks: </span>
+                      {fallbacks.length > 0 ? fallbacks.map(route => String(route.model)).join(', ') : 'none'}
+                    </div>
+                  </div>
+                </details>
+              );
+            })}
+          </div>
+        </details>
+
+        {profile.approved_mappings.length > 0 && <details>
+          <summary>Approved mappings ({profile.approved_mappings.length})</summary>
+          <ul>{profile.approved_mappings.map((mapping, index) => <li key={index}>
+            {String(mapping.requested_model)} → {String(mapping.effective_model)} ({String(mapping.reason)})
+          </li>)}</ul>
+        </details>}
+
+        <details>
+          <summary>View immutable configuration</summary>
+          <pre className="evidence-scroll">{JSON.stringify(profile, null, 2)}</pre>
+        </details>
+
+        {latest && !stale && (
+          <div style={{ marginTop: '4px' }}>
+            <Button type="button" disabled={saving || unverified} onClick={() => setSelected(profile)}>
+              Append from latest version {profile.version}
+            </Button>
+          </div>
+        )}
+      </article>
+    );
+  }
+
   return (
     <div className="profiles-layout">
       {stale && (
@@ -89,174 +225,75 @@ export function ProfileList({ profiles, refresh, unverified = false }: { profile
         </p>
       )}
 
-      <details className="saved-profile-history"><summary>Saved profile history ({profiles.length})</summary>
-      <section aria-label="Immutable profile versions">
-        <h2>Immutable profile versions</h2>
-        <p className="meta">
-          Each profile version is permanently recorded and immutable once created.
-        </p>
+      {!profiles.length && (
+        <p className="empty-state">No subscription profiles yet. Create the first version below.</p>
+      )}
 
-        {!profiles.length && (
-          <p className="empty-state">No subscription profiles yet. Create the first version below.</p>
-        )}
-
-        {orderedProfiles.map((profile, index) => {
-          const latest = index === 0 || orderedProfiles[index - 1].profile_id !== profile.profile_id;
-
-          return (
-            <article
-              key={`${profile.profile_id}:${profile.version}`}
-              className="profile-version-card"
-              data-latest={latest}
-            >
-              <div className="profile-card-header">
-                <div>
-                  <h3>
-                    Profile {profile.profile_id} · version {profile.version}
-                  </h3>
-                  <p className="meta" style={{ margin: '2px 0 0' }}>
-                    Default billing: <strong>{profileLabel(profile.default_billing_mode)}</strong>
-                    {' · '}
-                    Jev default:{' '}
-                    <strong>
-                      {profile.jev ? `${profileLabel(profile.jev.mode)} (${profile.jev.model})` : 'None'}
-                    </strong>
-                  </p>
-                </div>
-                <div>
-                  {latest ? (
-                    <StatusBadge label="Latest version" tone="success" />
-                  ) : (
-                    <StatusBadge label="Historical version" tone="neutral" />
-                  )}
-                </div>
-              </div>
-
-              <details open={latest}>
-                <summary>{latest ? 'Assigned roles' : 'Show historical roles'}</summary>
-              <div className="profile-roles-grid">
-                {profile.preferences.map((preference, index) => {
-                  const preferred = (preference.preferred_route ?? {}) as Record<string, unknown>;
-                  const provider = String(preferred.provider ?? '');
-                  const cue = getProviderCue(provider);
-                  const fallbacks = ((preference.fallback_routes as Record<string, unknown>[]) ?? []);
-                  const friendlyPurpose = profileLabel(preference.purpose);
-
-                  return (
-                    <div
-                      key={index}
-                      className="profile-role-card card-provider"
-                      data-provider={cue.tone}
-                    >
-                      <div className="profile-role-card-header">
-                        <div>
-                          <span className="profile-role-title">{friendlyPurpose}</span>
-                        </div>
-                        <ProviderBadge provider={provider} />
-                      </div>
-
-                      <div style={{ fontSize: '0.8125rem', display: 'grid', gap: '4px' }}>
-                        <div>
-                          <span className="meta">Requested model: </span>
-                          <strong style={{ fontFamily: 'monospace' }}>
-                            {String(preferred.model ?? '')}
-                          </strong>
-                        </div>
-                        <div>
-                          <span className="meta">Client: </span>
-                          <span>{profileLabel(preferred.client)}</span>
-                        </div>
-                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
-                          <span className="meta">
-                            Auth: <strong>{profileLabel(preferred.auth_mode)}</strong>
-                          </span>
-                          <span className="meta">
-                            Billing: <strong>{profileLabel(preferred.billing_mode)}</strong>
-                          </span>
-                          <span className="meta">
-                            Effort: <strong>{profileLabel(preferred.effort)}</strong>
-                          </span>
-                        </div>
-                      </div>
-
-                      <div style={{ borderTop: '1px solid var(--border)', paddingTop: '6px', fontSize: '0.75rem' }}>
-                        <span className="meta">Fallbacks: </span>
-                        {fallbacks.length > 0 ? (
-                          <span style={{ fontWeight: 500 }}>
-                            {fallbacks.map(route => String(route.model)).join(', ')}
-                          </span>
-                        ) : (
-                          <span>none</span>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-              </details>
-
-              <p style={{ margin: '4px 0 0', fontSize: '0.8125rem' }}>
-                Approved mappings:{' '}
-                {profile.approved_mappings
-                  .map(
-                    mapping =>
-                      `${String(mapping.requested_model)} → ${String(mapping.effective_model)} (${String(
-                        mapping.reason
-                      )})`
-                  )
-                  .join('; ') || 'none'}
-              </p>
-
-              <p style={{ margin: '4px 0 0', fontSize: '0.8125rem' }}>
-                Jev default:{' '}
-                {profile.jev
-                  ? `${profileLabel(profile.jev.mode)} · ${profile.jev.model}${
-                      profile.jev.allow_remote ? ' · remote processing allowed' : ''
-                    }`
-                  : 'None'}
-              </p>
-
-              <details>
-                <summary>View immutable configuration</summary>
-                <pre>{JSON.stringify(profile, null, 2)}</pre>
-              </details>
-
-              {latest && !stale && (
-                <div style={{ marginTop: '4px' }}>
-                  <Button type="button" disabled={saving || unverified} onClick={() => setSelected(profile)}>
-                    Append from latest version {profile.version}
-                  </Button>
-                </div>
-              )}
-            </article>
-          );
-        })}
-      </section>
-      </details>
-
-      <section aria-label="Profile editor container">
-        {selected && (
-          <div className="append-notice">
-            <span>
-              Appending version <strong>{selected.version + 1}</strong> based on Profile{' '}
-              <code>{selected.profile_id}</code> version {selected.version}.
-            </span>
-            <Button variant="quiet" disabled={saving} onClick={() => setSelected(undefined)}>
-              Cancel editing
-            </Button>
+      {latestProfiles.length > 0 && (
+        <section aria-label="Latest subscription profiles" className="latest-profiles-section mb-6">
+          <div className="space-y-4">
+            {latestProfiles.map(profile => renderProfileCard(profile, true))}
           </div>
-        )}
+        </section>
+      )}
 
-        <h2>{selected ? `Append profile version ${selected.version + 1}` : 'Create profile'}</h2>
+      {profiles.length > 0 && (
+        <details className="saved-profile-history mb-6">
+          <summary>Saved profile history ({profiles.length})</summary>
+          <section aria-label="Immutable profile versions" className="space-y-4 mt-3">
+            <h2>Immutable profile versions</h2>
+            <p className="meta">
+              Each profile version is permanently recorded and immutable once created.
+            </p>
+            {historicalProfiles.map(profile => renderProfileCard(profile, false))}
+          </section>
+        </details>
+      )}
 
-        <ProfileEditor
-          key={selected ? `${selected.profile_id}:${selected.version}` : `new:${newFormVersion}`}
-          initial={selected}
-          expectedVersion={selected?.version}
-          onSave={save}
-          saveUnavailable={unverified || stale}
-        />
-      </section>
+      <details
+        id="profile-editor"
+        className="disclosure-card profile-editor-disclosure"
+        open={Boolean(selected || editorOpen || profiles.length === 0)}
+        onToggle={event => {
+          setEditorOpen((event.currentTarget as HTMLDetailsElement).open);
+        }}
+      >
+        <summary className="disclosure-summary cursor-pointer">
+          <div className="summary-line">
+            <span className="summary-title">
+              {selected ? `Append profile version ${selected.version + 1}` : 'Create profile'}
+            </span>
+            <span className="summary-meta">
+              {selected
+                ? `Base: ${selected.profile_id} (version ${selected.version})`
+                : 'Configure 9 runtime agent roles'}
+            </span>
+          </div>
+        </summary>
+        <div className="disclosure-body">
+          {selected && (
+            <div className="append-notice">
+              <span>
+                Appending version <strong>{selected.version + 1}</strong> based on Profile{' '}
+                <code>{selected.profile_id}</code> version {selected.version}.
+              </span>
+              <Button variant="quiet" disabled={saving} onClick={() => setSelected(undefined)}>
+                Cancel editing
+              </Button>
+            </div>
+          )}
+
+          <h2>{selected ? `Append profile version ${selected.version + 1}` : 'Create profile'}</h2>
+
+          <ProfileEditor
+            key={selected ? `${selected.profile_id}:${selected.version}` : `new:${newFormVersion}`}
+            initial={selected}
+            expectedVersion={selected?.version}
+            onSave={save}
+            saveUnavailable={unverified || stale}
+          />
+        </div>
+      </details>
     </div>
   );
 }

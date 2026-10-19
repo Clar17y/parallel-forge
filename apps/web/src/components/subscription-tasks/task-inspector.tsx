@@ -52,17 +52,16 @@ function TaskInspectorView({ runId, controller }: { runId: string; controller: S
     {tasks.loading ? <LoadingStatus>Loading tasks…</LoadingStatus> : tasks.failed ?
       <p role="alert">Task inspection unavailable. Use Refresh tasks to retry.</p> :
       tasks.value ? <>
-        <RunUsageCheckpoint runId={runId} runAllowsExecution={tasks.value.run_allows_execution}
-          runIsTerminal={tasks.value.run_is_terminal}
-          quotaBlocked={tasks.value.subscription && tasks.value.tasks.some(task => task.quota_status?.status === 'blocked')}
-          manualPause={tasks.value.subscription && tasks.value.tasks.some(task => task.purpose === 'primary'
-            && (task.pause_requested || task.control?.status === 'paused'))} />
-        {!tasks.value.subscription ? <p>Legacy run: subscription tasks do not apply.</p> : <>
-        <p>Candidate: {tasks.value.candidate_state ?? 'Unknown'} · epoch {unknown(tasks.value.candidate_epoch)}</p>
-        <CapacityStatus capacity={tasks.value.capacity} />
-        <p><Link href="/subscription-profiles#client-setup">Inspect worker registration and client setup</Link></p>
+        {!tasks.value.subscription ? (
+          <>
+            <p>Legacy run: subscription tasks do not apply.</p>
+            <RunUsageCheckpoint runId={runId} runAllowsExecution={tasks.value.run_allows_execution}
+              runIsTerminal={tasks.value.run_is_terminal}
+              quotaBlocked={false}
+              manualPause={false} />
+          </>
+        ) : <>
         {tasks.value.queue_diagnostic && tasks.value.queue_diagnostic.status !== 'matching_ready' ? <RunQueueDiagnosticsBanner diagnostic={tasks.value.queue_diagnostic} /> : null}
-        <QuotaStatusList statuses={tasks.value.quota_statuses ?? []} />
         {tasks.value.recovery_attention ? <p role="alert" className="rounded border border-amber-500 p-3 font-semibold">Recovery attention required: this workflow needs review.</p> : null}
         {tasks.value.tasks.length === 0 ? <p>No tasks on this page.</p> :
           <ul className="space-y-3">{tasks.value.tasks.map(task => <li key={task.task_id} className="min-w-0 space-y-1 rounded border border-slate-300 p-3 [overflow-wrap:anywhere]">
@@ -107,6 +106,25 @@ function TaskInspectorView({ runId, controller }: { runId: string; controller: S
           <span>Page {Math.floor(offset / pageSize) + 1}</span>
           <button type="button" disabled={!tasks.value.has_more} onClick={() => movePage(offset + pageSize)}>Next tasks</button>
         </nav>
+
+        <section aria-label="Scheduler & execution diagnostics" className="secondary-diagnostics mt-6 pt-4 border-t border-slate-300 space-y-3">
+          <details className="disclosure-card" open>
+            <summary className="disclosure-summary font-semibold cursor-pointer">
+              <span>Scheduler and execution diagnostics</span>
+            </summary>
+            <div className="disclosure-body space-y-3 pt-3">
+              <p>Candidate: {tasks.value.candidate_state ?? 'Unknown'} · epoch {unknown(tasks.value.candidate_epoch)}</p>
+              <CapacityStatus capacity={tasks.value.capacity} />
+              <p><Link href="/subscription-profiles#client-setup">Inspect worker registration and client setup</Link></p>
+              <QuotaStatusList statuses={tasks.value.quota_statuses ?? []} />
+              <RunUsageCheckpoint runId={runId} runAllowsExecution={tasks.value.run_allows_execution}
+                runIsTerminal={tasks.value.run_is_terminal}
+                quotaBlocked={tasks.value.tasks.some(task => task.quota_status?.status === 'blocked')}
+                manualPause={tasks.value.tasks.some(task => task.purpose === 'primary'
+                  && (task.pause_requested || task.control?.status === 'paused'))} />
+            </div>
+          </details>
+        </section>
         </>}
       </> : null}
   </section>;
@@ -153,21 +171,28 @@ function Attempts({ runId, task, runVersion, runAllowsExecution, runIsTerminal, 
             authorityKey={`${runVersion}:${task.version}:${task.state}:${task.pause_requested}:${task.cancel_requested}:${task.unsettled_effects}:${attempt.state}:${recovery?.reason_code}:${recovery?.resolution}:${recovery?.last_failure_at}:${eligibleActions.join(',')}`}
             onRefresh={() => { const token = onRefresh(); attempts.refresh(); return token; }}
             onReceipt={() => setReceiptGeneration(current => ({ ...current, [attempt.attempt_id]: (current[attempt.attempt_id] ?? 0) + 1 }))} />
-          <RecoveryReceiptHistory key={`${attempt.attempt_id}:${receiptGeneration[attempt.attempt_id] ?? 0}`}
-            runId={runId} taskId={taskId} attemptId={attempt.attempt_id} />
-        <p>Requested: {routeLabel(attempt.requested_route)}</p>
-        <p>Effective: {routeLabel(attempt.effective_route)}</p>
-        <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
-          <div><dt>Input tokens</dt><dd>{unknown(attempt.input_tokens)}</dd></div>
-          <div><dt>Output tokens</dt><dd>{unknown(attempt.output_tokens)}</dd></div>
-          <div><dt>Cached tokens</dt><dd>{unknown(attempt.cached_tokens)}</dd></div>
-          <div><dt>Duration (ms)</dt><dd>{unknown(attempt.duration_ms)}</dd></div>
-          <div><dt>Tool calls</dt><dd>{unknown(attempt.tool_calls)}</dd></div>
-          <div><dt>Named checks</dt><dd>{unknown(attempt.named_checks)}</dd></div>
-          <div><dt>API estimate (minor units)</dt><dd>{unknown(attempt.estimated_api_cost_minor)}{attempt.currency ? ` ${attempt.currency}` : ''}</dd></div>
-          <div><dt>Quota</dt><dd>{attempt.quota_status === 'unknown' ? 'Unknown' : attempt.quota_status}</dd></div>
-        </dl>
-      </article>;
+          <p>Requested: {routeLabel(attempt.requested_route)}</p>
+          <p>Effective: {routeLabel(attempt.effective_route)}</p>
+          <details className="disclosure-card pt-2" open={!!recovery}>
+            <summary className="disclosure-summary text-sm cursor-pointer font-medium">
+              Attempt {attempt.attempt_number} telemetry & history
+            </summary>
+            <div className="disclosure-body space-y-3 pt-2">
+              <RecoveryReceiptHistory key={`${attempt.attempt_id}:${receiptGeneration[attempt.attempt_id] ?? 0}`}
+                runId={runId} taskId={taskId} attemptId={attempt.attempt_id} />
+              <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
+                <div><dt>Input tokens</dt><dd>{unknown(attempt.input_tokens)}</dd></div>
+                <div><dt>Output tokens</dt><dd>{unknown(attempt.output_tokens)}</dd></div>
+                <div><dt>Cached tokens</dt><dd>{unknown(attempt.cached_tokens)}</dd></div>
+                <div><dt>Duration (ms)</dt><dd>{unknown(attempt.duration_ms)}</dd></div>
+                <div><dt>Tool calls</dt><dd>{unknown(attempt.tool_calls)}</dd></div>
+                <div><dt>Named checks</dt><dd>{unknown(attempt.named_checks)}</dd></div>
+                <div><dt>API estimate (minor units)</dt><dd>{unknown(attempt.estimated_api_cost_minor)}{attempt.currency ? ` ${attempt.currency}` : ''}</dd></div>
+                <div><dt>Quota</dt><dd>{attempt.quota_status === 'unknown' ? 'Unknown' : attempt.quota_status}</dd></div>
+              </dl>
+            </div>
+          </details>
+        </article>;
       })}
     <nav aria-label="Attempt pages" className="flex flex-wrap gap-4">
       <button type="button" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - pageSize))}>Previous attempts</button>

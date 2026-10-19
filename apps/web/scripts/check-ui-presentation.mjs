@@ -121,6 +121,16 @@ test('every current backend run state has explicit presentation without inventin
     assert.equal(workflowSteps(p).filter(step => step.current).length <= 1, true);
   }
 });
+test('a retained stall reason does not relabel terminal, paused, or approval/attention states', () => {
+  const reason = 'An attempt ended and nothing is running.';
+  for (const state of ['COMPLETED', 'FAILED', 'CANCELLED', 'PAUSED', 'AWAITING_PLAN_APPROVAL', 'AWAITING_PR_APPROVAL', 'AWAITING_MERGE_APPROVAL', 'AWAITING_HUMAN_INTERVENTION']) {
+    const p = fixture(); p.run.state = state; p.stall_reason = reason;
+    assert.notEqual(describeRunState(p).title, 'Run waiting');
+  }
+  const activeWaiting = fixture(); activeWaiting.run.state = 'PLANNING'; activeWaiting.stall_reason = reason;
+  assert.equal(describeRunState(activeWaiting).title, 'Run waiting');
+});
+
 test('presentation does not modify the projection or manufacture approval commands', () => {
   const p = fixture(); p.next_gate = 'merge';
   p.remote_observation = { head_sha: head, checks: [remote()] };

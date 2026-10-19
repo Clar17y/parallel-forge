@@ -18,10 +18,12 @@ export function PolicyBrowser({ children }: {
     {projects.failed && <p role="alert">Projects unavailable. <button onClick={projects.refresh}>Retry</button></p>}
     {projects.value && !projects.value.length && <p>No project policies yet.</p>}
     {project && <>
-      <label>Project <select value={project.id} onChange={event => { setSelected(event.target.value); setVersion(''); }}>
-        {projects.value?.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
-      </select></label>
-      <label>Policy version <input type="number" min={1} max={project.policy_version ?? undefined} value={requested} onChange={event => setVersion(event.target.value)} /></label>
+      <div className="filter-bar flex flex-wrap items-end gap-3 mb-4">
+        <label className="flex-1 min-w-[200px]">Project <select value={project.id} onChange={event => { setSelected(event.target.value); setVersion(''); }}>
+          {projects.value?.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
+        </select></label>
+        <label className="w-36">Policy version <input type="number" min={1} max={project.policy_version ?? undefined} value={requested} onChange={event => setVersion(event.target.value)} /></label>
+      </div>
       {policy.loading && <LoadingStatus>Loading policy…</LoadingStatus>}
       {policy.failed && <p role="alert">Policy unavailable. <button onClick={policy.refresh}>Retry</button></p>}
       {policy.value && children(policy.value, project)}

@@ -107,6 +107,7 @@ describe('GraphEditor', () => {
     });
 
     render(<GraphEditor epicId={epicId} />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Graph Editor' }));
 
     expect(await screen.findByDisplayValue('Database Schema Setup')).toBeInTheDocument();
     expect(screen.getByDisplayValue('API Endpoints')).toBeInTheDocument();
@@ -136,6 +137,7 @@ describe('GraphEditor', () => {
     });
 
     render(<GraphEditor epicId={epicId} />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Graph Editor' }));
     await screen.findByDisplayValue('Database Schema Setup');
 
     // Add item
@@ -199,6 +201,7 @@ describe('GraphEditor', () => {
     const latest = { ...initialGraphRevisions[0], graph_revision_id: 'graph-rev-2', revision_number: 2, items: [{ ...initialGraphRevisions[0].items[0], title: 'Latest saved work item' }] };
     serveGraph([...initialGraphRevisions, latest]);
     render(<GraphEditor epicId={epicId} />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Graph Editor' }));
     expect(await screen.findByDisplayValue('Latest saved work item')).toBeInTheDocument();
     expect(screen.queryByDisplayValue('Database Schema Setup')).not.toBeInTheDocument();
   });
@@ -206,6 +209,7 @@ describe('GraphEditor', () => {
   test('removing an item also removes its references from dependent items', async () => {
     serveGraph();
     render(<GraphEditor epicId={epicId} />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Graph Editor' }));
     await screen.findByDisplayValue('Database Schema Setup');
     await userEvent.click(screen.getAllByRole('button', { name: 'Remove' })[0]);
     await userEvent.click(screen.getByRole('button', { name: 'Save new graph revision' }));
@@ -217,6 +221,7 @@ describe('GraphEditor', () => {
   test('an incomplete new item cannot be sent until its title, outcome, criteria and source are complete', async () => {
     serveGraph();
     render(<GraphEditor epicId={epicId} />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Graph Editor' }));
     await screen.findByDisplayValue('Database Schema Setup');
     await userEvent.click(screen.getByRole('button', { name: '+ Add Item' }));
     expect(screen.getByRole('button', { name: 'Save new graph revision' })).toBeDisabled();
@@ -231,6 +236,7 @@ describe('GraphEditor', () => {
     let server = initialEpic;
     serveGraph(initialGraphRevisions, () => server);
     render(<GraphEditor epicId={epicId} />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Graph Editor' }));
     const title = await screen.findByDisplayValue('Database Schema Setup');
     await userEvent.clear(title);
     await userEvent.type(title, 'My unsaved graph');
@@ -269,6 +275,7 @@ describe('GraphEditor', () => {
       return [] as T;
     });
     render(<GraphEditor epicId={epicId} />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Graph Editor' }));
     await screen.findByText('Work-Item Decomposition');
     await userEvent.click(screen.getByRole('button', { name: '+ Add Item' }));
     expect(screen.getByText('The accepted brief could not be loaded. Refresh the workspace to retry.')).toBeInTheDocument();
@@ -280,11 +287,11 @@ describe('GraphEditor', () => {
   test('accepted graph evidence exposes immutable criteria and dependencies', async () => {
     serveGraph();
     render(<GraphEditor epicId={epicId} />);
-    await screen.findByDisplayValue('Database Schema Setup');
-    await userEvent.click(screen.getByRole('button', { name: 'Accepted Graph' }));
-    await userEvent.click(screen.getByText('Inspect digests'));
-    const snapshot = await screen.findByText(/Tables exist/);
+    await userEvent.click(await screen.findByRole('button', { name: 'Accepted Graph' }));
+    await userEvent.click(await screen.findByText('Inspect digests'));
+    const snapshot = await screen.findByText(/dependency_item_ids/);
     expect(snapshot).toBeVisible();
+    expect(snapshot).toHaveTextContent('Tables exist');
     expect(snapshot).toHaveTextContent('dependency_item_ids');
     expect(snapshot).toHaveTextContent('item-1');
   });
@@ -296,8 +303,7 @@ describe('GraphEditor', () => {
       return [] as T;
     });
     render(<GraphEditor epicId={epicId} />);
-    await screen.findByText('Work-Item Decomposition');
-    await userEvent.click(screen.getByRole('button', { name: /Graph Revisions/ }));
+    await userEvent.click(await screen.findByRole('button', { name: /Graph Revisions/ }));
     expect(screen.getByText('Graph history could not be loaded.')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Retry graph history' })).toBeEnabled();
     expect(screen.queryByText('No graph revisions have been saved yet.')).not.toBeInTheDocument();
@@ -335,6 +341,7 @@ describe('GraphEditor', () => {
     });
 
     render(<GraphEditor epicId={epicId} />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Graph Editor' }));
     const titleInput = await screen.findByDisplayValue('Database Schema Setup');
     await userEvent.clear(titleInput);
     await userEvent.type(titleInput, 'Locally modified setup');

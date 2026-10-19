@@ -208,38 +208,40 @@ export function ProjectForm({ onSave, initial, policyOnly = false }: {
             <p className={styles.sectionGuidance}>
               Configure your local git repository path, GitHub connection, and project details.
             </p>
-            <Field
-              label="Project name"
-              required
-              value={value.name}
-              onChange={text => set('name', text)}
-              error={errors.name}
-              hint="e.g. My Parallel Project"
-            />
-            <Field
-              label="Repository path"
-              required
-              value={value.repository_path}
-              onChange={text => set('repository_path', text)}
-              error={errors.repository_path}
-              hint="Path to existing local Git repository (e.g. C:/code/my-project or /home/user/code/my-project)"
-            />
-            <Field
-              label="GitHub repository"
-              required
-              value={value.github_repository}
-              onChange={text => set('github_repository', text)}
-              error={errors.github_repository}
-              hint="e.g. owner/repo"
-            />
-            <Field
-              label="Default branch"
-              required
-              value={value.default_branch}
-              onChange={text => set('default_branch', text)}
-              error={errors.default_branch}
-              hint="e.g. main"
-            />
+            <div className="detail-grid">
+              <Field
+                label="Project name"
+                required
+                value={value.name}
+                onChange={text => set('name', text)}
+                error={errors.name}
+                hint="e.g. My Parallel Project"
+              />
+              <Field
+                label="Repository path"
+                required
+                value={value.repository_path}
+                onChange={text => set('repository_path', text)}
+                error={errors.repository_path}
+                hint="Path to existing local Git repository (e.g. C:/code/my-project or /home/user/code/my-project)"
+              />
+              <Field
+                label="GitHub repository"
+                required
+                value={value.github_repository}
+                onChange={text => set('github_repository', text)}
+                error={errors.github_repository}
+                hint="e.g. owner/repo"
+              />
+              <Field
+                label="Default branch"
+                required
+                value={value.default_branch}
+                onChange={text => set('default_branch', text)}
+                error={errors.default_branch}
+                hint="e.g. main"
+              />
+            </div>
             <Field
               label="Instructions path (optional)"
               value={value.instructions_path ?? ''}

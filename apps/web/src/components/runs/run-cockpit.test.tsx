@@ -68,9 +68,24 @@ test('a stalled run explains what it is waiting on', () => {
   const { unmount } = render(<RunCockpit initial={projection()} />);
   expect(screen.queryByRole('alert', { name: 'Run is waiting' })).not.toBeInTheDocument();
   unmount();
-  render(<RunCockpit initial={projection({ stall_reason: reason })} />);
-  expect(screen.getByRole('alert', { name: 'Run is waiting' })).toHaveTextContent(reason);
+  const waiting = projection({ stall_reason: reason });
+  waiting.run.state = 'PLANNING';
+  render(<RunCockpit initial={waiting} />);
+  expect(screen.getByRole('alert', { name: 'Current run status' })).toHaveTextContent(reason);
+  expect(screen.getAllByText(reason, { exact: true })).toHaveLength(1);
 });
+
+test.each(['CANCELLED', 'PAUSED', 'AWAITING_PLAN_APPROVAL'] as const)(
+  'keeps an earlier wait reason available without presenting %s as currently waiting', state => {
+    const reason = 'Waiting for an earlier planning attempt.';
+    const initial = projection({ stall_reason: reason });
+    initial.run.state = state;
+    initial.available_commands = [];
+    render(<RunCockpit initial={initial} />);
+    expect(screen.queryByRole('alert', { name: 'Run is waiting' })).not.toBeInTheDocument();
+    expect(screen.getByText(reason, { exact: true })).not.toBeVisible();
+  },
+);
 
 test('cockpit exposes checks and review without inferring release authority', async () => {
   vi.mocked(api).mockResolvedValue({ items: [], truncated: false });

@@ -79,8 +79,10 @@ test('inbox says so plainly when nothing is waiting', async () => {
     () => ({ items: [], offset: 0, limit: 10, truncated: false }),
   );
   render(<AttentionInbox />);
-  expect(await screen.findByText('No approvals are waiting for you.')).toBeInTheDocument();
-  expect(await screen.findByText('No runs need attention.')).toBeInTheDocument();
+  expect(await screen.findByRole('heading', { name: 'All caught up' })).toBeInTheDocument();
+  expect(screen.getByText('No approvals are waiting for you.')).toBeInTheDocument();
+  expect(screen.getByText('No runs need attention.')).toBeInTheDocument();
+  expect(screen.getByRole('link', { name: 'Start new run' })).toHaveAttribute('href', '/runs/new');
   expect(screen.getByRole('link', { name: 'Browse all runs' })).toHaveAttribute('href', '/runs');
 });
 

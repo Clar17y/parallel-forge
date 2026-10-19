@@ -24,6 +24,23 @@ export function AttentionInbox() {
   const runs = useApi<RunPage>('/run-projections?offset=0&limit=10&attention=true&exclude_pending_gate=true',
     { refreshIntervalMs: 30_000, keepPreviousOnRefresh: true });
   const blockedRuns = runs.value?.items ?? [];
+  const allCaughtUp = Boolean(approvals.value && runs.value && approvals.value.items.length === 0 && blockedRuns.length === 0);
+
+  if (allCaughtUp) {
+    return (
+      <section className="inbox-all-caught-up disclosure-card" aria-label="Inbox status" style={{ padding: '20px', marginTop: '16px' }}>
+        <h2 style={{ margin: '0 0 8px 0', fontSize: '1.125rem' }}>All caught up</h2>
+        <p style={{ margin: '0 0 4px 0', color: 'var(--muted)' }}>No approvals are waiting for you.</p>
+        <p style={{ margin: '0 0 16px 0', color: 'var(--muted)' }}>No runs need attention.</p>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center' }}>
+          <Link href="/runs/new" className="button" data-variant="primary">Start new run</Link>
+          <Link href="/runs" className="button" data-variant="secondary">Browse all runs</Link>
+          <Link href="/projects" className="button" data-variant="quiet">View projects</Link>
+        </div>
+      </section>
+    );
+  }
+
   return <>
     <section className="inbox-section" aria-labelledby="inbox-approvals-heading">
       <h2 id="inbox-approvals-heading">Waiting for your approval</h2>

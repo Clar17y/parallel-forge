@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, test, vi } from 'vitest';
 import { ProfileSelector } from './profile-selector';
@@ -54,7 +54,7 @@ test('displays saved Jev default in selection options and current selection deta
       refresh={vi.fn()}
     />
   );
-  expect(screen.getByRole('option', { name: /Version 2 · profile-1 \(Jev: Shadow\)/ })).toBeInTheDocument();
+  expect(screen.getByRole('option', { name: 'Standard route · v2 · profile-1 (Jev: Shadow)' })).toHaveValue('profile-1:2');
   expect(screen.getByText(/Jev default:/)).toBeInTheDocument();
   expect(screen.getByText('Shadow (jev-fast)')).toBeInTheDocument();
 });
@@ -102,9 +102,10 @@ test('surfaces primary and preferred role models with reasoning and link to edit
     />
   );
 
-  expect(screen.getByText(/gemini-3.8-flash/)).toBeInTheDocument();
-  expect(screen.getByText(/medium/i)).toBeInTheDocument();
-  expect(screen.getByText(/claude-opus-5-5/)).toBeInTheDocument();
+  const currentRoles = within(screen.getByRole('list'));
+  expect(currentRoles.getByText('gemini-3.8-flash')).toBeVisible();
+  expect(currentRoles.getByText(/medium/i)).toBeVisible();
+  expect(currentRoles.getByText('claude-opus-5-5')).toBeVisible();
   const editLink = screen.getByRole('link', { name: /Edit subscription profiles/i });
   expect(editLink).toHaveAttribute('href', '/subscription-profiles');
 });

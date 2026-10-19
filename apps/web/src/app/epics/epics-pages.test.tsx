@@ -123,6 +123,7 @@ describe('Epics App Pages', () => {
       return [] as T;
     });
 
+    window.history.replaceState({}, '', `/epics/${epicId}?tab=authoring`);
     await act(async () => {
       render(<EpicPage params={Promise.resolve({ epicId })} />);
     });
@@ -196,6 +197,7 @@ describe('Epics App Pages', () => {
     await act(async () => { render(<EpicPage params={Promise.resolve({ epicId })} />); });
 
     await userEvent.click(screen.getByRole('button', { name: 'Manual Requirements Brief' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Draft Editor' }));
     const title = await screen.findByLabelText('Title');
     await userEvent.clear(title);
     await userEvent.type(title, 'Local title to keep');
@@ -217,6 +219,7 @@ describe('Epics App Pages', () => {
       return [] as T;
     });
     await act(async () => { render(<EpicPage params={Promise.resolve({ epicId: routeId })} />); });
+    await userEvent.click(await screen.findByRole('button', { name: 'Draft Editor' }));
     const title = await screen.findByDisplayValue('Canonical epic');
     const epicReads = () => vi.mocked(api).mock.calls.filter(([path, init]) =>
       [`/epics/${routeId}`, `/epics/${canonicalId}`].includes(path) && !init?.method);
@@ -271,13 +274,17 @@ describe('Epics App Pages', () => {
     const first = renderHook(() => useEpicMutations(epicId));
     await act(async () => { await expect(first.result.current.execute('POST', `/epics/${epicId}/executions`, { expected_epic_version: 2 }, { kind: 'execution-start' })).rejects.toThrow(); });
     first.unmount();
+    window.history.replaceState({}, '', `/epics/${epicId}?tab=brief&conversation_id=retained-conversation`);
     vi.mocked(api).mockImplementation(async <T,>(path: string, init?: RequestInit) => {
       if (path.endsWith('/executions') && init?.method === 'POST') return { schema_version: 1, execution_id: 'execution-saved-once', execution_version: 1 } as T;
       throw new Error('temporarily unavailable');
     });
     await act(async () => { render(<EpicPage params={Promise.resolve({ epicId })} />); });
     await userEvent.click(await screen.findByRole('button', { name: 'Retry original request' }));
-    expect(mockReplace).toHaveBeenCalledWith(expect.stringContaining('execution_id=execution-saved-once'), expect.any(Object));
+    const params = new URL(window.location.href).searchParams;
+    expect(params.get('execution_id')).toBe('execution-saved-once');
+    expect(params.get('tab')).toBe('brief');
+    expect(params.get('conversation_id')).toBe('retained-conversation');
   });
 
   test('composed epic recovery shows pending execution ownership and retries the exact request', async () => {
@@ -354,6 +361,6 @@ describe('Epics App Pages', () => {
     });
     await act(async () => { render(<EpicPage params={Promise.resolve({ epicId })} />); });
     await userEvent.click(await screen.findByRole('button', { name: 'Retry original request' }));
-    expect(mockReplace).toHaveBeenCalledWith(expect.stringContaining(selection), expect.any(Object));
+    expect(window.location.search).toContain(selection);
   });
 });
