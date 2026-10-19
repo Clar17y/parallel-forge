@@ -32,9 +32,11 @@ export function parseRunSection(value: string | null): Section {
 }
 
 type Projection = components['schemas']['RunProjection'];
-export function RunCockpit({ initial, tasks, section: controlledSection, onSectionChange }: {
+export function RunCockpit({ initial, tasks, queueDiagnostics, onRefreshTasks, section: controlledSection, onSectionChange }: {
   initial: Projection;
   tasks?: ReactNode;
+  queueDiagnostics?: ReactNode;
+  onRefreshTasks?: () => void;
   section?: Section;
   onSectionChange?: (section: Section) => void;
 }) {
@@ -67,6 +69,7 @@ export function RunCockpit({ initial, tasks, section: controlledSection, onSecti
       if (!next || next.run.id !== runId) throw new Error('Projection unavailable');
       setValue(previous => next.run.version >= previous.run.version ? next : previous);
       setFailed(false);
+      onRefreshTasks?.();
       return next;
     }).catch(error => { if (!signal.aborted) setFailed(true); throw error; });
     pending.current = request;
@@ -79,7 +82,7 @@ export function RunCockpit({ initial, tasks, section: controlledSection, onSecti
       }
     }).catch(() => {});
     return request;
-  }, [runId]);
+  }, [runId, onRefreshTasks]);
   const connection = useRunEvents(runId, after, () => { void refresh().catch(() => {}); });
   const sectionNavigation = useRef<HTMLElement>(null);
   const hasTasks = Boolean(tasks);
@@ -124,6 +127,7 @@ export function RunCockpit({ initial, tasks, section: controlledSection, onSecti
     </header>
     {failed && <p className="run-notice" role="alert">Current run state could not be refreshed. Actions are disabled until a successful refresh.</p>}
     <RunStatusBanner projection={value} stale={stale || reading} />
+    {section === 'overview' && queueDiagnostics ? queueDiagnostics : null}
     {value.stall_reason ? <p className="run-notice" role="alert" aria-label="Run is waiting">{value.stall_reason}</p> : null}
     {value.subscription_recovery_attention ? <section className="run-notice" role="alert" aria-label="Workflow recovery attention">
       <p>This workflow needs recovery review. The last completed tool is historical activity and does not mean it is still executing.</p>
