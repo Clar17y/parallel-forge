@@ -269,6 +269,16 @@ class PostgresSubscriptionBudgetRepository:
                 raise SubscriptionBudgetConflict("task usage lineage conflicts")
         return await self._usage(run_id, task_id)
 
+    async def recovery_scopes(
+        self, run_id: UUID, task_id: UUID, *, locked: bool = True,
+    ) -> tuple[tuple[str, TaskBudget, SubscriptionUsage], ...]:
+        """Read the same ceilings and charges used for repair admission."""
+        contract, primary, _ = await self._task_contracts(run_id, task_id, locked=locked)
+        return tuple([
+            (name, budget, await self._usage(run_id, scope))
+            for scope, name, budget in await self._budget_scopes(run_id, task_id, contract, primary)
+        ])
+
     async def reserved_budget(self, run_id: UUID, task_id: UUID, attempt_id: UUID) -> TaskBudget:
         """Read an exact outstanding reservation; callers hold the run lock."""
         row = await self._session.get(SubscriptionAttemptReservation, attempt_id)

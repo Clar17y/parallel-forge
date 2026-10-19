@@ -874,7 +874,15 @@ class AntigravityGateway:
             telemetry = _usage(payload.get("usage"))
             if (reason := _result_failure(payload, telemetry, request)) is not None:
                 return SubscriptionInvocationResult(
-                    attempt=request.attempt, failure=reason
+                    attempt=request.attempt,
+                    failure=reason,
+                    # OUTAGE is a fallback classification, not proof of the
+                    # provider's cause. Never persist untrusted client errors.
+                    failure_detail=(
+                        "Antigravity reported an unclassified client error; provider cause is unknown"
+                        if reason is SubscriptionFailure.OUTAGE
+                        else f"Antigravity reported {reason.value}"
+                    ),
                 ), telemetry
             denied_actions = payload.get("denied_actions", [])
             if (

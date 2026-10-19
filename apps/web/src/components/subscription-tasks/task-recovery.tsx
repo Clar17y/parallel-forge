@@ -4,13 +4,15 @@ import { useEffect, useId, useRef, useState } from 'react';
 import { ApiError, api, mutate } from '@/lib/api/client';
 import type { components } from '@/lib/api/schema';
 import { useSessionIdentity } from '@/components/auth/session-identity';
-import { bindingStorageKey, isOwnerAcknowledgement, matchesStoredBinding, readBinding, removeMatchingBinding, reserveBinding, sameBinding, type RecoveryBinding } from './recovery-binding';
+import { bindingStorageKey, hasOptionalRecoveryNote, matchesStoredBinding, readBinding, removeMatchingBinding, reserveBinding, sameBinding, type RecoveryBinding } from './recovery-binding';
 
 type PreviewRequest = components['schemas']['RecoveryPreviewRequest'];
 type Preview = components['schemas']['RecoveryPreview'];
 type Receipt = components['schemas']['RecoveryReceipt'];
 type Action = PreviewRequest['action'];
 const labels: Record<Action, string> = {
+  retry_failed_attempt: 'Retry failed attempt',
+  retry_failed_attempt_with_allowance: 'Retry with one extra count allowance',
   acknowledge_interrupted_git_preparation: 'Recover interrupted Git preparation',
   acknowledge_interrupted_check: 'Recover interrupted check',
   retry_application: 'Retry saved result',
@@ -18,6 +20,8 @@ const labels: Record<Action, string> = {
   repair_approved_plan_contract: 'Repair approved-plan instructions',
 };
 const descriptions: Record<Action, string> = {
+  retry_failed_attempt: 'Queue one fresh attempt in the preserved worktree. Existing edits, failed results and known and unknown usage remain retained; the candidate still needs normal acceptance.',
+  retry_failed_attempt_with_allowance: 'Review the exact finite count increases for one fresh retry. Spend, token and time limits remain in force; unknown usage remains unknown.',
   acknowledge_interrupted_git_preparation: 'Acknowledge that prior preparation processes have stopped, retain their unknown outcome, and verify the saved review selection without replaying Git.',
   acknowledge_interrupted_check: 'Record owner-confirmed process cessation while retaining the unknown check outcome and usage.',
   retry_application: 'Reprocess the saved result without starting another provider attempt.',
@@ -25,7 +29,9 @@ const descriptions: Record<Action, string> = {
   repair_approved_plan_contract: 'Replace the approved planning-only instructions with the approved implementation contract, then queue a bounded attempt.',
 };
 const maxReasonBytes = 512;
-export const recoveryReason = (code: string) => `${code.replaceAll('_', ' ').replace(/^./, letter => letter.toUpperCase())} (${code})`;
+export const recoveryReason = (code: string) => code === 'attempt_failed_outage'
+  ? 'Client attempt failed; stored classification: outage. The provider cause is unknown.'
+  : `${code.replaceAll('_', ' ').replace(/^./, letter => letter.toUpperCase())} (${code})`;
 const pathFor = (runId: string, taskId: string, attemptId: string) => `/runs/${runId}/subscription-tasks/${taskId}/attempts/${attemptId}/recovery`;
 
 type Props = {
@@ -88,7 +94,7 @@ function TaskRecoveryInstance({ runId, taskId, attemptId, actorId, taskVersion, 
   const previewCurrent = Boolean(preview && preview.value.eligible && selectedAction && eligibleActions.includes(selectedAction)
     && preview.value.run_id === runId && preview.value.task_id === taskId && preview.value.attempt_id === attemptId
     && Date.parse(preview.value.expires_at) > clock && preview.authorityKey === authorityKey);
-  const optionalNote = isOwnerAcknowledgement(selectedAction);
+  const optionalNote = hasOptionalRecoveryNote(selectedAction);
   const validReason = (optionalNote || reason.trim().length > 0) && new TextEncoder().encode(reason).length <= maxReasonBytes;
   const active = ['leased', 'running', 'executing'].includes(taskState.toLowerCase());
   const controlsBlocked = active || pauseRequested || cancelRequested

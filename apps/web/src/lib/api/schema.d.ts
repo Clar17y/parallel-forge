@@ -5176,7 +5176,7 @@ export interface components {
          * RecoveryAction
          * @enum {string}
          */
-        RecoveryAction: "acknowledge_interrupted_git_preparation" | "acknowledge_interrupted_check" | "retry_application" | "reject_and_retry_step" | "repair_approved_plan_contract";
+        RecoveryAction: "retry_failed_attempt" | "retry_failed_attempt_with_allowance" | "acknowledge_interrupted_git_preparation" | "acknowledge_interrupted_check" | "retry_application" | "reject_and_retry_step" | "repair_approved_plan_contract";
         /** RecoveryApplyRequest */
         RecoveryApplyRequest: {
             action: components["schemas"]["RecoveryAction"];

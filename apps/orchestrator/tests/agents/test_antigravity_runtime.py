@@ -333,6 +333,21 @@ async def test_antigravity_rejects_bad_data_and_never_invents_exhaustion(
     assert result.launch_proof.stop_confirmed
 
 
+async def test_unclassified_client_error_retains_safe_diagnostic_without_claiming_provider_cause(
+    tmp_path,
+):
+    runtime, _ = gateway(tmp_path, "unclassified_error")
+    result = await runtime.execute(request())
+    assert result.failure is SubscriptionFailure.OUTAGE
+    assert result.failure_detail == (
+        "Antigravity reported an unclassified client error; provider cause is unknown"
+    )
+    assert result.decision is None and result.quota_exhaustion is None
+    assert result.telemetry.input_tokens == 15
+    assert result.telemetry.output_tokens == 5
+    assert result.launch_proof.stop_confirmed
+
+
 @pytest.mark.parametrize(
     "scenario,expected,tokens",
     [

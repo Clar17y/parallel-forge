@@ -192,6 +192,8 @@ if scenario == "invalid_decision":
     handoff["status"] = "invalid fixture status"
 if scenario == "429":
     result.update(status="ERROR", error="HTTP 429")
+if scenario == "unclassified_error":
+    result.update(status="ERROR", error="synthetic-private-client-message")
 if scenario == "401":
     result.update(status="ERROR", error="authentication required (HTTP 401)")
 if scenario == "verification":

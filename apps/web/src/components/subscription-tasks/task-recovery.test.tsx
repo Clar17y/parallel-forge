@@ -1,7 +1,7 @@
 import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
-import { TaskRecovery } from './task-recovery';
+import { TaskRecovery, recoveryReason } from './task-recovery';
 import { SessionIdentity } from '@/components/auth/session-identity';
 import type { ReactElement } from 'react';
 import { bindingStorageKey, readBinding, removeMatchingBinding, reserveBinding } from './recovery-binding';
@@ -14,7 +14,7 @@ const stored = (actorId = 'actor-1', runId = 'run-1', taskId = 'task-1', attempt
 beforeEach(() => Object.defineProperty(navigator, 'locks', { configurable: true, value: { request: async (_name: string, optionsOrCallback: { signal?: AbortSignal } | (() => unknown), maybeCallback?: () => unknown) => (typeof optionsOrCallback === 'function' ? optionsOrCallback : maybeCallback!)() } }));
 afterEach(() => { cleanup(); localStorage.clear(); Object.defineProperty(navigator, 'locks', { configurable: true, value: undefined }); vi.restoreAllMocks(); });
 
-test.each(['acknowledge_interrupted_check', 'acknowledge_interrupted_git_preparation'] as const)('owner action %s retains its optional note and exact reservation', async action => {
+test.each(['acknowledge_interrupted_check', 'acknowledge_interrupted_git_preparation', 'retry_failed_attempt', 'retry_failed_attempt_with_allowance'] as const)('owner action %s retains its optional note and exact reservation', async action => {
   const binding = { ...stored(), body: { ...stored().body, action, reason: '' } };
   expect(await reserveBinding(binding)).toBe('saved');
   expect(readBinding(binding)).toEqual({ binding, error: false });
@@ -22,6 +22,43 @@ test.each(['acknowledge_interrupted_check', 'acknowledge_interrupted_git_prepara
   expect(readBinding(binding).binding).toEqual(binding);
   localStorage.setItem(bindingStorageKey(binding.actorId, binding.runId, binding.taskId, binding.attemptId)!, JSON.stringify({ ...binding, body: { ...binding.body, action: 'replay_git' } }));
   expect(readBinding(binding)).toEqual({ binding: null, error: true });
+});
+
+test.each([
+  ['retry_failed_attempt', 'Retry failed attempt'],
+  ['retry_failed_attempt_with_allowance', 'Retry with one extra count allowance'],
+] as const)('stopped failed attempt offers %s with optional note and preserves warnings', async (action, label) => {
+  const sent: unknown[] = [];
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
+    if (!new Headers(init?.headers).has('Idempotency-Key')) return new Response(JSON.stringify({ run_id: 'run-1', task_id: 'task-1', attempt_id: 'attempt-1', preview_token: 'retry-preview', expires_at: new Date(Date.now() + 60_000).toISOString(), action, eligible: true, message: 'The failed result does not accept the candidate.', reason_code: 'eligible', changes: ['Queue one fresh attempt.', 'task limits: provider_attempts 2 → 3; repairs 0 → 1; uncertain_attempts 1 → 2'], retained_evidence: ['Known and unknown usage remain retained.', 'run cost_minor: remaining no configured cap; charged unknown.'], budget_impact: { provider_attempts: 1, repair_units: 1 } }));
+    sent.push(JSON.parse(String(init?.body)));
+    return new Response(JSON.stringify({ run_id: 'run-1', task_id: 'task-1', attempt_id: 'attempt-1', receipt_id: 'retry-receipt', action, status: 'applied', observed_at: new Date().toISOString(), reason_code: 'applied' }));
+  });
+  renderRecovery(<TaskRecovery {...recoveryProps} taskState="terminal" runAllowsExecution unsettledEffects={0} eligibleActions={[action]} />);
+  expect(sent).toEqual([]);
+  await userEvent.click(screen.getByRole('button', { name: label }));
+  expect(await screen.findByLabelText('Recovery note (optional)')).toHaveValue('');
+  expect(screen.getByText('The failed result does not accept the candidate.')).toBeInTheDocument();
+  expect(screen.getByText('Provider attempts: 1 · Repair units: 1')).toBeInTheDocument();
+  expect(screen.getByText(/task limits: provider_attempts 2 → 3; repairs 0 → 1; uncertain_attempts 1 → 2/)).toBeInTheDocument();
+  expect(screen.getByText(/run cost_minor: remaining no configured cap; charged unknown/)).toBeInTheDocument();
+  await userEvent.click(screen.getByRole('button', { name: 'Apply recovery' }));
+  await screen.findByText(/Recovery receipt retry-receipt/);
+  expect(sent).toEqual([{ action, preview_token: 'retry-preview', reason: '' }]);
+});
+
+test.each([
+  { pauseRequested: true }, { cancelRequested: true }, { taskState: 'running' },
+  { taskState: 'leased' }, { unsettledEffects: 1 }, { runAllowsExecution: false },
+])('failed retry respects current ownership and controls: %j', change => {
+  const fetcher = vi.spyOn(globalThis, 'fetch');
+  renderRecovery(<TaskRecovery {...recoveryProps} taskState="terminal" runAllowsExecution unsettledEffects={0} {...change} eligibleActions={['retry_failed_attempt']} />);
+  expect(screen.getByRole('button', { name: 'Retry failed attempt' })).toBeDisabled();
+  expect(fetcher).not.toHaveBeenCalled();
+});
+
+test('failure display distinguishes the stored outage classification from a proved cause', () => {
+  expect(recoveryReason('attempt_failed_outage')).toBe('Client attempt failed; stored classification: outage. The provider cause is unknown.');
 });
 
 test('server-listed Git acknowledgement applies at a fenced boundary with an optional note', async () => {
