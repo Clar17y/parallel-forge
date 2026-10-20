@@ -62,6 +62,76 @@ def redact_durable_text(value: str) -> str:
     return redacted
 
 
+def credential_capture_cuts(
+    head: str, tail: str, *, head_cut: int, tail_cut: int
+) -> tuple[int, int]:
+    """Conservatively mask credential fragments at known missing stream edges.
+
+    ``head`` starts at the original stream start; ``tail`` ends at its real end.
+    Synthetic recognizer context is used only to locate ranges, never emitted.
+    A tail's initial token is ambiguous without its missing label, so it is
+    discarded even when it looks harmless. Quoted values and PEM bodies can
+    span lines; their retained closing delimiter bounds that uncertainty.
+    """
+    for pattern, completion in (
+        (_AUTH_VALUE, "A" * 8),
+        (_GITHUB_TOKEN, "A" * 20),
+        (_ASSIGNMENT, "'"),
+        (_ASSIGNMENT, '"'),
+        (_DATABASE_URL, "@"),
+        (_PRIVATE_KEY, "-----END PRIVATE KEY-----"),
+    ):
+        for completed in pattern.finditer(head + completion):
+            if completed.start() < len(head) < completed.end():
+                head_cut = min(head_cut, completed.start())
+
+    initial_token = re.match(r"\s*\S+", tail)
+    if initial_token:
+        tail_cut = max(tail_cut, initial_token.end())
+    for pattern, prefix in (
+        (_ASSIGNMENT, "password="),
+        (_ASSIGNMENT, "password='"),
+        (_ASSIGNMENT, 'password="'),
+        (_PRIVATE_KEY, "-----BEGIN PRIVATE KEY-----"),
+    ):
+        match = pattern.match(prefix + tail)
+        if match:
+            tail_cut = max(tail_cut, match.end() - len(prefix))
+
+    # A cut can also land inside a key or auth scheme, before whitespace/newlines
+    # separating it from its value. Recognize the retained syntax conservatively.
+    separator = re.match(r"[^\r\n:=]*\s*[:=]\s*", tail)
+    if separator:
+        prefix = "password="
+        match = _ASSIGNMENT.match(prefix + tail[separator.end() :])
+        if match:
+            tail_cut = max(tail_cut, separator.end() + match.end() - len(prefix))
+    for scheme in ("Bearer", "Basic"):
+        for length in range(len(scheme) + 1):
+            prefix = "password=" + scheme[:length]
+            match = _ASSIGNMENT.match(prefix + tail)
+            if match:
+                tail_cut = max(tail_cut, match.end() - len(prefix))
+
+    # Deleting an edge must not split a complete credential that overlaps it.
+    # Monotone closure also handles overlapping forms (e.g. an assignment whose
+    # value contains a URL) without interpreting the omission marker as content.
+    patterns = (_AUTH_VALUE, _GITHUB_TOKEN, _ASSIGNMENT, _DATABASE_URL, _PRIVATE_KEY)
+    while True:
+        previous = head_cut, tail_cut
+        for pattern in patterns:
+            if 0 < head_cut < len(head):
+                for match in pattern.finditer(head):
+                    if match.start() < head_cut < match.end():
+                        head_cut = match.start()
+            if 0 < tail_cut < len(tail):
+                for match in pattern.finditer(tail):
+                    if match.start() < tail_cut < match.end():
+                        tail_cut = match.end()
+        if previous == (head_cut, tail_cut):
+            return head_cut, tail_cut
+
+
 def validate_durable_payload(value: Any) -> None:
     """Validate a JSON-compatible payload and reject embedded credentials.
 
@@ -113,6 +183,7 @@ def validate_durable_error(value: str | None, name: str) -> None:
 
 __all__ = [
     "contains_credential",
+    "credential_capture_cuts",
     "redact_durable_text",
     "validate_durable_error",
     "validate_durable_payload",

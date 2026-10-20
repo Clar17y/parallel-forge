@@ -85,6 +85,10 @@ class CheckItem(ProjectionModel):
     output_artifact_digest: str | None
     completed_at: datetime | None
     head_sha: str | None
+    source: Literal["validation", "subscription"] = "validation"
+    subscription_task_id: UUID | None = None
+    subscription_attempt_id: UUID | None = None
+    stderr_artifact_digest: str | None = None
 
 
 class CheckHistoryItem(CheckItem):

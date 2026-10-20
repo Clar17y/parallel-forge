@@ -6626,6 +6626,7 @@ def _write_staging_descriptor(descriptor: int, data: bytes) -> None:
 
 _LIBACL: ctypes.CDLL | None = None
 _LINUX_STAGING_ACL = b"u::rw-,u:10001:r--,g::---,m::r--,o::---"
+_ACL_TEXT_NUMERIC_IDS = 0x08
 
 
 def _load_libacl() -> ctypes.CDLL:
@@ -6639,8 +6640,10 @@ def _load_libacl() -> ctypes.CDLL:
             _LIBACL.acl_set_fd.restype = ctypes.c_int
             _LIBACL.acl_get_fd.argtypes = [ctypes.c_int]
             _LIBACL.acl_get_fd.restype = ctypes.c_void_p
-            _LIBACL.acl_to_text.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ssize_t)]
-            _LIBACL.acl_to_text.restype = ctypes.c_void_p
+            _LIBACL.acl_to_any_text.argtypes = [
+                ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char, ctypes.c_int
+            ]
+            _LIBACL.acl_to_any_text.restype = ctypes.c_void_p
             _LIBACL.acl_free.argtypes = [ctypes.c_void_p]
             _LIBACL.acl_free.restype = ctypes.c_int
         except AttributeError, OSError, TypeError:
@@ -6649,12 +6652,16 @@ def _load_libacl() -> ctypes.CDLL:
 
 
 def _acl_text(lib: ctypes.CDLL, acl: ctypes.c_void_p) -> str:
-    length = ctypes.c_ssize_t()
-    raw = lib.acl_to_text(acl, ctypes.byref(length))
-    if not raw or length.value <= 0:
+    # Qualifiers must retain their numeric identity even when NSS resolves the
+    # runner UID to a name (the sandbox's UID10001 is named "forge").
+    raw = lib.acl_to_any_text(acl, None, b"\n", _ACL_TEXT_NUMERIC_IDS)
+    if not raw:
         raise RepositoryAccessDenied("Linux staging ACL verification failed")
     try:
-        return ctypes.string_at(raw, int(length.value)).decode("ascii")
+        text = ctypes.string_at(raw).decode("ascii")
+        if not text:
+            raise RepositoryAccessDenied("Linux staging ACL verification failed")
+        return text
     except UnicodeDecodeError, ValueError:
         raise RepositoryAccessDenied("Linux staging ACL verification failed") from None
     finally:

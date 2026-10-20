@@ -6,13 +6,14 @@ import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from itertools import islice
-from typing import Any
+from typing import Any, Literal
 
-from forge.domain.payload import redact_durable_text
+from forge.domain.payload import credential_capture_cuts, redact_durable_text
 
 REDACTED = "[REDACTED]"
 UNSUPPORTED = "[UNSUPPORTED]"
 _TRUNCATION_KEY = "__forge_truncated__"
+_CAPTURE_OMISSION = "\n[... output omitted ...]\n"
 _SECRET_KEY_PARTS = (
     "authorization",
     "cookie",
@@ -34,6 +35,7 @@ class RedactionPolicy:
     max_collection_items: int = 100
     max_depth: int = 12
     max_nodes: int = 10_000
+    string_bounding: Literal["prefix", "head_tail"] = "prefix"
 
     def __post_init__(self) -> None:
         values = {
@@ -45,6 +47,8 @@ class RedactionPolicy:
         for name, (value, minimum) in values.items():
             if type(value) is not int or value < minimum:
                 raise ValueError(f"{name} must be an integer of at least {minimum}")
+        if self.string_bounding not in ("prefix", "head_tail"):
+            raise ValueError("string_bounding must be prefix or head_tail")
 
 
 @dataclass(slots=True)
@@ -90,6 +94,7 @@ class Redactor:
             ),
             max_depth=max(self._policy.max_depth, minimum.max_depth),
             max_nodes=max(self._policy.max_nodes, minimum.max_nodes),
+            string_bounding=self._policy.string_bounding,
         )
         if policy == self._policy:
             return self
@@ -183,12 +188,64 @@ class Redactor:
             traversal.active_ids.remove(identity)
 
     def _redact_string(self, value: str) -> str:
+        return self.redact_text(value)[0]
+
+    def redact_text(
+        self,
+        value: str,
+        *,
+        capture_truncated: bool = False,
+        capture_boundary: int | None = None,
+    ) -> tuple[str, bool]:
+        """Redact a string and report actual post-redaction byte truncation."""
+        if capture_boundary is not None and (
+            type(capture_boundary) is not int
+            or not capture_truncated
+            or not 0 <= capture_boundary <= len(value)
+        ):
+            raise ValueError("stream capture boundary is invalid")
         normalized = _normalize_string(value)
         redacted = normalized
+        if capture_truncated:
+            redacted = self._redact_capture_edges(normalized, capture_boundary)
         for secret in self._secrets:
             redacted = redacted.replace(secret, REDACTED)
         redacted = redact_durable_text(redacted)
-        return self._truncate_string(redacted, original_bytes=len(normalized.encode("utf-8")))
+        truncated = len(redacted.encode("utf-8")) > self._policy.max_string_bytes
+        return (
+            self._truncate_string(redacted, original_bytes=len(normalized.encode("utf-8"))),
+            truncated,
+        )
+
+    def _redact_capture_edges(self, value: str, boundary: int | None) -> str:
+        # Replacement characters at the lost edges may be partial UTF-8 code
+        # points. Remove them before matching the remaining known-value overlap.
+        head = (value if boundary is None else value[:boundary]).rstrip("\ufffd")
+        tail = "" if boundary is None else value[boundary:].lstrip("\ufffd")
+        reversed_secrets = tuple(secret[::-1] for secret in self._secrets)
+        reversed_tail = tail[::-1]
+        head_cut = len(head) - max(
+            (_secret_overlap(head, secret) for secret in self._secrets), default=0
+        )
+        tail_cut = max(
+            (_secret_overlap(reversed_tail, secret) for secret in reversed_secrets), default=0
+        )
+        while True:
+            previous = head_cut, tail_cut
+            head_cut = _secret_cut_start(head, self._secrets, cut=head_cut)
+            tail_cut = len(tail) - _secret_cut_start(
+                reversed_tail, reversed_secrets, cut=len(tail) - tail_cut
+            )
+            head_cut, tail_cut = credential_capture_cuts(
+                head, tail, head_cut=head_cut, tail_cut=tail_cut
+            )
+            if previous == (head_cut, tail_cut):
+                break
+        if head_cut < len(head):
+            head = head[:head_cut] + REDACTED
+        if tail_cut:
+            tail = REDACTED + tail[tail_cut:]
+        return head + _CAPTURE_OMISSION + tail
 
     def _truncate_string(self, value: str, *, original_bytes: int | None = None) -> str:
         value = _normalize_string(value)
@@ -201,6 +258,11 @@ class Redactor:
         if len(marker_bytes) >= self._policy.max_string_bytes:
             raise ValueError("max_string_bytes cannot represent the truncation marker")
         budget = self._policy.max_string_bytes - len(marker_bytes)
+        if self._policy.string_bounding == "head_tail":
+            head_budget = budget // 2
+            prefix = encoded[:head_budget].decode("utf-8", errors="ignore")
+            suffix = encoded[-(budget - head_budget) :].decode("utf-8", errors="ignore")
+            return prefix + marker + suffix
         prefix = encoded[:budget].decode("utf-8", errors="ignore")
         while len(prefix.encode("utf-8")) + len(marker_bytes) > self._policy.max_string_bytes:
             prefix = prefix[:-1]
@@ -217,6 +279,45 @@ class Redactor:
         while candidate in result:
             candidate = f"_{candidate}"
         return candidate
+
+
+def _secret_cut_start(value: str, secrets: tuple[str, ...], *, cut: int) -> int:
+    """Extend an existing cut through complete overlapping known values."""
+    if cut == len(value):
+        return cut
+    # Include complete known values intersecting the cut. Otherwise replacing
+    # a repeated/overlapping fragment could leave half of a previously intact
+    # value, which ordinary whole-value replacement could no longer recognize.
+    while cut:
+        previous = cut
+        for secret in secrets:
+            match = value.find(secret, max(0, cut - len(secret) + 1), cut + len(secret) - 1)
+            if 0 <= match < cut:
+                cut = match
+        if cut == previous:
+            break
+    return cut
+
+
+def _secret_overlap(value: str, secret: str) -> int:
+    """Longest secret prefix at a retained suffix, in linear time."""
+    if not value:
+        return 0
+    fallback = [0] * len(secret)
+    matched = 0
+    for index in range(1, len(secret)):
+        while matched and secret[index] != secret[matched]:
+            matched = fallback[matched - 1]
+        if secret[index] == secret[matched]:
+            matched += 1
+        fallback[index] = matched
+    matched = 0
+    for character in value[-len(secret) :]:
+        while matched and (matched == len(secret) or character != secret[matched]):
+            matched = fallback[matched - 1]
+        if character == secret[matched]:
+            matched += 1
+    return matched
 
 
 def _normalize_string(value: str) -> str:

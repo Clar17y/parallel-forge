@@ -8,9 +8,10 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from forge.application.ports.commands import CommandLane, CommandLeaseLost
+from forge.application.ports.commands import CommandLane, CommandLeaseLost, CommandRecoveryRequired
 from forge.domain.command import CommandEnvelope, CommandStatus, thaw_payload
 from forge.domain.lease import validate_lease_seconds
 from forge.domain.payload import redact_durable_text
@@ -344,7 +345,9 @@ class PostgresCommandRepository:
             await session.flush()
             return _command_from_record(record)
 
-    async def assert_current_lease(self, command: CommandEnvelope) -> CommandEnvelope:
+    async def assert_current_lease(
+        self, command: CommandEnvelope, *, wait: bool = True
+    ) -> CommandEnvelope:
         """Lock and validate the exact delivery that is settling a command.
 
         This method is deliberately session-bound: the caller's final run and
@@ -355,7 +358,20 @@ class PostgresCommandRepository:
             raise CommandLeaseError("command delivery has no lease to fence")
         if self._session is None:
             raise CommandError("lease fence requires an active unit of work")
-        record = await self._locked(command.id, self._session)
+        if wait:
+            record = await self._locked(command.id, self._session)
+        else:
+            # A claimant locks command -> run. Callers already holding a run
+            # lock must not wait for it in the opposite order. A renewer may
+            # also hold this row briefly, so contention proves no lost owner.
+            # Isolate NOWAIT's SQL error so it cannot leave an aborted session.
+            try:
+                async with self._session.begin_nested():
+                    record = await self._locked(command.id, self._session, nowait=True)
+            except DBAPIError as error:
+                if getattr(error.orig, "sqlstate", None) != "55P03":
+                    raise
+                raise CommandRecoveryRequired("command settlement fence is busy") from None
         _require_owned_lease(record, command.lease_owner, _utc_now())
         if record.attempt_count != command.attempt:
             raise CommandLeaseError("command lease delivery was reclaimed")
@@ -602,10 +618,14 @@ class PostgresCommandRepository:
             await session.flush()
             return _command_from_record(record)
 
-    async def _locked(self, command_id: UUID, session: AsyncSession) -> RunCommand:
+    async def _locked(
+        self, command_id: UUID, session: AsyncSession, *, nowait: bool = False
+    ) -> RunCommand:
         record = (
             await session.execute(
-                select(RunCommand).where(RunCommand.id == command_id).with_for_update()
+                select(RunCommand)
+                .where(RunCommand.id == command_id)
+                .with_for_update(nowait=nowait)
             )
         ).scalar_one_or_none()
         if record is None:

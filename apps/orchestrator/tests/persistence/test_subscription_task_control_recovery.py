@@ -522,7 +522,7 @@ async def test_task_stop_migration_refuses_to_discard_operator_evidence(
 
     factory, _, _, child = await scope_case(session_factory, tmp_path)
     pause = await control(factory, child, "pause")
-    with pytest.raises(RuntimeError, match="cannot discard retained"):
+    with pytest.raises(RuntimeError, match="Cannot downgrade task usage accounting"):
         await asyncio.to_thread(
             command.downgrade, alembic_config_factory(test_database_url), "20260912_0019"
         )

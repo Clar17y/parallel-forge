@@ -1,8 +1,10 @@
 """Coupled approved preparation, invalid primary result, and guarded recovery."""
 
 import asyncio
+from contextlib import nullcontext
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from unittest.mock import patch
 from uuid import UUID, uuid4
 
 import pytest
@@ -67,6 +69,7 @@ from test_subscription_usage import _reservation
 async def recovery_case(
     session_factory, tmp_path, *, incident_decision="handoff", defer_settlement=False,
     plan_checks=("unit",), plan_scope=("apps",), modern_rejection_kind=None,
+    historical_pending=False,
 ):
     """Return a disposable historical defect after the complete approval flow."""
     factory, evidence, command, preparation, _ = await preparation_case(
@@ -164,8 +167,15 @@ async def recovery_case(
         if settled:
             raise AssertionError("recovery fixture settlement was already applied")
         settled = True
-        settlement = await SubscriptionDecisionExecutor(factory).settle(admission, result)
-        assert settlement.disposition == "role_rejected"
+        # Old settlement admitted an invalid role decision as pending. Seed
+        # that exact boundary rather than rewinding a modern protocol failure.
+        with (
+            patch("forge.persistence.repositories.subscription_execution.decision_allowed",
+                  return_value=True)
+            if historical_pending else nullcontext()
+        ):
+            settlement = await SubscriptionDecisionExecutor(factory).settle(admission, result)
+        assert settlement.disposition == ("decision_pending" if historical_pending else "role_rejected")
         return settlement
 
     case = {
@@ -2212,24 +2222,15 @@ async def test_latest_queued_stale_contract_repair_preserves_settled_source(
 async def test_retained_historical_pending_result_reconciles_then_repairs_once(
     session_factory, tmp_path
 ):
-    case = await recovery_case(session_factory, tmp_path)
+    # Invalid primary handoffs have their own bounded repair path, covered by
+    # test_subscription_decision_recovery. This is the historical role gate.
+    case = await recovery_case(
+        session_factory, tmp_path, incident_decision="plan", historical_pending=True
+    )
     async with case["factory"]() as work:
         result = await work.session.get(SubscriptionAttemptResult, case["attempt_id"])
-        scheduled = await work.session.get(SubscriptionScheduledTask, case["task_id"])
-        attempt = await work.session.get(SubscriptionAttempt, case["attempt_id"])
-        task = await work.session.get(SubscriptionTask, case["task_id"])
         original_payload, original_digest = result.result_payload, result.result_digest
-        result.disposition = "decision_pending"
-        result.application_payload = None
-        result.application_digest = None
-        result.accepted = False
-        scheduled.state = "reconciling"
-        attempt.status = "reconciling"
-        task.state = "reconciling"
-        diagnostic = await work.session.get(SubscriptionApplicationDiagnostic, case["attempt_id"])
-        if diagnostic is not None:
-            await work.session.delete(diagnostic)
-        await work.commit()
+        assert result.disposition == "decision_pending" and not result.accepted
     report = await SubscriptionDecisionRecovery(
         case["factory"], FilesystemArtifactStore(tmp_path / "artifacts")
     ).reconcile_all()
@@ -2800,8 +2801,8 @@ async def test_attempts_projection_skips_previews_for_superseded_attempts_and_pa
     assert diag2 is not None
     assert diag2["resolution"] == "attention"
     assert RecoveryAction.REPAIR_APPROVED_PLAN_CONTRACT.value in diag2["eligible_actions"]
-    # Only the latest attempt invoked preview (3 times, once per RecoveryAction)
-    assert preview_calls == [latest_attempt_id, latest_attempt_id, latest_attempt_id]
+    # Only the latest attempt invokes one preview per supported recovery action.
+    assert preview_calls == [latest_attempt_id] * len(RecoveryAction)
     preview_calls.clear()
 
     # 3. Full page containing both attempts
@@ -2816,7 +2817,7 @@ async def test_attempts_projection_skips_previews_for_superseded_attempts_and_pa
         in f_item2["recovery"]["eligible_actions"]
     )
     # Still only the latest attempt was previewed
-    assert preview_calls == [latest_attempt_id, latest_attempt_id, latest_attempt_id]
+    assert preview_calls == [latest_attempt_id] * len(RecoveryAction)
     assert f_item1["recovery"].keys() == f_item2["recovery"].keys()
 
 

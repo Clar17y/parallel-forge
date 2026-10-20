@@ -8,7 +8,9 @@ export type RecoveryBinding = {
 type ReadResult = { binding: RecoveryBinding | null; error: boolean };
 const prefix = 'forge:recovery:v1:';
 const idPattern = /^[A-Za-z0-9_.-]{1,128}$/;
-const actions = new Set(['retry_application', 'reject_and_retry_step', 'repair_approved_plan_contract']);
+const actions = new Set(['retry_failed_attempt', 'retry_failed_attempt_with_allowance', 'acknowledge_interrupted_git_preparation', 'acknowledge_interrupted_check', 'retry_application', 'reject_and_retry_step', 'repair_approved_plan_contract']);
+export const hasOptionalRecoveryNote = (action: Body['action'] | undefined): boolean =>
+  action === 'retry_failed_attempt' || action === 'retry_failed_attempt_with_allowance' || action === 'acknowledge_interrupted_git_preparation' || action === 'acknowledge_interrupted_check';
 
 export function bindingStorageKey(actorId: string, runId: string, taskId: string, attemptId: string): string | null {
   if (![actorId, runId, taskId, attemptId].every(value => idPattern.test(value))) return null;
@@ -24,7 +26,7 @@ function valid(value: unknown, identity: Omit<RecoveryBinding, 'key' | 'body'>):
     && typeof entry.key === 'string' && /^[0-9a-f-]{36}$/i.test(entry.key)
     && !!body && typeof body === 'object' && actions.has(body.action)
     && typeof body.preview_token === 'string' && body.preview_token.length > 0 && body.preview_token.length <= 8192
-    && typeof body.reason === 'string' && body.reason.trim().length > 0
+    && typeof body.reason === 'string' && (hasOptionalRecoveryNote(body.action) || body.reason.trim().length > 0)
     && new TextEncoder().encode(body.reason).length <= 512;
 }
 

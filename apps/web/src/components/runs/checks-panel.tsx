@@ -21,12 +21,14 @@ export function ChecksPanel({ projection }: { projection: components['schemas'][
         </div>
       )}
       {history.value?.items.map(check => <article key={check.id}><h4>{check.name}</h4>
-        <p>Attempt {check.attempt ?? 'unavailable'} · Duration: {check.duration_ms === null ? 'Pending' : `${check.duration_ms} ms`}</p>
+        <p>Attempt {check.attempt ?? 'unavailable'} · Duration: {check.duration_ms === null ? (['PENDING', 'RUNNING'].includes(check.status.toUpperCase()) ? 'Pending' : 'Unknown') : `${check.duration_ms} ms`}</p>
+        {check.source === 'subscription' && <p>Subscription task <code>{check.subscription_task_id}</code> · Attempt <code>{check.subscription_attempt_id}</code></p>}
         <p>Configured runner: {check.configured_runner_mode}</p>
-        {check.evidence_digest && <p><a href={`/api/artifacts/${check.evidence_digest}/download`}>Validation evidence for attempt {check.attempt}</a></p>}
+        {check.evidence_digest && <p><a href={`/api/artifacts/${check.evidence_digest}/download`}>{check.source === 'subscription' ? 'Check receipt' : 'Validation evidence'} for attempt {check.attempt}</a></p>}
         <p>{check.command_name} · version {check.command_version} · {check.status}</p>
         <p>Head: <code>{check.head_sha ?? 'Unavailable'}</code> · Exit code: {check.exit_code ?? 'Not recorded'}</p>
         {check.output_artifact_digest && <a href={`/api/artifacts/${check.output_artifact_digest}/download`}>Bounded output for {check.name}</a>}
+        {check.stderr_artifact_digest && <p><a href={`/api/artifacts/${check.stderr_artifact_digest}/download`}>Standard error for {check.name}</a></p>}
       </article>)}
       <nav aria-label="Check history pages"><button disabled={offset === 0 || history.loading} onClick={() => setOffset(Math.max(0, offset - 25))}>Previous checks</button>
         <button disabled={!history.value?.truncated || history.loading} onClick={() => setOffset(offset + 25)}>Next checks</button></nav>

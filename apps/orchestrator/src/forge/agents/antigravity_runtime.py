@@ -37,6 +37,7 @@ from forge.agents.subscription_protocol import (
     decode_final,
     json_value,
     output_schema,
+    protocol_failure_detail,
 )
 from forge.application.ports.subscription_gateway import (
     RoleDecisionRejection,
@@ -285,7 +286,7 @@ def _validate_authoring_usage_binding(
         raise ValueError("usage binding effective route does not match authoring model")
 
 
-def _tokens_from_usage(value: object) -> TokenCounts:
+def _tokens_from_usage(value: object, *, input_includes_cache: bool = True) -> TokenCounts:
     if not isinstance(value, Mapping):
         return TokenCounts(input_tokens=None, output_tokens=None)
     in_t = value.get("input_tokens")
@@ -306,7 +307,14 @@ def _tokens_from_usage(value: object) -> TokenCounts:
     cache_val = cache_t if (type(cache_t) is int and 0 <= cache_t <= MAX_SIGNED_BIGINT) else None
     think_val = think_t if (type(think_t) is int and 0 <= think_t <= MAX_SIGNED_BIGINT) else None
 
-    if cache_val is not None and in_val is not None and cache_val > in_val:
+    if not input_includes_cache:
+        # Antigravity reports uncached input separately from cache reads; Forge's
+        # input includes both. See antigravity.google/docs/cli/headless/.
+        # Without either component the total is unknown, not a partial count.
+        in_val = in_val + cache_val if in_val is not None and cache_val is not None else None
+        if in_val is not None and in_val > MAX_SIGNED_BIGINT:
+            in_val = None
+    elif cache_val is not None and in_val is not None and cache_val > in_val:
         cache_val = None
     if think_val is not None and out_val is not None and think_val > out_val:
         think_val = None
@@ -384,6 +392,23 @@ _PRIMARY_DECISION_GUIDANCE = """
 The primary coordinates the run: do not return a task handoff. In planning,
 return the plan; in work phases, choose a primary decision permitted by the
 supplied schema. A plan for future implementation is not completed work.
+In work phases you may implement a small task directly through the permitted
+Forge write/check tools; delegate when useful. For an ordinary implementation
+task, complete the implementation and checks before choosing review or final
+acceptance. The supplied tool descriptions and decision schema explain the
+protocol; inspecting Forge internals merely to learn it is not a prerequisite.
+After implementation and checks, obtain git.diff with scope snapshot and return
+review_selection to close the candidate before accepting your own primary task.
+Use the observed candidate commit and candidate_tree_digest. For a small change
+you have self-reviewed, choose review_required=false with a concrete
+no_review_reason; otherwise select the configured independent review route.
+After that selection is applied and any selected review completes, a later
+primary turn may accept the unchanged closed candidate. Acceptance
+evidence_receipt_ids contain actual named-check operation IDs, the final snapshot
+operation ID, and a git.commit operation ID only if actually committed; exclude
+read, write, status and textual-diff IDs. Do not make an empty commit when the
+intended candidate is already committed and the snapshot is clean.
+Follow the owner's task preferences within the frozen permissions and scope.
 """
 
 
@@ -585,12 +610,10 @@ class AntigravityGateway:
             status = result.failure.value if result.failure else (
                 "interrupted" if interrupted_exc is not None else "succeeded"
             )
-            tokens = publisher.terminal_tokens or _tokens_from_usage(
-                {
-                    "input_tokens": result.telemetry.input_tokens,
-                    "output_tokens": result.telemetry.output_tokens,
-                    "cache_read_tokens": result.telemetry.cached_input_tokens,
-                }
+            tokens = publisher.terminal_tokens or TokenCounts(
+                input_tokens=result.telemetry.input_tokens,
+                output_tokens=result.telemetry.output_tokens,
+                cached_input_tokens=result.telemetry.cached_input_tokens,
             )
             await publisher.emit_final(
                 tokens=tokens, status=status, context=publisher.terminal_context
@@ -634,11 +657,11 @@ class AntigravityGateway:
         telemetry = AttemptTelemetry()
         interrupted = False
 
-        def failed(reason: SubscriptionFailure) -> SubscriptionInvocationResult:
+        def failed(reason: SubscriptionFailure, detail: str = "") -> SubscriptionInvocationResult:
             return SubscriptionInvocationResult(
                 attempt=request.attempt,
                 failure=reason,
-                failure_detail=f"Antigravity attempt {reason.value}",
+                failure_detail=detail or f"Antigravity attempt {reason.value}",
                 telemetry=telemetry,
                 launch_proof=None if result is None else result.launch_proof,
             )
@@ -684,9 +707,16 @@ class AntigravityGateway:
                 failed(SubscriptionFailure.UNCERTAIN),
                 launch_proof=terminal_launch_proof(exc.result),
             )
-        except Exception:  # noqa: BLE001 - client and callback errors must not expose credentials or payloads
-            result = failed(SubscriptionFailure.PROTOCOL)
+        except Exception as error:  # noqa: BLE001 - client and callback errors must not expose credentials or payloads
+            result = failed(
+                SubscriptionFailure.PROTOCOL, protocol_failure_detail("Antigravity", error)
+            )
         finally:
+            if interrupted or (
+                result is not None
+                and result.failure in {SubscriptionFailure.INTERRUPTED, SubscriptionFailure.DEADLINE}
+            ):
+                mcp.cancel_checks()
 
             async def settle() -> None:
                 nonlocal result
@@ -738,6 +768,7 @@ class AntigravityGateway:
                     await asyncio.shield(cleanup)
                 except asyncio.CancelledError:
                     interrupted = True
+                    mcp.cancel_checks()
             cleanup.result()
         telemetry = replace(
             telemetry,
@@ -778,7 +809,7 @@ class AntigravityGateway:
                 # Startup can fail before a conversation is initialized. Retain
                 # returned usage and backoff classification, never a decision.
                 if publisher is not None:
-                    tokens = _tokens_from_usage(payload.get("usage"))
+                    tokens = _tokens_from_usage(payload.get("usage"), input_includes_cache=False)
                     ctx = _context_from_payload(payload)
                     publisher.capture_terminal(tokens=tokens, context=ctx)
                 telemetry = _usage(payload.get("usage"))
@@ -830,20 +861,28 @@ class AntigravityGateway:
                 if publisher is not None and isinstance(payload, Mapping):
                     usage_data = payload.get("usage")
                     if isinstance(usage_data, Mapping):
-                        tokens = _tokens_from_usage(usage_data)
+                        tokens = _tokens_from_usage(usage_data, input_includes_cache=False)
                         ctx = _context_from_payload(payload)
                         await publisher.emit_live(tokens=tokens, context=ctx)
                 continue
             if event != "result":
                 continue
-            tokens = _tokens_from_usage(payload.get("usage"))
+            tokens = _tokens_from_usage(payload.get("usage"), input_includes_cache=False)
             ctx = _context_from_payload(payload)
             if publisher is not None:
                 publisher.capture_terminal(tokens=tokens, context=ctx)
             telemetry = _usage(payload.get("usage"))
             if (reason := _result_failure(payload, telemetry, request)) is not None:
                 return SubscriptionInvocationResult(
-                    attempt=request.attempt, failure=reason
+                    attempt=request.attempt,
+                    failure=reason,
+                    # OUTAGE is a fallback classification, not proof of the
+                    # provider's cause. Never persist untrusted client errors.
+                    failure_detail=(
+                        "Antigravity reported an unclassified client error; provider cause is unknown"
+                        if reason is SubscriptionFailure.OUTAGE
+                        else f"Antigravity reported {reason.value}"
+                    ),
                 ), telemetry
             denied_actions = payload.get("denied_actions", [])
             if (
@@ -945,20 +984,21 @@ def _usage(value: object) -> AttemptTelemetry:
         if count is not None and (type(count) is not int or not 0 <= count <= MAX_SIGNED_BIGINT):
             raise ProtocolError("invalid Antigravity token count")
         counts[name] = count
+    tokens = _tokens_from_usage(value, input_includes_cache=False)
     if (
         counts["input_tokens"] is not None
         and counts["cached_input_tokens"] is not None
-        and counts["cached_input_tokens"] > counts["input_tokens"]
+        and tokens.input_tokens is None
     ):
-        raise ProtocolError("Antigravity cache exceeds input")
+        raise ProtocolError("Antigravity total input exceeds supported range")
     return AttemptTelemetry(
-        input_tokens=counts["input_tokens"],
-        output_tokens=counts["output_tokens"],
-        cached_input_tokens=counts["cached_input_tokens"],
+        input_tokens=tokens.input_tokens,
+        output_tokens=tokens.output_tokens,
+        cached_input_tokens=tokens.cached_input_tokens,
         unknown_telemetry_reasons=("subscription cost and quota telemetry unavailable",)
         + (
             ()
-            if all(counts[name] is not None for name in ("input_tokens", "output_tokens"))
+            if tokens.input_tokens is not None and tokens.output_tokens is not None
             else ("token telemetry unavailable",)
         ),
     )

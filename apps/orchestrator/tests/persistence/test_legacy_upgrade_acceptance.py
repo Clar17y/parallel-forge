@@ -1,4 +1,7 @@
-"""Retained legacy evidence is checked at the actual v0.1 schema boundary."""
+"""Current legacy executions retain all evidence through restart and head migration.
+
+Pinned historical_v01 fixtures separately prove the actual v0.1 schema upgrade.
+"""
 
 import pytest
 from forge.application.services.auth import AuthService
@@ -8,12 +11,12 @@ from forge.domain.run import RunState
 from legacy_upgrade_case import legacy_plan_case
 from legacy_upgrade_controls import replay_legacy_plan_controls
 from legacy_upgrade_execution import unfinished_legacy_case, verify_unfinished_recovery
-from legacy_upgrade_manifest import retain_legacy_manifest, upgrade_legacy_case
+from legacy_upgrade_manifest import restart_retained_legacy_case, retain_legacy_manifest
 from legacy_upgrade_review import replay_review_controls, reviewed_legacy_case
 
 
 @pytest.mark.integration
-async def test_legacy_plan_artifacts_survive_v01_schema_and_restart(
+async def test_current_legacy_plan_artifacts_survive_restart_and_head_upgrade(
     session_factory, migrated_database_url, alembic_config_factory, tmp_path
 ):
     case = await legacy_plan_case(session_factory, tmp_path)
@@ -25,7 +28,7 @@ async def test_legacy_plan_artifacts_survive_v01_schema_and_restart(
         auth = AuthService(case.factory)
         operator_session = await auth.exchange_bootstrap(await auth.issue_bootstrap())
         config = alembic_config_factory(migrated_database_url)
-        await upgrade_legacy_case(case, session_factory, migrated_database_url, config)
+        await restart_retained_legacy_case(case, session_factory, migrated_database_url, config)
         async with case.factory() as work:
             run = await work.runs.get(case.run.id)
             assert run == case.run
@@ -51,7 +54,7 @@ async def test_legacy_unfinished_execution_preserves_write_receipt_after_upgrade
     case = await unfinished_legacy_case(session_factory, tmp_path)
     try:
         config = alembic_config_factory(migrated_database_url)
-        await upgrade_legacy_case(case, session_factory, migrated_database_url, config)
+        await restart_retained_legacy_case(case, session_factory, migrated_database_url, config)
         await verify_unfinished_recovery(case, session_factory)
         await retain_legacy_manifest(case, session_factory, tmp_path, scenario="A9-unfinished")
     finally:
@@ -66,7 +69,7 @@ async def test_legacy_retained_review_and_pending_control_survive_upgrade(
     case = await reviewed_legacy_case(session_factory, tmp_path, control=control)
     try:
         config = alembic_config_factory(migrated_database_url)
-        await upgrade_legacy_case(case, session_factory, migrated_database_url, config)
+        await restart_retained_legacy_case(case, session_factory, migrated_database_url, config)
         assert len(case.legacy_rows["validation_results"]) == 2
         assert all(row["status"] == "PASSED" for row in case.legacy_rows["validation_results"])
         # The reviews table stores findings, so an approving empty report has

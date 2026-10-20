@@ -132,6 +132,20 @@ class ProcessResult:
     stderr_original_byte_count: int
     stdout_truncated: bool
     stderr_truncated: bool
+    # Character offsets between separately decoded retained head/tail segments.
+    # None preserves the legacy prefix-only contract for truncated callers.
+    stdout_capture_boundary: int | None = None
+    stderr_capture_boundary: int | None = None
+
+    def __post_init__(self) -> None:
+        for text, truncated, boundary in (
+            (self.stdout, self.stdout_truncated, self.stdout_capture_boundary),
+            (self.stderr, self.stderr_truncated, self.stderr_capture_boundary),
+        ):
+            if boundary is not None and (
+                type(boundary) is not int or not truncated or not 0 <= boundary <= len(text)
+            ):
+                raise ValueError("stream capture boundary is invalid")
 
     @property
     def exit_code(self) -> int | None:

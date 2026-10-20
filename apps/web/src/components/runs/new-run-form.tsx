@@ -322,13 +322,11 @@ function ProjectRunSummary({ project, selectedProfile }: { project: Project; sel
       )}
 
       <h3 style={{ marginTop: '16px', marginBottom: '8px', fontSize: '0.8125rem', textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--muted)' }}>
-        {selectedProfile ? 'Configured Project Policy (API Models)' : 'Assigned Agent Roles (Project Policy)'}
+        Project policy models
       </h3>
-      {selectedProfile && (
-        <p className="meta" style={{ fontSize: '0.75rem', marginBottom: '10px' }}>
-          These API models apply to runs without a CLI profile override. The chosen CLI profile above takes precedence for subscription runtime tasks.
-        </p>
-      )}
+      <p className="meta">
+        Subscription runs use the selected profile&apos;s primary and specialist routes. Changing the subscription profile does not change these project policy models.
+      </p>
       {roles.map(({ key, name }) => {
         const model = policy?.[`${key}_model` as keyof typeof policy] as components['schemas']['AgentModelPolicy'] | undefined;
         const cue = getProviderCue(model?.provider);

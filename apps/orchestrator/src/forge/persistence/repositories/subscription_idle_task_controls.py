@@ -9,6 +9,7 @@ from forge.domain.operation import canonical_digest
 from forge.domain.subscription_launch import SubscriptionLaunchTerminalProof
 from forge.domain.subscription_task_controls import IdleTaskControlProof, TaskControlConflict
 from forge.persistence.models.api import OperatorAuditEvent
+from forge.persistence.models.scheduling import SubscriptionScheduledTask
 from forge.persistence.models.subscription import (
     SubscriptionAttempt,
     SubscriptionClientLaunch,
@@ -17,12 +18,15 @@ from forge.persistence.models.subscription import (
 )
 from forge.persistence.models.subscription_results import SubscriptionAttemptResult
 from forge.persistence.repositories.subscription_launch import launches_confirmed
-from forge.persistence.repositories.subscription_resumption import _Source
 from forge.persistence.repositories.subscription_task_stop_receipts import load_control
 
 
-async def idle_history_digest(session: AsyncSession, source: _Source) -> str:
-    task, scheduled = source.task, source.scheduled
+async def idle_history_digest(
+    session: AsyncSession,
+    task: SubscriptionTask,
+    scheduled: SubscriptionScheduledTask,
+    attempt: SubscriptionAttempt,
+) -> str:
     if (
         task.cancel_requested
         or scheduled.cancel_requested
@@ -30,8 +34,8 @@ async def idle_history_digest(session: AsyncSession, source: _Source) -> str:
         or scheduled.state != task.state
         or scheduled.lease_owner is not None
         or scheduled.lease_expires_at is not None
-        or source.attempt.status != "terminal"
-        or source.attempt.lease_generation != scheduled.lease_generation
+        or attempt.status != "terminal"
+        or attempt.lease_generation != scheduled.lease_generation
     ):
         raise TaskControlConflict("task is not settled and idle")
     latest = await session.scalar(
@@ -40,9 +44,9 @@ async def idle_history_digest(session: AsyncSession, source: _Source) -> str:
         .order_by(SubscriptionAttempt.attempt_number.desc())
         .limit(1)
     )
-    if latest != source.attempt.id:
+    if latest != attempt.id:
         raise TaskControlConflict("latest task attempt differs")
-    return await settled_history_digest(session, source.attempt)
+    return await settled_history_digest(session, attempt)
 
 
 async def settled_history_digest(session: AsyncSession, last: SubscriptionAttempt) -> str:
@@ -61,10 +65,20 @@ async def settled_history_digest(session: AsyncSession, last: SubscriptionAttemp
             .order_by(SubscriptionAttempt.attempt_number, SubscriptionAttempt.id)
         )
     ).all()
-    history = []
+    history: list[dict[str, object]] = []
     for attempt, result in rows:
-        if result is None or attempt.status != "terminal" or attempt.run_id != last.run_id:
+        if attempt.status != "terminal" or attempt.run_id != last.run_id:
             raise TaskControlConflict("task attempt history requires reconciliation")
+        if result is None:
+            from forge.persistence.repositories.subscription_interrupted_check import (
+                owner_interruption_history_digest,
+            )
+
+            owner_history = await owner_interruption_history_digest(session, attempt)
+            if owner_history is None:
+                raise TaskControlConflict("task interruption history requires reconciliation")
+            history.append({"attempt_id": str(attempt.id), "owner_recovery_digest": owner_history})
+            continue
         if (
             canonical_digest(result.result_payload) != result.result_digest
             or ((result.application_payload is None) != (result.application_digest is None))

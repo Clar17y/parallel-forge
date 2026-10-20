@@ -314,6 +314,7 @@ def test_docker_argv_has_fixed_isolation_and_one_canonical_mount(tmp_path: Path)
     )
 
     assert argv[:3] == ["docker", "run", "--rm"]
+    assert argv.count("--init") == 1
     assert "--pull=never" in argv
     assert "--network=none" in argv
     assert "--read-only" in argv

@@ -354,3 +354,27 @@ test('selected CLI profile shows concise route summary and keeps UUID and route 
   expect(details).toHaveTextContent('11111111-2222-3333-4444-555555555555');
   expect(details).toHaveTextContent('Planner google/gemini-1.5-pro');
 });
+
+test('displays project policy models heading and explanatory help before and after selecting a profile override', async () => {
+  vi.mocked(api).mockResolvedValueOnce([{
+    profile_id: 'profile-1',
+    version: 3,
+    preferences: [{ purpose: 'primary', preferred_route: { provider: 'openai', model: 'gpt-test' } }],
+    approved_mappings: [],
+    default_billing_mode: 'allowance_only',
+    jev: null,
+  }]);
+  render(<NewRunForm projects={[project]} onCreated={vi.fn()} />);
+  await screen.findByRole('option', { name: /profile-1/ });
+
+  expect(screen.getByRole('heading', { name: 'Project policy models' })).toBeInTheDocument();
+  expect(screen.queryByRole('heading', { name: 'Assigned Agent Roles' })).not.toBeInTheDocument();
+  expect(screen.getByText(/Subscription runs use the selected profile's primary and specialist routes\. Changing the subscription profile does not change these project policy models\./)).toBeInTheDocument();
+
+  const user = userEvent.setup();
+  await user.selectOptions(screen.getByLabelText('Subscription profile'), 'profile-1:3');
+
+  expect(screen.getByRole('heading', { name: 'Project policy models' })).toBeInTheDocument();
+  expect(screen.queryByRole('heading', { name: 'Assigned Agent Roles' })).not.toBeInTheDocument();
+  expect(screen.getByText(/Subscription runs use the selected profile's primary and specialist routes\. Changing the subscription profile does not change these project policy models\./)).toBeInTheDocument();
+});

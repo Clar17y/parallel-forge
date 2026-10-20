@@ -24,6 +24,26 @@ const planArtifact = {
   security_considerations: [], dependency_changes: [],
 };
 
+test('unlimited token budget still requires the exact plan challenge and explicit confirmation', async () => {
+  const value = projection();
+  vi.mocked(api).mockResolvedValueOnce({ digest: 'd'.repeat(64), text: JSON.stringify({ ...evidence, token_budget: null }) })
+    .mockResolvedValueOnce({ digest: 'c'.repeat(64), text: JSON.stringify(planArtifact) })
+    .mockResolvedValueOnce({ token: 'unlimited-plan-challenge', expires_at: '2099-01-01T00:00:00Z' })
+    .mockResolvedValueOnce({ approval_id: 'approval-1' });
+  render(<RunControls projection={value} onRefresh={vi.fn().mockResolvedValue(value)} />);
+  await userEvent.click(screen.getByRole('button', { name: 'Approve plan' }));
+  expect(await screen.findByRole('dialog', { name: 'Approve plan' })).toHaveTextContent('Unlimited');
+  expect(vi.mocked(api).mock.calls).toHaveLength(3);
+  expect(JSON.parse(vi.mocked(api).mock.calls[2][1]!.body as string)).toEqual({
+    gate: 'plan', run_version: 7, evidence_digest: 'd'.repeat(64), policy_version: 2,
+  });
+  await userEvent.click(screen.getByRole('button', { name: 'Confirm approve plan' }));
+  expect(JSON.parse(vi.mocked(api).mock.calls[3][1]!.body as string)).toEqual({
+    gate: 'plan', run_version: 7, evidence_digest: 'd'.repeat(64), challenge_token: 'unlimited-plan-challenge',
+  });
+  expect(mutate).not.toHaveBeenCalled();
+});
+
 test('run action progress changes from evidence check to the actual command request', async () => {
   const value = projection({ available_commands: [{ name: 'pause', expected_run_version: 7, requires_feedback: false }] });
   let finishCheck!: (projectionValue: typeof value) => void;

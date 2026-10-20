@@ -2800,14 +2800,26 @@ export interface components {
             /** Output Artifact Digest */
             output_artifact_digest: string | null;
             /**
+             * Source
+             * @default validation
+             * @enum {string}
+             */
+            source: "validation" | "subscription";
+            /**
              * Started At
              * Format: date-time
              */
             started_at: string;
             /** Status */
             status: string;
+            /** Stderr Artifact Digest */
+            stderr_artifact_digest?: string | null;
             /** Step Id */
             step_id: string | null;
+            /** Subscription Attempt Id */
+            subscription_attempt_id?: string | null;
+            /** Subscription Task Id */
+            subscription_task_id?: string | null;
         };
         /** CheckItem */
         CheckItem: {
@@ -2830,8 +2842,20 @@ export interface components {
             name: string;
             /** Output Artifact Digest */
             output_artifact_digest: string | null;
+            /**
+             * Source
+             * @default validation
+             * @enum {string}
+             */
+            source: "validation" | "subscription";
             /** Status */
             status: string;
+            /** Stderr Artifact Digest */
+            stderr_artifact_digest?: string | null;
+            /** Subscription Attempt Id */
+            subscription_attempt_id?: string | null;
+            /** Subscription Task Id */
+            subscription_task_id?: string | null;
         };
         /** CheckpointRecord */
         CheckpointRecord: {
@@ -5152,13 +5176,16 @@ export interface components {
          * RecoveryAction
          * @enum {string}
          */
-        RecoveryAction: "retry_application" | "reject_and_retry_step" | "repair_approved_plan_contract";
+        RecoveryAction: "retry_failed_attempt" | "retry_failed_attempt_with_allowance" | "acknowledge_interrupted_git_preparation" | "acknowledge_interrupted_check" | "retry_application" | "reject_and_retry_step" | "repair_approved_plan_contract";
         /** RecoveryApplyRequest */
         RecoveryApplyRequest: {
             action: components["schemas"]["RecoveryAction"];
             /** Preview Token */
             preview_token: string;
-            /** Reason */
+            /**
+             * Reason
+             * @default
+             */
             reason: string;
         };
         /** RecoveryBudgetImpact */

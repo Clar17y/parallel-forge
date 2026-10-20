@@ -30,6 +30,7 @@ class PendingDockerLaunch:
 
     def run_argv(self, argv, **kwargs):
         if argv[:2] == ("docker", "run"):
+            assert argv.count("--init") == 1
             self.label = next(
                 value.split("=", 1)[1] for value in argv if value.startswith("forge.owner-token=")
             )

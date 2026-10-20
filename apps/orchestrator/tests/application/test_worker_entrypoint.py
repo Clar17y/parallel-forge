@@ -289,6 +289,7 @@ def terminal_recovery_stub(monkeypatch):
             return 0
 
     monkeypatch.setattr(main, "SubscriptionEffectRecovery", SubscriptionRecovery)
+    monkeypatch.setattr(main, "RunEndAttemptSettlement", SubscriptionRecovery)
 
     class InterventionRecovery:
         def __init__(self, _factory):

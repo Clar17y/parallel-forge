@@ -118,7 +118,7 @@ export function RunCockpit({ initial, tasks, queueDiagnostics, onRefreshTasks, s
           <Link href={`/projects/${value.project.id}`}>{value.project.name}</Link>
           {value.resource.branch_name && <span><GitBranch aria-hidden="true" />{value.resource.branch_name}</span>}
           <span>Run <code>{value.run.id.slice(0, 8)}</code></span>
-          {value.candidate.commit && <span>Head <code>{value.candidate.commit.slice(0, 7)}</code></span>}
+          {value.candidate.commit ? <span>Head <code>{value.candidate.commit.slice(0, 7)}</code></span> : null}
           <span role="status">Events: {connection}{connection !== 'connected' && ' · Live updates are unavailable. Actions stay disabled until the event connection is restored.'}</span>
           {value.security.runner_mode === 'trusted_host' && <span className="text-[var(--warning)]">Trusted host · unsandboxed execution. Commands are not isolated in Docker.</span>}
         </div>

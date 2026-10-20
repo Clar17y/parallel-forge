@@ -345,10 +345,11 @@ def test_search_rg_explicit_none_forces_python_fallback_and_relative_path_is_den
         RepositoryReader(root, rg_executable="rg").search("needle")
 
 
-def test_search_rg_accepts_exact_no_match_exit(tmp_path: Path) -> None:
+@pytest.mark.parametrize("stdout", ["", '{"type":"summary","data":{"stats":{"matches":0}}}\n'])
+def test_search_rg_accepts_exact_no_match_exit(tmp_path: Path, stdout: str) -> None:
     root = _repository(tmp_path)
     (root / "visible.txt").write_text("nothing\n", encoding="utf-8")
-    fake = _FakeProcessRunner(_rg_result("", return_code=1))
+    fake = _FakeProcessRunner(_rg_result(stdout, return_code=1))
 
     result = RepositoryReader(
         root,
@@ -389,6 +390,11 @@ def test_search_rg_requires_a_terminated_json_line(tmp_path: Path) -> None:
         _rg_result(""),
         _rg_result("{}\n", stdout_truncated=True),
         _rg_result("", return_code=2),
+        _rg_result("not json\n", return_code=1),
+        _rg_result('{"type":"summary"}', return_code=1),
+        _rg_result('{"type":"summary"}\n', return_code=1, stdout_truncated=True),
+        _rg_result("", return_code=1, stderr="search error"),
+        _rg_result(f"{_rg_match('visible.txt', 1, 'needle')}\n", return_code=1),
         ProcessResult(
             return_code=0,
             stdout="",
@@ -526,3 +532,4 @@ def test_search_uses_real_rg_when_discoverable(tmp_path: Path) -> None:
     result = RepositoryReader(root, secret_paths=(".env",)).search("needle")
 
     assert tuple(match.path for match in result) == (".env.example", "visible.txt")
+    assert RepositoryReader(root, secret_paths=(".env",)).search("absent literal") == ()

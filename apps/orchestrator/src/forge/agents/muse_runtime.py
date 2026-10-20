@@ -40,6 +40,7 @@ from forge.agents.subscription_protocol import (
     json_value,
     output_schema,
     parse_json,
+    protocol_failure_detail,
 )
 from forge.application.ports.subscription_gateway import (
     RoleDecisionRejection,
@@ -237,13 +238,6 @@ def _muse_environment(installation: MuseInstallation) -> dict[str, str]:
         if key in os.environ:
             env[key] = os.environ[key]
     return env
-
-
-def _protocol_detail(error: Exception) -> str:
-    # Forge-authored ProtocolError text names the step that broke; any other
-    # exception's message may carry client output, so only its type is kept.
-    cause = str(error)[:200] if isinstance(error, ProtocolError) else type(error).__name__
-    return f"Muse attempt protocol: {cause or type(error).__name__}"
 
 
 async def muse_root_terminal(
@@ -597,8 +591,13 @@ class MuseGateway:
                 launch_proof=terminal_launch_proof(exc.result),
             )
         except Exception as error:  # noqa: BLE001
-            result = failed(SubscriptionFailure.PROTOCOL, _protocol_detail(error))
+            result = failed(SubscriptionFailure.PROTOCOL, protocol_failure_detail("Muse", error))
         finally:
+            if interrupted or (
+                result is not None
+                and result.failure in {SubscriptionFailure.INTERRUPTED, SubscriptionFailure.DEADLINE}
+            ):
+                mcp.cancel_checks()
 
             async def settle() -> None:
                 nonlocal result
@@ -662,6 +661,7 @@ class MuseGateway:
                     await asyncio.shield(cleanup)
                 except asyncio.CancelledError:
                     interrupted = True
+                    mcp.cancel_checks()
             cleanup.result()
 
         telemetry = replace(

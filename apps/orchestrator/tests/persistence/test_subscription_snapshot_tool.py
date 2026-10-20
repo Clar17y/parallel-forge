@@ -200,7 +200,7 @@ async def test_snapshot_service_normalizes_internal_failure(
 
 
 @pytest.mark.integration
-async def test_interrupted_snapshot_reservation_is_recovered_without_rereading(
+async def test_failed_snapshot_reservation_retains_rejection_during_recovery(
     session_factory,
     tmp_path,
     monkeypatch,
@@ -211,13 +211,17 @@ async def test_interrupted_snapshot_reservation_is_recovered_without_rereading(
     from forge.application.services.subscription_effect_recovery import SubscriptionEffectRecovery
     from forge.application.services.tool_recovery import ToolRecoveryService
     from forge.domain.tool import ToolCallStatus
-    from forge.persistence.models.scheduling import SubscriptionScheduledTask
-    from sqlalchemy import update
+    from forge.persistence.models.scheduling import (
+        SubscriptionScheduledEffect,
+        SubscriptionScheduledTask,
+    )
+    from forge.persistence.models.subscription import SubscriptionOperationBinding
+    from sqlalchemy import select, update
 
     broker, git, attempt, store, _, authority = await _snapshot_case(session_factory, tmp_path)
 
     async def crash(*args, **kwargs):
-        raise RuntimeError("simulated process loss after reservation")
+        raise RuntimeError("handled callback failure after reservation")
 
     monkeypatch.setattr(broker._effect.service, "_complete_subscription_snapshot", crash)
     with pytest.raises(BrokerDenied):
@@ -231,6 +235,13 @@ async def test_interrupted_snapshot_reservation_is_recovered_without_rereading(
         records = await work.tool_calls.list_for_run(authority.run_id)
         call = next(item for item in records if item.subscription_attempt_id == attempt)
         assert call.status is ToolCallStatus.RUNNING
+        effect = await work.session.get(SubscriptionScheduledEffect, call.id)
+        binding = await work.session.scalar(select(SubscriptionOperationBinding).where(
+            SubscriptionOperationBinding.durable_operation_id == call.id
+        ))
+        # The broker rejected the failed read's scheduling fence. It has no
+        # successful result to record; the separate read audit still needs recovery.
+        assert effect.state == "rejected" and binding.receipt_payload is None
         await work.session.execute(
             update(SubscriptionScheduledTask)
             .where(
@@ -246,12 +257,21 @@ async def test_interrupted_snapshot_reservation_is_recovered_without_rereading(
     monkeypatch.setattr(git, "working_tree_snapshot", no_read)
     factory = lambda: PostgresUnitOfWork(session_factory)
     assert await ToolRecoveryService(factory, store).recover_all() == 1
-    assert await SubscriptionEffectRecovery(factory).reconcile_all() == 1
+    assert await SubscriptionEffectRecovery(factory).reconcile_all() == 0
     assert await ToolRecoveryService(factory, store).recover_all() == 0
     async with factory() as work:
         terminal = await work.tool_calls.get(call.id)
         assert terminal.status is ToolCallStatus.CANCELLED
         assert terminal.operation_intent_id is None and not terminal.artifact_digests
+        binding = await work.session.get(SubscriptionOperationBinding, binding.id)
+        assert binding.receipt_payload is None
+    with pytest.raises(BrokerDenied):
+        await broker.invoke(
+            token="commit-token",
+            provider_call_key="lost-snapshot",
+            tool_name=ToolName.GIT_DIFF,
+            arguments={"scope": "snapshot"},
+        )
 
 
 @pytest.mark.integration

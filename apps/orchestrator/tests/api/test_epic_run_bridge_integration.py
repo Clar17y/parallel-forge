@@ -9,6 +9,7 @@ from uuid import UUID, uuid4
 import pytest
 import pytest_asyncio
 from alembic import command
+from alembic.script import ScriptDirectory
 from forge.api.app import create_app
 from forge.application.ports.projects import RepositoryInspection
 from forge.application.services.runs import RunService
@@ -53,8 +54,32 @@ async def test_normal_app_launches_epic_item_and_exposes_owner_override(
     persisted_run,
     migrated_database_url,
     alembic_config_factory,
+    tmp_path,
 ):
     settings = task10_route_context.app.state.settings
+    from forge.domain.operation import canonical_digest
+    from forge.domain.policy import ProjectPolicy
+    from forge.persistence.models import Project, ProjectPolicyVersion
+
+    # Keep the old generic run and its immutable project untouched. Actual
+    # admission needs a separate complete policy with a native absolute path.
+    project_id = uuid4()
+    async with session_factory() as session, session.begin():
+        project = Project(
+            id=project_id, canonical_path=str(tmp_path / "repository"),
+            github_repository=f"example/owner-launch-{project_id}", default_branch="main",
+        )
+        document = ProjectPolicy(
+            id=project.id, version=1, repository_path=project.canonical_path,
+            github_repository=project.github_repository, default_branch=project.default_branch,
+        ).model_dump(mode="json")
+        session.add(project)
+        session.add(ProjectPolicyVersion(
+            project_id=project.id, version=1, policy_digest=canonical_digest(document),
+            document_schema_version=1, document=document,
+        ))
+        await session.flush()
+        project.current_policy_version = 1
 
     def work_factory():
         return PostgresUnitOfWork(session_factory)
@@ -107,7 +132,7 @@ async def test_normal_app_launches_epic_item_and_exposes_owner_override(
             "/api/epics",
             "create",
             {
-                "project_id": str(persisted_run.project_id),
+                "project_id": str(project_id),
                 "title": "Owner launch",
                 "draft": brief,
             },
@@ -224,12 +249,12 @@ async def test_normal_app_launches_epic_item_and_exposes_owner_override(
                 )
             await session.rollback()
         config = alembic_config_factory(migrated_database_url)
-        with pytest.raises(RuntimeError, match="cannot drop nonempty epic execution control state"):
+        with pytest.raises(RuntimeError, match="durable subject admission snapshots must not be discarded"):
             await asyncio.to_thread(command.downgrade, config, "20261004_0033")
         async with session_factory() as session:
             assert (
                 await session.scalar(text("SELECT version_num FROM alembic_version"))
-                == "20261010_0038"
+                == ScriptDirectory.from_config(config).get_current_head()
             )
         assert await post(f"{path}/work-item-runs", "launch", launch) == first
         assert await retained_bytes() == retained

@@ -13,7 +13,9 @@ from typing import cast
 from uuid import UUID
 
 from forge.application.adapters.git_commit import (
+    GIT_PREPARATION_FAILED,
     GitCommitOperationError,
+    _prepare_request,
     _prepared_from_intent,
     _primary_paths,
     _publish_outcome,
@@ -297,11 +299,11 @@ class ToolRecoveryService:
                     publication = await work.operations.get_by_idempotency_key(
                         f"git.commit:{effect_id}:publish"
                     )
-                    if publication is None:
-                        return None
-                    intents.append(publication)
+                    if publication is not None:
+                        intents.append(publication)
                 if any(
-                    intent.status is not OperationStatus.SUCCEEDED or intent.completed_at is None
+                    intent.status not in {OperationStatus.SUCCEEDED, OperationStatus.FAILED}
+                    or intent.completed_at is None
                     for intent in intents
                 ):
                     return None
@@ -454,7 +456,7 @@ class ToolRecoveryService:
             metadata={
                 **(
                     {"publication_intent_id": result.metadata["publication_intent_id"]}
-                    if call.tool_name is ToolName.GIT_COMMIT
+                    if "publication_intent_id" in result.metadata
                     else {}
                 ),
                 "operation_intent_id": str(result.operation_intent_id),
@@ -626,7 +628,16 @@ class ToolRecoveryService:
             return ToolRecoveryResult(call.id, ToolRecoveryDisposition.INTERVENTION)
         preparation = await work.operations.get(call.operation_intent_id)
         publication = await work.operations.get_by_idempotency_key(f"git.commit:{call.id}:publish")
-        if publication is None or publication.status is not OperationStatus.SUCCEEDED:
+        failed_preparation = (
+            publication is None
+            and preparation.status is OperationStatus.FAILED
+            and preparation.error == GIT_PREPARATION_FAILED
+            and preparation.completed_at is not None
+            and preparation.execution_owner is None
+        )
+        if not failed_preparation and (
+            publication is None or publication.status is not OperationStatus.SUCCEEDED
+        ):
             return ToolRecoveryResult(call.id, ToolRecoveryDisposition.UNRESOLVED)
         try:
             worktree = ManagedWorktree(
@@ -637,6 +648,7 @@ class ToolRecoveryService:
                 base_sha=run.base_sha,
             )
             context = _recovery_context(call)
+            _prepare_request(preparation, worktree)
             message = preparation.request_payload.get("message")
             if not isinstance(message, str) or (
                 preparation.idempotency_key != f"git.commit:{call.id}:prepare"
@@ -651,29 +663,34 @@ class ToolRecoveryService:
                 or call.resource_id != worktree.identity.worktree_name
                 or call.normalized_arguments
                 != {"message_digest": hashlib.sha256(message.encode()).hexdigest()}
-                or publication.outcome_schema_version != 1
-                or publication.outcome is None
             ):
                 raise GitCommitOperationError()
-            values = _publish_request(publication, worktree)
-            prepared = _prepared_from_intent(preparation, values, worktree)
-            outcome = publication.outcome
-            observed = PublishedGitCommit(
-                worktree_identity=worktree.identity,
-                previous_sha=cast(str, outcome.get("previous_sha")),
-                tree_sha=cast(str, outcome.get("tree_sha")),
-                new_sha=cast(str, outcome.get("new_sha")),
-                message=message,
-            )
-            verified = _publish_outcome(publication, values, prepared, observed)
-            if canonical_digest(verified.payload) != canonical_digest(outcome):
-                raise GitCommitOperationError()
-            metadata = _git_result_metadata(outcome, publication.id, context, call.request_digest)
+            if failed_preparation:
+                metadata: dict[str, object] = {
+                    "publication_disposition": "failed_before_admission",
+                    "request_digest": call.request_digest,
+                    "worktree_id": context.worktree_id,
+                }
+            else:
+                if (
+                    publication is None
+                    or publication.outcome_schema_version != 1
+                    or publication.outcome is None
+                ):
+                    raise GitCommitOperationError()
+                metadata = self._published_git_metadata(
+                    preparation, publication, worktree, context, call.request_digest, message
+                )
         except TypeError, ValueError, GitCommitOperationError, ToolInvocationError:
             return ToolRecoveryResult(call.id, ToolRecoveryDisposition.INTERVENTION)
         result = ToolResult(
             tool_name=call.tool_name,
-            status=ToolCallStatus.SUCCEEDED,
+            status=ToolCallStatus.FAILED if failed_preparation else ToolCallStatus.SUCCEEDED,
+            error=(
+                ToolError(code=ToolErrorCode.ADAPTER_ERROR, message=GIT_PREPARATION_FAILED)
+                if failed_preparation
+                else None
+            ),
             metadata=metadata,
             tool_call_id=call.id,
             operation_intent_id=preparation.id,
@@ -698,9 +715,40 @@ class ToolRecoveryService:
                 ToolRecoveryDisposition.TERMINAL if valid else ToolRecoveryDisposition.INTERVENTION,
             )
         data = _git_result_artifact_bytes(
-            call.id, preparation.id, publication.id, call.request_digest, result.status, metadata
+            call.id,
+            preparation.id,
+            None if publication is None else publication.id,
+            call.request_digest,
+            result.status,
+            metadata,
         )
         return await self._settle(work, call, run, result, data)
+
+    @staticmethod
+    def _published_git_metadata(
+        preparation: OperationIntent,
+        publication: OperationIntent,
+        worktree: ManagedWorktree,
+        context: ToolAuthorizationContext | SubscriptionToolAuthorizationContext,
+        request_digest: str,
+        message: str,
+    ) -> dict[str, object]:
+        values = _publish_request(publication, worktree)
+        prepared = _prepared_from_intent(preparation, values, worktree)
+        outcome = publication.outcome
+        if outcome is None:
+            raise GitCommitOperationError()
+        observed = PublishedGitCommit(
+            worktree_identity=worktree.identity,
+            previous_sha=cast(str, outcome.get("previous_sha")),
+            tree_sha=cast(str, outcome.get("tree_sha")),
+            new_sha=cast(str, outcome.get("new_sha")),
+            message=message,
+        )
+        verified = _publish_outcome(publication, values, prepared, observed)
+        if canonical_digest(verified.payload) != canonical_digest(outcome):
+            raise GitCommitOperationError()
+        return _git_result_metadata(outcome, publication.id, context, request_digest)
 
     async def recover_all(self, *, allow_unresolved: bool = False) -> int:
         """Finalize known receipts before startup opens command admission."""

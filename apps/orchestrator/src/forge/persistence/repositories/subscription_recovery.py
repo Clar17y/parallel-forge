@@ -8,7 +8,7 @@ from uuid import UUID
 from sqlalchemy import func, literal, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from forge.application.ports.subscription_gateway import RoleDecisionRejection
+from forge.application.ports.subscription_gateway import RoleDecisionRejection, SubscriptionFailure
 from forge.domain.event import RunEvent as DomainRunEvent
 from forge.domain.operation import canonical_digest
 from forge.domain.paths import policy_path_key
@@ -23,6 +23,7 @@ from forge.domain.subscription import (
     HandoffStatus,
     LogicalTaskContract,
     ReviewSelection,
+    SpecialistPurpose,
     TaskHandoff,
     WaitDecision,
     decode_subscription_record,
@@ -75,6 +76,7 @@ from forge.persistence.repositories.scheduling import PostgresSchedulingReposito
 from forge.persistence.repositories.subscription_budget import PostgresSubscriptionBudgetRepository
 from forge.persistence.repositories.subscription_launch import launches_confirmed
 from forge.persistence.repositories.subscription_resumption import verify_paused_attempts
+from forge.persistence.repositories.subscription_retry_allowance import SubscriptionRetryAllowance
 
 
 class RecoveryConflict(RuntimeError):
@@ -128,6 +130,7 @@ _EXPLANATIONS = {
     "worker_unavailable": "A compatible worker has not reported recently.",
     "effect_uncertain": "A provider or controlled effect still needs stopped evidence.",
     "budget_exhausted": "The approved attempt or repair budget is exhausted.",
+    "budget_not_extendable": "A finite count allowance is unavailable: unchanged spending or execution limits, policy violations, or inconsistent usage still prevent this retry.",
     "approval_missing": "The approved plan evidence is unavailable or invalidated.",
     "not_stale_plan": "This result does not match the approved planning-contract defect.",
     "invalid_result": "This saved decision is invalid for its role or phase.",
@@ -790,6 +793,22 @@ class PostgresSubscriptionRecoveryRepository:
     ) -> RecoverySnapshot:
         if locked and not lock_run:
             raise ValueError("locked preview requires run write lock")
+        if action is RecoveryAction.ACKNOWLEDGE_INTERRUPTED_GIT_PREPARATION:
+            from forge.persistence.repositories.subscription_interrupted_git import (
+                InterruptedGitPreparationRecovery,
+            )
+
+            return await InterruptedGitPreparationRecovery(self._session).preview(
+                run_id, task_id, attempt_id, locked=locked, lock_run=lock_run
+            )
+        if action is RecoveryAction.ACKNOWLEDGE_INTERRUPTED_CHECK:
+            from forge.persistence.repositories.subscription_interrupted_check import (
+                InterruptedCheckRecovery,
+            )
+
+            return await InterruptedCheckRecovery(self._session).preview(
+                run_id, task_id, attempt_id, locked=locked, lock_run=lock_run
+            )
 
         def refused(reason: str, binding: str = "") -> RecoverySnapshot:
             return RecoverySnapshot(
@@ -1030,7 +1049,64 @@ class PostgresSubscriptionRecoveryRepository:
                 0,
                 0,
             )
-        if action is RecoveryAction.REPAIR_APPROVED_PLAN_CONTRACT:
+        failed_retry = action in {
+            RecoveryAction.RETRY_FAILED_ATTEMPT,
+            RecoveryAction.RETRY_FAILED_ATTEMPT_WITH_ALLOWANCE,
+        }
+        if failed_retry:
+            envelope = await self._session.get(SubscriptionEnvelope, run_id)
+            consumption = await self._session.get(SubscriptionAttemptConsumption, attempt_id)
+            source = historical_source(
+                attempt, task, result, consumption, envelope,
+                launches[0] if len(launches) == 1 else None, len(launches),
+            )
+            if (
+                envelope is None or source is None or not source.failed or source.decision is not None
+                or source.contract != contract
+                or contract.purpose is not SpecialistPurpose.PRIMARY
+                or contract.parent_task_id is not None
+                or canonical_digest(task.payload) != attempt.task_digest
+                or source.envelope.safety_policy_version != run.policy_version
+                or not result.accepted or result.disposition != "failed"
+                or result.result_payload.get("failure") in {None, SubscriptionFailure.UNCERTAIN.value}
+                or result.result_payload.get("failure") != result.result_payload.get("effective_failure")
+                or attempt.status != "terminal" or task.state != "terminal"
+                or scheduled.state != "terminal" or scheduled.lease_owner is not None
+                or scheduled.lease_expires_at is not None
+                or scheduled.parent_task_id != contract.parent_task_id
+                or scheduled.provider != contract.route.effective.provider
+                or tuple(scheduled.owned_paths) != tuple(policy_path_key(path) for path in contract.owned_paths)
+                or tuple(scheduled.dependency_task_ids) != contract.dependency_task_ids
+                or scheduled.read_only
+                or result.application_payload is not None or result.application_digest is not None
+            ):
+                return refused("unsupported_source", binding)
+            if (
+                gate is None or approval is None or approval.invalidated_at is not None
+                or approval.policy_version != run.policy_version
+            ):
+                return refused("approval_missing", binding)
+            graph = (await self._session.execute(
+                select(SubscriptionTask, SubscriptionScheduledTask)
+                .join(SubscriptionScheduledTask, SubscriptionScheduledTask.task_id == SubscriptionTask.id)
+                .where(SubscriptionTask.run_id == run_id)
+                .order_by(SubscriptionTask.id)
+            )).all()
+            # Bind durable authority, not unobserved filesystem contents. The
+            # fresh invocation captures its own starting source after admission.
+            binding = canonical_digest({
+                "durable": binding,
+                "envelope": canonical_digest(envelope.payload),
+                "route": canonical_digest(attempt.route_payload),
+                "worktree": (run.worktree_path, run.branch_name, run.base_sha),
+                "graph": [
+                    (str(row.id), row.version, row.state, schedule.state,
+                     schedule.lease_generation, schedule.lease_owner,
+                     tuple(str(value) for value in schedule.dependency_task_ids))
+                    for row, schedule in graph
+                ],
+            })
+        elif action is RecoveryAction.REPAIR_APPROVED_PLAN_CONTRACT:
             if not (stale_plan or contract_only):
                 return refused("not_stale_plan", binding)
             if (
@@ -1161,7 +1237,15 @@ class PostgresSubscriptionRecoveryRepository:
             return refused("unsupported_source", binding)
         if scheduled.state not in {"reconciling", "terminal", "blocked"}:
             return refused("unsupported_source", binding)
-        if (
+        allowance = None
+        if action is RecoveryAction.RETRY_FAILED_ATTEMPT_WITH_ALLOWANCE:
+            allowance = await SubscriptionRetryAllowance(self._session).propose(
+                task, scheduled, locked=lock_run,
+            )
+            if allowance is None:
+                return refused("budget_not_extendable", binding)
+            binding = canonical_digest({"source": binding, "allowance": allowance.binding})
+        elif (
             scheduled.repairs >= scheduled.max_repairs
             or not await PostgresSubscriptionBudgetRepository(self._session).can_debit_repair(
                 run_id, task_id, attempt_id, locked=lock_run
@@ -1171,6 +1255,8 @@ class PostgresSubscriptionRecoveryRepository:
         change = (
             "Replace the stale planning objective with the approved implementation contract."
             if action is RecoveryAction.REPAIR_APPROVED_PLAN_CONTRACT
+            else "Queue one fresh attempt on the preserved worktree under the current approved contract."
+            if failed_retry
             else "Reject this saved decision and queue one fresh attempt under the current contract."
         )
         return RecoverySnapshot(
@@ -1178,8 +1264,15 @@ class PostgresSubscriptionRecoveryRepository:
             True,
             "eligible",
             _EXPLANATIONS["eligible"],
-            (change, "Record the rejected result and reserve one repair attempt."),
-            ("Original plan, provider result, tool evidence, and usage remain retained.",),
+            (change, "Reserve one repair attempt; a failed result does not accept the candidate.",
+             "Worktree contents are not inspected or approved by this retry.")
+            + (allowance.changes if allowance else ())
+            if failed_retry
+            else (change, "Record the rejected result and reserve one repair attempt."),
+            ("Original plan, provider result, tool evidence, and known and unknown usage remain retained.",)
+            + (allowance.warnings if allowance else ())
+            if failed_retry
+            else ("Original plan, provider result, tool evidence, and usage remain retained.",),
             1,
             1,
         )
@@ -1209,6 +1302,26 @@ class PostgresSubscriptionRecoveryRepository:
         snapshot = await self.preview(run_id, task_id, attempt_id, action, locked=True)
         if not snapshot.eligible or snapshot.binding != binding:
             raise RecoveryConflict("recovery source differs from preview")
+        if action is RecoveryAction.ACKNOWLEDGE_INTERRUPTED_GIT_PREPARATION:
+            from forge.persistence.repositories.subscription_interrupted_git import (
+                InterruptedGitPreparationRecovery,
+            )
+
+            return await InterruptedGitPreparationRecovery(self._session).apply(
+                run_id, task_id, attempt_id, actor_id=actor_id,
+                idempotency_key=idempotency_key, request_digest=request_digest,
+                binding=binding, reason=reason,
+            )
+        if action is RecoveryAction.ACKNOWLEDGE_INTERRUPTED_CHECK:
+            from forge.persistence.repositories.subscription_interrupted_check import (
+                InterruptedCheckRecovery,
+            )
+
+            return await InterruptedCheckRecovery(self._session).apply(
+                run_id, task_id, attempt_id, actor_id=actor_id,
+                idempotency_key=idempotency_key, request_digest=request_digest,
+                binding=binding, reason=reason,
+            )
         result = await self._session.get(
             SubscriptionAttemptResult, attempt_id, with_for_update=True
         )
@@ -1231,6 +1344,26 @@ class PostgresSubscriptionRecoveryRepository:
             await self._resolve_diagnostic(
                 diagnostic, resolution="scheduled", next_retry_at=datetime.now(UTC)
             )
+        elif action in {RecoveryAction.RETRY_FAILED_ATTEMPT, RecoveryAction.RETRY_FAILED_ATTEMPT_WITH_ALLOWANCE}:
+            if action is RecoveryAction.RETRY_FAILED_ATTEMPT_WITH_ALLOWANCE:
+                helper = SubscriptionRetryAllowance(self._session)
+                proposal = await helper.propose(task, scheduled, locked=True)
+                approved = await self._approved_source(run_id, task_id)
+                assert proposal is not None and approved is not None
+                gate, approval, _ = approved
+                await helper.apply(proposal, task, scheduled, source_attempt_id=attempt_id,
+                    approval_id=approval.id, plan_digest=gate.plan_digest, actor_id=actor_id,
+                    binding=binding)
+                await self._session.flush()
+            if not await PostgresSubscriptionBudgetRepository(self._session).try_debit_repair(
+                run_id, task_id, attempt_id
+            ):
+                raise RecoveryConflict("recovery budget changed")
+            # Keep the accepted failure settlement and all measured/unknown
+            # usage immutable. This action authorizes only one new invocation.
+            scheduled.state = task.state = "queued"
+            scheduled.repairs += 1
+            task.version += 1
         else:
             contract_only = (
                 action is RecoveryAction.REPAIR_APPROVED_PLAN_CONTRACT
@@ -1263,7 +1396,8 @@ class PostgresSubscriptionRecoveryRepository:
             idempotency_key=idempotency_key,
             request_digest=request_digest,
             action=action.value,
-            reason_code="applied",
+            reason_code="retry_allowance_extended"
+            if action is RecoveryAction.RETRY_FAILED_ATTEMPT_WITH_ALLOWANCE else "applied",
             status="applied",
             reason=str(redact_value(reason))[:1000],
         )

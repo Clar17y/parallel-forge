@@ -6,6 +6,8 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from forge.application.ports.subscription_gateway import SubscriptionFailure
+from forge.domain.operation import canonical_digest
 from forge.domain.subscription import (
     AttemptTelemetry,
     ExecutionEnvelope,
@@ -32,6 +34,7 @@ from forge.persistence.models.subscription import (
 )
 from forge.persistence.models.subscription_feedback import SubscriptionTaskFeedback
 from forge.persistence.models.subscription_recovery import SubscriptionApplicationDiagnostic
+from forge.persistence.models.subscription_results import SubscriptionAttemptResult
 from forge.persistence.queries.subscription_capacity import capacity_observation
 from forge.persistence.queries.subscription_queue_diagnostics import assess_queue_diagnostics
 from forge.persistence.queries.subscription_recovery_attention import current_attention
@@ -113,6 +116,19 @@ class SubscriptionTaskQuery:
                 else []
             )
             recovery_by_task = {row.task_id: row for row in recovery_rows}
+            latest_results = (
+                await session.execute(
+                    select(SubscriptionAttempt.task_row_id, SubscriptionAttemptResult)
+                    .outerjoin(SubscriptionAttemptResult, SubscriptionAttemptResult.attempt_id == SubscriptionAttempt.id)
+                    .where(SubscriptionAttempt.task_row_id.in_(ids))
+                    .distinct(SubscriptionAttempt.task_row_id)
+                    .order_by(SubscriptionAttempt.task_row_id, SubscriptionAttempt.attempt_number.desc())
+                )
+            ).all() if ids else []
+            failed_by_task = {
+                task_id: failure for task_id, result in latest_results
+                if (failure := _failed_result(result)) is not None
+            }
             attention_by_task = await current_attention(session, run_id)
             recovery_attention = bool(attention_by_task)
             effects = (
@@ -155,6 +171,13 @@ class SubscriptionTaskQuery:
                     waiting[len(tasks)] = contract.route.effective.provider
                 key = self._quota_policy.key_for(contract.route.effective)
                 preferred = preferred_routes.get(contract.purpose)
+                failed_primary = (
+                    row.parent_task_id is None and row.state == "terminal"
+                    and scheduled is not None and scheduled.state == "terminal"
+                    and row.id in failed_by_task
+                    and run.state not in {"COMPLETED", "CANCELLED", "FAILED"}
+                )
+                recovery_attention |= failed_primary
                 if key not in quota_by_key:
                     # A bounded global list must not hide this task's pool.
                     # Missing observations explicitly mean unknown telemetry.
@@ -174,8 +197,9 @@ class SubscriptionTaskQuery:
                         "version": row.version,
                         "repairs": scheduled.repairs if scheduled is not None else None,
                         "unsettled_effects": effects.get(row.id, 0),
-                        "recovery_attention": row.id in attention_by_task,
+                        "recovery_attention": row.id in attention_by_task or failed_primary,
                         "recovery_reason_code": (
+                            f"attempt_failed_{failed_by_task[row.id]}" if failed_primary else
                             recovery_by_task[row.id].reason_code
                             if row.id in recovery_by_task
                             else None
@@ -262,6 +286,11 @@ class SubscriptionTaskQuery:
                     else []
                 )
             }
+            results = {
+                result.attempt_id: result for result in await session.scalars(
+                    select(SubscriptionAttemptResult).where(SubscriptionAttemptResult.attempt_id.in_(diagnostic_ids))
+                )
+            } if diagnostic_ids else {}
             latest_attempt_id = await session.scalar(
                 select(SubscriptionAttempt.id)
                 .where(
@@ -279,15 +308,43 @@ class SubscriptionTaskQuery:
             for row in rows[:limit]:
                 item = _attempt(row)
                 diagnostic = diagnostics.get(row.id)
-                if diagnostic is not None:
-                    eligible = []
-                    if row.id == latest_attempt_id:
-                        for action in RecoveryAction:
-                            snapshot = await recovery.preview(
-                                run_id, task_id, row.id, action, lock_run=False
-                            )
-                            if snapshot.eligible:
-                                eligible.append(action.value)
+                result = results.get(row.id)
+                failure = _failed_result(result)
+                eligible = []
+                retry_snapshot = None
+                if row.id == latest_attempt_id:
+                    actions = (
+                        tuple(RecoveryAction)
+                        if diagnostic is not None
+                        else (RecoveryAction.ACKNOWLEDGE_INTERRUPTED_GIT_PREPARATION,
+                              RecoveryAction.RETRY_FAILED_ATTEMPT,
+                              RecoveryAction.RETRY_FAILED_ATTEMPT_WITH_ALLOWANCE)
+                    )
+                    for action in actions:
+                        snapshot = await recovery.preview(
+                            run_id, task_id, row.id, action, lock_run=False
+                        )
+                        if snapshot.eligible:
+                            eligible.append(action.value)
+                        if action is RecoveryAction.RETRY_FAILED_ATTEMPT:
+                            retry_snapshot = snapshot
+                if failure is not None and result is not None:
+                    current = row.id == latest_attempt_id and task.state == "terminal"
+                    item["recovery"] = {
+                        "classification": f"provider_failure:{failure}",
+                        "reason_code": (
+                            retry_snapshot.reason_code
+                            if current and retry_snapshot is not None and not retry_snapshot.eligible
+                            else f"attempt_failed_{failure}"
+                        ),
+                        "resolution": "attention" if current else "retained",
+                        "failed_applications": 0,
+                        "first_failure_at": result.created_at,
+                        "last_failure_at": result.created_at,
+                        "next_retry_at": None,
+                        "eligible_actions": eligible,
+                    }
+                elif diagnostic is not None:
                     item["recovery"] = {
                         "classification": diagnostic.classification,
                         "reason_code": diagnostic.reason_code,
@@ -296,6 +353,19 @@ class SubscriptionTaskQuery:
                         "first_failure_at": diagnostic.first_failure_at,
                         "last_failure_at": diagnostic.last_failure_at,
                         "next_retry_at": diagnostic.next_retry_at,
+                        "eligible_actions": eligible,
+                    }
+                elif eligible:
+                    # A fenced effect can precede decision-application diagnostics.
+                    # Its attempt timestamp is the recorded fence, not a new failure.
+                    item["recovery"] = {
+                        "classification": "unresolved_effect",
+                        "reason_code": "git_preparation_outcome_unknown",
+                        "resolution": "attention",
+                        "failed_applications": 0,
+                        "first_failure_at": row.updated_at,
+                        "last_failure_at": row.updated_at,
+                        "next_retry_at": None,
                         "eligible_actions": eligible,
                     }
                 projected.append(item)
@@ -410,6 +480,22 @@ async def _feedback_receipts(
 
 def _route(route: RouteSpec) -> dict[str, object]:
     return {key: _safe(str(value)) for key, value in asdict(route).items()}
+
+
+def _failed_result(result: SubscriptionAttemptResult | None) -> str | None:
+    """Display a failure settlement without presenting it as accepted work."""
+    if result is None or not result.accepted or result.disposition != "failed":
+        return None
+    payload = result.result_payload
+    if canonical_digest(payload) != result.result_digest or payload.get("decision") is not None:
+        return None
+    failure = payload.get("effective_failure")
+    if not isinstance(failure, str):
+        return None
+    try:
+        return SubscriptionFailure(failure).value
+    except (TypeError, ValueError):
+        return None
 
 
 def _attempt(row: SubscriptionAttempt) -> dict[str, object]:

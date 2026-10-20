@@ -121,6 +121,59 @@ class ArtifactRepository:
             parents = await self._parent_digests(content.id, run_id, session)
             return _descriptor_from_rows(content, lineage, parents)
 
+    async def record_content_reference(
+        self, descriptor: ArtifactDescriptor, *, run_id: UUID,
+        producer_type: str, producer_id: UUID,
+    ) -> ArtifactDescriptor:
+        """Reuse raw bytes within one producer kind, retaining the first provenance.
+
+        Only raw candidate diffs have this contract: their current authority is
+        bound by separate immutable evidence. Ordinary producer receipts must
+        never become reusable merely because they have no parent artifacts.
+        Ordinary ``record`` retains its strict metadata and lineage checks.
+        """
+        if producer_type != "subscription_candidate_diff":
+            raise ArtifactMetadataConflict("producer kind does not support content references")
+        if not isinstance(run_id, UUID) or not isinstance(producer_id, UUID):
+            raise TypeError("content references require run and producer UUIDs")
+        if descriptor.truncated:
+            raise ArtifactMetadataConflict("content references require complete bytes")
+        async with self._session_scope(transaction=True) as session:
+            content = await session.scalar(
+                select(Artifact).where(Artifact.digest == descriptor.digest).with_for_update()
+            )
+            repository = ArtifactRepository(session=session, redactor=self._redactor)
+            if content is None:
+                return await repository.record(
+                    descriptor, run_id=run_id, producer_type=producer_type,
+                    producer_id=producer_id, metadata={},
+                )
+            lineages = tuple(await session.scalars(
+                select(ArtifactLineage).where(ArtifactLineage.artifact_id == content.id)
+                .order_by(ArtifactLineage.run_id, ArtifactLineage.id)
+            ))
+            if not lineages or any(row.producer_kind != producer_type for row in lineages):
+                raise ArtifactMetadataConflict("content reference producer kind differs")
+            if await session.scalar(select(ArtifactLineageParent.artifact_id).where(
+                ArtifactLineageParent.artifact_id == content.id
+            ).limit(1)) is not None:
+                raise ArtifactMetadataConflict("context-bound artifacts cannot be reused")
+            retained = _descriptor_from_rows(content, lineages[0], ())
+            if (
+                retained.media_type != descriptor.media_type
+                or retained.schema_version != descriptor.schema_version
+                or retained.byte_count != descriptor.byte_count
+                or retained.truncated
+            ):
+                raise ArtifactMetadataConflict("content reference descriptor differs")
+            for lineage in lineages:
+                if lineage.run_id == run_id:
+                    return _descriptor_from_rows(content, lineage, ())
+            return await repository.record(
+                descriptor, run_id=run_id, producer_type=producer_type,
+                producer_id=producer_id, metadata=retained.metadata,
+            )
+
     async def lineages(self, digest: str) -> tuple[ArtifactDescriptor, ...]:
         """Return all run lineages in deterministic run/time order."""
 

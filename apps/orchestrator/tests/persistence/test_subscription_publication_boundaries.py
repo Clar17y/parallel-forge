@@ -36,9 +36,9 @@ async def test_expired_lease_after_final_observation_cannot_publish_a_decision(
     capture, observations = controller._candidate, 0
     async with factory() as work:
 
-        async def expire(source):
+        async def expire(source, **kwargs):
             nonlocal observations
-            observed = await capture(source)
+            observed = await capture(source, **kwargs)
             observations += 1
             if observations == 2:
                 (await work.session.get(RunCommand, command.id)).lease_expires_at = datetime.now(

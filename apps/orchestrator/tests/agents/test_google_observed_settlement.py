@@ -72,7 +72,7 @@ async def test_google_public_subscription_repeated_cancel_after_settlement(
 
     assert result.failure is None
     assert result.launch_proof is not None and result.launch_proof.stop_confirmed
-    assert result.telemetry.input_tokens == (10 if client == "gemini" else 13)
+    assert result.telemetry.input_tokens == (10 if client == "gemini" else 15)
     assert "usage observation delivery incomplete" in result.telemetry.unknown_telemetry_reasons
     assert sink.cancellations == 2 and not sink.active
     assert sink.delivery_task is not None and sink.delivery_task.done()
@@ -103,7 +103,9 @@ async def test_gemini_observed_actual_supervised_acp_exchange(tmp_path) -> None:
 
 @pytest.mark.parametrize(
     ("scenario", "expected_input", "expected_output"),
-    [("large_usage", 10_000_017, 5), ("sparse_zero_usage", 0, None)],
+    [("large_usage", 10_000_019, 5), ("sparse_zero_usage", 0, None),
+     ("cache_heavy_usage", 30492, 4), ("missing_cache", None, 5),
+     ("missing_input", None, 5)],
 )
 @pytest.mark.asyncio
 async def test_antigravity_observed_real_counter_scale_and_sparse_zero(
@@ -193,8 +195,8 @@ async def test_antigravity_observed_final_follows_uncertain_settlement(tmp_path,
 
     assert result.failure is SubscriptionFailure.UNCERTAIN
     assert result.launch_proof is not None and not result.launch_proof.stop_confirmed
-    assert result.telemetry.input_tokens == 13
+    assert result.telemetry.input_tokens == 15
     finals = [item for item in sink.observations if item.final]
     assert len(finals) == 1
     assert finals[0].final_status == result.failure.value
-    assert finals[0].tokens.input_tokens == 13
+    assert finals[0].tokens.input_tokens == 15

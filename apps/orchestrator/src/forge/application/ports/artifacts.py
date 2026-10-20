@@ -42,6 +42,13 @@ class ArtifactRepository(Protocol):
 
     async def get_by_digest(self, digest: str, *, run_id: UUID) -> ArtifactDescriptor: ...
 
+    async def record_content_reference(
+        self, descriptor: ArtifactDescriptor, *, run_id: UUID,
+        producer_type: str, producer_id: UUID,
+    ) -> ArtifactDescriptor:
+        """Reference complete, context-free bytes without relabelling prior provenance."""
+        ...
+
     async def get_by_producer(
         self, *, run_id: UUID, producer_type: str, producer_id: UUID
     ) -> Sequence[ArtifactDescriptor]: ...

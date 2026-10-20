@@ -18,6 +18,7 @@ from typing import Any, TypedDict, TypeGuard, cast
 from uuid import UUID, uuid4
 
 from forge.application.adapters.git_commit import (
+    GIT_PREPARATION_FAILED,
     PREPARE_GIT_COMMIT_KIND,
     PUBLISH_GIT_COMMIT_KIND,
     PrepareGitCommitAdapter,
@@ -2031,6 +2032,37 @@ class ControlledToolService:
             raise ToolInvocationError()
         prepare_adapter = PrepareGitCommitAdapter(self._git, self._worktree)
         outcome = await executor.invoke_admitted(preparation, prepare_adapter)
+        if outcome.status is OperationStatus.FAILED and outcome.error == GIT_PREPARATION_FAILED:
+            # Settle under the operation lease before waiting for run serialization
+            # or artifact IO. Renewal stopped at adapter return: a contended run
+            # lock must not erase this completed failure. The transaction releases
+            # the operation lock before audit finalization acquires the run lock.
+            async with self._open_uow() as failed_work:
+                current = await failed_work.tool_calls.get(call_id)
+                if current.status is not ToolCallStatus.RUNNING or (
+                    await failed_work.operations.get_by_idempotency_key(
+                        f"git.commit:{call_id}:publish"
+                    )
+                    is not None
+                ):
+                    raise ToolInvocationError()
+                await failed_work.operations.fail(
+                    preparation.id,
+                    error=GIT_PREPARATION_FAILED,
+                    owner_id=preparation.execution_owner,
+                )
+                await failed_work.commit()
+            return await self._finalize_git_commit(
+                context,
+                request,
+                call_id,
+                normalized,
+                request_digest,
+                preparation,
+                None,
+                reserved,
+                outcome,
+            )
         if outcome.status is not OperationStatus.SUCCEEDED:
             raise ToolInvocationError()
         # Persist successful preparation and publication admission atomically.
@@ -2122,12 +2154,21 @@ class ControlledToolService:
     ) -> ToolResult:
         if self._artifact_store is None:
             raise ToolInvocationError()
-        cancelled = publication is None
+        failed = publication is None and outcome.status is OperationStatus.FAILED
+        cancelled = publication is None and not failed
         publication_id = None if publication is None else publication.id
-        status = ToolCallStatus.CANCELLED if cancelled else ToolCallStatus.SUCCEEDED
+        status = (
+            ToolCallStatus.FAILED
+            if failed
+            else ToolCallStatus.CANCELLED
+            if cancelled
+            else ToolCallStatus.SUCCEEDED
+        )
         metadata = (
             {
-                "publication_disposition": "cancelled_before_admission",
+                "publication_disposition": (
+                    "failed_before_admission" if failed else "cancelled_before_admission"
+                ),
                 "request_digest": request_digest,
                 "worktree_id": context.worktree_id,
             }
@@ -2150,14 +2191,23 @@ class ControlledToolService:
         ) as work:
             run = await work.runs.get_for_update(context.run_id)
             terminal_operation = preparation if publication is None else publication
-            await work.operations.complete(
-                terminal_operation.id, outcome, owner_id=terminal_operation.execution_owner
-            )
+            if failed:
+                await work.operations.fail(
+                    terminal_operation.id,
+                    error=GIT_PREPARATION_FAILED,
+                    owner_id=terminal_operation.execution_owner,
+                )
+            else:
+                await work.operations.complete(
+                    terminal_operation.id, outcome, owner_id=terminal_operation.execution_owner
+                )
             result = ToolResult(
                 tool_name=ToolName.GIT_COMMIT,
                 status=status,
                 error=(
-                    ToolError(
+                    ToolError(code=ToolErrorCode.ADAPTER_ERROR, message=GIT_PREPARATION_FAILED)
+                    if failed
+                    else ToolError(
                         code=ToolErrorCode.CANCELLED, message="run cancelled before Git publication"
                     )
                     if cancelled
@@ -2246,7 +2296,9 @@ class ControlledToolService:
                 producer_id=call_id,
                 metadata={
                     "operation_intent_id": str(preparation.id),
-                    "publication_intent_id": None if cancelled else str(publication_id),
+                    "publication_intent_id": (
+                        None if publication_id is None else str(publication_id)
+                    ),
                     "producer_id": str(call_id),
                     "request_digest": request_digest,
                     "resource_id": context.worktree_id,
@@ -3424,15 +3476,18 @@ async def _git_terminal_result(
     """Return durable terminal evidence without reading repository state."""
 
     if (
-        record.status not in {ToolCallStatus.SUCCEEDED, ToolCallStatus.CANCELLED}
+        record.status
+        not in {ToolCallStatus.SUCCEEDED, ToolCallStatus.CANCELLED, ToolCallStatus.FAILED}
         or record.result_metadata is None
     ):
         raise ToolInvocationError()
     cancelled = record.status is ToolCallStatus.CANCELLED
+    failed = record.status is ToolCallStatus.FAILED
+    unpublished = cancelled or failed
     publication = record.result_metadata.get("publication_intent_id")
-    if not cancelled and not isinstance(publication, str):
+    if not unpublished and not isinstance(publication, str):
         raise ToolInvocationError()
-    if not cancelled:
+    if not unpublished:
         try:
             if UUID(str(publication)).int == 0:
                 raise ValueError
@@ -3442,7 +3497,7 @@ async def _git_terminal_result(
         raise ToolInvocationError()
     fields = (
         {"publication_disposition", "request_digest", "worktree_id"}
-        if cancelled
+        if unpublished
         else _git_result_fields(context)
     )
     metadata = {
@@ -3452,8 +3507,9 @@ async def _git_terminal_result(
     }
     if set(metadata) != fields or metadata["request_digest"] != request_digest:
         raise ToolInvocationError()
-    if cancelled and (
-        metadata["publication_disposition"] != "cancelled_before_admission"
+    if unpublished and (
+        metadata["publication_disposition"]
+        != ("failed_before_admission" if failed else "cancelled_before_admission")
         or metadata["worktree_id"] != context.worktree_id
     ):
         raise ToolInvocationError()
@@ -3522,7 +3578,11 @@ async def _git_terminal_result(
         tool_name=record.tool_name,
         status=record.status,
         error=(
-            ToolError(code=ToolErrorCode.CANCELLED, message="run cancelled before Git publication")
+            ToolError(code=ToolErrorCode.ADAPTER_ERROR, message=GIT_PREPARATION_FAILED)
+            if failed
+            else ToolError(
+                code=ToolErrorCode.CANCELLED, message="run cancelled before Git publication"
+            )
             if cancelled
             else None
         ),

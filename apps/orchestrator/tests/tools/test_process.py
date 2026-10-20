@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import os
 import shutil
 import subprocess
@@ -11,7 +12,7 @@ import pytest
 from forge.application.ports.repository import ProcessExecutionError
 from forge.tools import paths as paths_module
 from forge.tools.paths import CanonicalRoot, RepositoryAccessDenied
-from forge.tools.process import ProcessRunner
+from forge.tools.process import ProcessRunner, _BoundedStream
 
 
 def _root(tmp_path: Path) -> Path:
@@ -159,6 +160,64 @@ def test_run_bounds_stdout_and_stderr_independently_with_truthful_counts(tmp_pat
     assert result.stderr_original_byte_count == 4000
     assert result.stdout_truncated is True
     assert result.stderr_truncated is True
+
+
+@pytest.mark.parametrize("limit", [1, 2, 3, 15, 64, 131073])
+@pytest.mark.parametrize("chunk_size", [1, 7, 65536])
+def test_bounded_stream_retains_head_and_tail_within_original_budget(limit, chunk_size):
+    content = b"START\n" + bytes(range(256)) * 1025 + b"\nFAILED: final summary\n"
+
+    class Chunks(io.BytesIO):
+        def read(self, size=-1):
+            assert len(capture.data) <= limit
+            return super().read(min(size, chunk_size))
+
+    capture = _BoundedStream(Chunks(content), limit)
+    capture.drain()
+    head = limit // 2
+    assert bytes(capture.data) == content[:head] + content[-(limit - head) :]
+    assert len(capture.data) <= limit
+    assert capture.original_byte_count == len(content)
+    assert capture.truncated
+    assert capture.error is None
+    decoded_head = content[:head].decode("utf-8", errors="replace")
+    decoded_tail = content[-(limit - head) :].decode("utf-8", errors="replace")
+    assert capture.decode() == (decoded_head + decoded_tail, len(decoded_head))
+
+
+@pytest.mark.parametrize("content", [b"", b"x", b"exactly"])
+def test_bounded_stream_preserves_untruncated_content(content):
+    capture = _BoundedStream(io.BytesIO(content), max(1, len(content)))
+    capture.drain()
+    assert bytes(capture.data) == content
+    assert capture.original_byte_count == len(content)
+    assert not capture.truncated
+    assert capture.decode() == (content.decode(), None)
+
+
+def test_capture_decode_does_not_fuse_code_points_across_omitted_output():
+    capture = _BoundedStream(io.BytesIO(b"\xc3" + b"omitted" * 20 + b"\xa9"), 2)
+    capture.drain()
+    assert bytes(capture.data) == b"\xc3\xa9"
+    assert capture.decode() == ("\ufffd\ufffd", 1)
+
+
+def test_failed_subprocess_retains_initial_context_and_final_summary(tmp_path):
+    result = _runner(_root(tmp_path), stdout_max_bytes=128, stderr_max_bytes=65).run_argv(
+        _python(
+            "import os,sys; os.write(1,b'START\\n'+b'x'*200000+b'\\nFAILED: final summary\\n'); "
+            "os.write(2,b'WARNING\\n'+b'y'*100000+b'\\nERROR: final detail\\n'); sys.exit(1)"
+        ),
+        cwd=".",
+        environment={},
+    )
+    assert result.return_code == 1 and not result.timed_out
+    assert result.stdout.startswith("START\n") and result.stdout.endswith("FAILED: final summary\n")
+    assert result.stderr.startswith("WARNING\n") and result.stderr.endswith("ERROR: final detail\n")
+    assert len(result.stdout.encode()) == 128 and len(result.stderr.encode()) == 65
+    assert result.stdout_original_byte_count == 200029
+    assert result.stderr_original_byte_count == 100029
+    assert result.stdout_truncated and result.stderr_truncated
 
 
 def test_run_decodes_invalid_utf8_with_replacement(tmp_path: Path) -> None:

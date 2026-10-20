@@ -119,7 +119,11 @@ class SubscriptionPublicationController:
     async def validate(
         self, command: CommandEnvelope, work: UnitOfWork
     ) -> SubscriptionPublicationDecision | SubscriptionValidationRepairDecision:
-        await _fence_command(command, work)
+        await _fence_command(command, work, wait=False)
+        # Keep renewal independent of slow Git/artifact observations. The run
+        # and source remain locked while deciding; the delivery is fenced again
+        # before its final transaction can commit.
+        await work.commit()
         approved = await self._approved.load(work, command.run_id)
         if command.actor_id != approved.approval_actor_id:
             raise CommandRecoveryRequired("subscription publication actor differs")
@@ -148,7 +152,6 @@ class SubscriptionPublicationController:
             raise CommandRecoveryRequired("subscription publication is not current")
         await work.commit()
         produced = await self._validation.execute(command, work)
-        await _fence_command(command, work)
         current = await self._approved.load(work, command.run_id)
         if current.run != approved.run or current.approval_id != approved.approval_id:
             raise CommandRecoveryRequired("subscription publication authority changed")
@@ -159,7 +162,6 @@ class SubscriptionPublicationController:
             member.status is not EvidenceStatus.PASSED for member in manifest.members
         ):
             verified = await self._publication.verify_validation(work, current, command)
-            await _fence_command(command, work)
             latest = await self._approved.load(work, command.run_id)
             source, receipts = await work.subscription_decisions.acceptance_validation_source(
                 attempt_id
@@ -176,7 +178,7 @@ class SubscriptionPublicationController:
                 or await pending_current_control_stop(work, latest.run)
             ):
                 raise CommandRecoveryRequired("subscription validation failure authority differs")
-            await _fence_command(command, work)
+            await _fence_command(command, work, wait=False)
             repair = await work.subscription_decisions.reject_acceptance_validation(
                 source,
                 command.id,
@@ -190,7 +192,7 @@ class SubscriptionPublicationController:
                 repair,
                 current.run.local_remediation_count + int(repair.repaired),
             )
-            await _fence_command(command, work)
+            await _fence_command(command, work, wait=False)
             if repair.repaired:
                 changed = await work.runs.begin_local_remediation(
                     current.run.id,
@@ -222,7 +224,6 @@ class SubscriptionPublicationController:
         frozen = await self._publication.freeze(work, current, command, diff_digest=diff)
         if produced != frozen.validation:
             raise CommandRecoveryRequired("subscription publication validation changed")
-        await _fence_command(command, work)
         latest = await self._approved.load(work, command.run_id)
         source, receipts = await work.subscription_decisions.acceptance_validation_source(
             attempt_id
@@ -232,11 +233,10 @@ class SubscriptionPublicationController:
             or latest.approval_id != current.approval_id
             or source != proposal
             or receipts != proof
-            or await self._candidate(source) != diff
+            or await self._candidate(source, work=work) != diff
             or await pending_current_control_stop(work, latest.run)
         ):
             raise CommandRecoveryRequired("subscription publication changed during storage")
-        await _fence_command(command, work)
         if await work.releases.get_for_run(command.run_id) is not None:
             if self._remote_repairs is None:
                 raise CommandRecoveryRequired("subscription remote publication is not configured")
@@ -250,13 +250,14 @@ class SubscriptionPublicationController:
                 actor_id=current.approval_actor_id,
             )
             await self._verify_push(work, current, frozen, push, current.run.version + 1)
-            await _fence_command(command, work)
+            await _fence_command(command, work, wait=False)
             run = await work.runs.transition(
                 command.run_id, current.run.version, RunState.MONITORING_PR,
                 EVENT, publication_decision_payload(command, current, frozen, push=push),
                 actor_class="worker", actor_id=current.approval_actor_id,
             )
         else:
+            await _fence_command(command, work, wait=False)
             run = await work.runs.await_approval(
                 command.run_id,
                 current.run.version,
@@ -267,7 +268,7 @@ class SubscriptionPublicationController:
                 actor_class="worker",
                 actor_id=current.approval_actor_id,
             )
-        await _fence_command(command, work)
+        await _fence_command(command, work, wait=False)
         await work.commit()
         return self._decision(command.run_id, run.version, frozen, run.state)
 
@@ -307,6 +308,7 @@ class SubscriptionPublicationController:
             _failed_checks(verified),
             receipt,
         )
+        await _fence_command(command, work, wait=False)
         await work.commit()
         return SubscriptionValidationRepairDecision(
             command.run_id,
@@ -348,6 +350,7 @@ class SubscriptionPublicationController:
             != canonical_digest(publication_decision_payload(command, approved, frozen, push=push))
         ):
             raise CommandRecoveryRequired("subscription publication decision differs")
+        await _fence_command(command, work, wait=False)
         await work.commit()
         return self._decision(
             command.run_id, event.run_version, frozen,
@@ -373,8 +376,10 @@ class SubscriptionPublicationController:
         ):
             raise CommandRecoveryRequired("subscription reviewed push queue differs")
 
-    async def _candidate(self, source: PreparedSubscriptionAcceptance) -> str:
-        def capture() -> str:
+    async def _candidate(
+        self, source: PreparedSubscriptionAcceptance, *, work: UnitOfWork | None = None
+    ) -> str:
+        def capture() -> bytes:
             git = self._git(source.policy)
             candidate = git.candidate_diff(source.worktree)
             snapshot = git.working_tree_snapshot(
@@ -389,9 +394,32 @@ class SubscriptionPublicationController:
                 or CandidateInspection.from_snapshot(snapshot) != source.review.candidate
             ):
                 raise CommandRecoveryRequired("subscription publication candidate differs")
-            return hashlib.sha256(candidate.diff.text.encode()).hexdigest()
+            return candidate.diff.text.encode()
 
-        return await asyncio.to_thread(capture)
+        data = await asyncio.to_thread(capture)
+        digest = hashlib.sha256(data).hexdigest()
+        if work is not None:
+            descriptor = await self._store.put_bytes(
+                data, media_type="text/plain", max_bytes=max(1, len(data)),
+                bounding_policy="head_tail",
+            )
+            if (
+                descriptor.digest != digest
+                or descriptor.byte_count != len(data)
+                or descriptor.truncated
+                or not await self._store.verify(digest)
+            ):
+                raise CommandRecoveryRequired("subscription candidate diff storage differs")
+            # Raw diff bytes may recur after a retry or base update. Their
+            # first provenance is immutable; the new approval evidence binds
+            # this verified candidate, base and producing attempt separately.
+            await work.artifacts.record_content_reference(
+                descriptor,
+                run_id=source.decision.run_id,
+                producer_type="subscription_candidate_diff",
+                producer_id=source.attempt_id,
+            )
+        return digest
 
     @staticmethod
     def _decision(

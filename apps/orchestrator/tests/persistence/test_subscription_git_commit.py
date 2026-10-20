@@ -378,3 +378,53 @@ async def test_subscription_commit_recovers_historical_receipts_without_live_lea
         assert recovered.agent_execution_id is None
     if corruption is None:
         assert (await recovery.recover_one(call_id)).disposition is ToolRecoveryDisposition.TERMINAL
+
+
+@pytest.mark.integration
+async def test_no_change_commit_returns_failed_receipt_and_replays_without_new_effect(
+    session_factory, tmp_path
+):
+    from forge.domain.operation import OperationStatus
+    from forge.domain.tool import ToolCallStatus
+    from forge.persistence.models.scheduling import SubscriptionScheduledEffect
+
+    broker, git, _, _, worktree = await _case(session_factory, tmp_path, primary_writer=True)
+    first = await broker.invoke(
+        token="commit-token",
+        provider_call_key="first",
+        tool_name=ToolName.GIT_COMMIT,
+        arguments={"message": "feat: first commit"},
+    )
+    assert first.accepted and first.result["status"] == "succeeded"
+    head = git.head_sha(worktree)
+    args = {"message": "feat: no changes"}
+    failed = await broker.invoke(
+        token="commit-token",
+        provider_call_key="no-change",
+        tool_name=ToolName.GIT_COMMIT,
+        arguments=args,
+    )
+    assert not failed.accepted and failed.result["status"] == "failed"
+    assert failed.result["error"]["code"] == "adapter_error"
+    assert "new_sha" not in failed.result["metadata"]
+    async with PostgresUnitOfWork(session_factory) as work:
+        call = await work.tool_calls.get(failed.operation_id)
+        assert call.status is ToolCallStatus.FAILED and call.artifact_digests
+        prepare = await work.operations.get(call.operation_intent_id)
+        assert prepare.status is OperationStatus.FAILED and prepare.completed_at is not None
+        assert prepare.execution_owner is None and prepare.outcome is None
+        assert await work.operations.get_by_idempotency_key(f"git.commit:{call.id}:publish") is None
+        effect = await work.session.get(SubscriptionScheduledEffect, call.id)
+        assert effect.state == "rejected"
+    (worktree.path / "README.md").write_text("later edit\n", encoding="utf-8")
+    assert (
+        await broker.invoke(
+            token="commit-token",
+            provider_call_key="no-change",
+            tool_name=ToolName.GIT_COMMIT,
+            arguments=args,
+        )
+        == failed
+    )
+    assert git.head_sha(worktree) == head
+    assert (worktree.path / "README.md").read_text(encoding="utf-8") == "later edit\n"

@@ -203,8 +203,25 @@ class PostgresSubscriptionTaskControlRepository:
             idle_history_digest,
         )
 
-        source = await self._retained_source(run, attempt.id, pending=False, settled_idle=True)
-        history = await idle_history_digest(self._session, source)
+        result = await self._session.get(
+            SubscriptionAttemptResult, attempt.id, with_for_update=True
+        )
+        if result is None:
+            if (
+                attempt.task_digest != current.task_digest
+                or attempt.envelope_digest != current.envelope_digest
+                or attempt.candidate_epoch != current.candidate_epoch
+            ):
+                raise TaskControlConflict("idle interruption authority differs")
+            history = await idle_history_digest(self._session, task, scheduled, attempt)
+        else:
+            source = await self._retained_source(run, attempt.id, pending=False, settled_idle=True)
+            history = await idle_history_digest(
+                self._session,
+                source.task,
+                source.scheduled,
+                source.attempt,
+            )
         proof = IdleTaskControlProof(
             **current.model_dump(),
             source_attempt_id=attempt.id,

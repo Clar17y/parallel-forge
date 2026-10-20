@@ -143,7 +143,9 @@ async def persist_output_artifacts(
 
     redactor = Redactor(
         secrets=(value for value in secrets.values() if value),
-        policy=RedactionPolicy(max_string_bytes=_OUTPUT_TEXT_MAX_BYTES),
+        policy=RedactionPolicy(
+            max_string_bytes=_OUTPUT_TEXT_MAX_BYTES, string_bounding="head_tail"
+        ),
     )
     try:
         stdout = await _persist_stream(
@@ -153,6 +155,7 @@ async def persist_output_artifacts(
             text=result.stdout,
             original_byte_count=result.stdout_original_byte_count,
             truncated=result.stdout_truncated,
+            capture_boundary=getattr(result, "stdout_capture_boundary", None),
         )
         stderr = await _persist_stream(
             artifact_store,
@@ -161,6 +164,7 @@ async def persist_output_artifacts(
             text=result.stderr,
             original_byte_count=result.stderr_original_byte_count,
             truncated=result.stderr_truncated,
+            capture_boundary=getattr(result, "stderr_capture_boundary", None),
         )
     except Exception:  # noqa: BLE001 - artifact adapters fail as one safe runner error
         raise RunnerExecutionError() from None
@@ -175,11 +179,11 @@ async def _persist_stream(
     text: str,
     original_byte_count: int,
     truncated: bool,
+    capture_boundary: int | None,
 ) -> str:
-    safe_text = redactor.redact(text)
-    if not isinstance(safe_text, str):
-        raise RunnerExecutionError()
-    redactor_truncated = len(text.encode("utf-8", errors="replace")) > _OUTPUT_TEXT_MAX_BYTES
+    safe_text, redactor_truncated = redactor.redact_text(
+        text, capture_truncated=truncated, capture_boundary=capture_boundary
+    )
     payload = {
         "captured_byte_count": len(safe_text.encode("utf-8")),
         "encoding": "utf-8-replacement",

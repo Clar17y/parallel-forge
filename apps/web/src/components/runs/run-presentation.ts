@@ -149,13 +149,14 @@ function checkHead(head: string | null, candidate: string | null): CheckDisplay 
 const successfulStatuses = ['succeeded', 'passed', 'completed'];
 
 export function localCheckDisplay(check: components['schemas']['CheckItem'], candidate: string | null): CheckDisplay {
-  const head = checkHead(check.head_sha, candidate);
-  if (head) return head;
   const status = check.status.toLowerCase();
-  if (successfulStatuses.includes(status) && check.exit_code === 0) return { label: 'Passed', tone: 'success' };
-  if (['failed', 'error', 'timed_out'].includes(status) || (typeof check.exit_code === 'number' && check.exit_code !== 0)) return { label: 'Failed', tone: 'danger' };
   if (['running', 'in_progress'].includes(status)) return { label: 'Running', tone: 'info' };
   if (['pending', 'queued'].includes(status)) return { label: 'Queued', tone: 'neutral' };
+  if (status === 'unknown') return { label: 'Outcome unknown', tone: 'neutral' };
+  const head = checkHead(check.head_sha, candidate);
+  if (head) return head;
+  if (successfulStatuses.includes(status) && check.exit_code === 0) return { label: 'Passed', tone: 'success' };
+  if (['failed', 'error', 'timed_out'].includes(status) || (typeof check.exit_code === 'number' && check.exit_code !== 0)) return { label: 'Failed', tone: 'danger' };
   // Do not turn an unknown provider result or a missing exit code into success.
   return { label: successfulStatuses.includes(status) ? 'Outcome incomplete' : readableLabel(check.status), tone: 'neutral' };
 }

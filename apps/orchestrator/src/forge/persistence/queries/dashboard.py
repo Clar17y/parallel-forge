@@ -37,8 +37,8 @@ from forge.persistence.models import (
     RunEvent,
     SubscriptionPlanGate,
     Task,
-    ValidationResult,
 )
+from forge.persistence.queries.local_checks import CHECK_FIELDS, local_checks
 from forge.persistence.queries.recovery import startup_intervention_hold
 from forge.persistence.queries.subscription_recovery_attention import current_attention
 from forge.persistence.repositories.events import _event_from_record
@@ -86,23 +86,7 @@ class DashboardQuery:
             validation = await _latest_evidence(session, run_id, "validation")
             review = await _latest_evidence(session, run_id, "review")
             acceptance = await _latest_evidence(session, run_id, "acceptance")
-            checks = (
-                list(
-                    await session.scalars(
-                        select(ValidationResult)
-                        .where(
-                            ValidationResult.run_id == run_id,
-                            ValidationResult.step_id == validation.step_id,
-                        )
-                        .order_by(ValidationResult.check_name)
-                        .limit(101)
-                    )
-                )
-                if validation is not None
-                else []
-            )
-            if len(checks) > 100:
-                raise PersistenceDataError("validation projection exceeds bound")
+            checks, _ = await local_checks(session, run, policy, 0, 100, newest_first=True)
             findings = (
                 list(
                     await session.scalars(
@@ -314,17 +298,7 @@ class DashboardQuery:
                 else None,
                 "remote_observation": _remote_observation(pr),
                 "checks": [
-                    {
-                        "id": check.id,
-                        "name": check.check_name,
-                        "command_name": check.command_name,
-                        "command_version": check.command_version,
-                        "status": check.status,
-                        "exit_code": check.exit_code,
-                        "completed_at": check.completed_at,
-                        "output_artifact_digest": await _digest(session, check.output_artifact_id),
-                        "head_sha": validation.head_sha if validation else None,
-                    }
+                    {key: check[key] for key in CHECK_FIELDS}
                     for check in checks
                 ],
                 "review": {

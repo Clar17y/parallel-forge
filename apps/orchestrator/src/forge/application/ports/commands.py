@@ -61,8 +61,10 @@ class CommandRepository(Protocol):
         self, command_id: UUID, *, worker_id: str, lease_seconds: float
     ) -> CommandEnvelope: ...
 
-    async def assert_current_lease(self, command: CommandEnvelope) -> CommandEnvelope:
-        """Fence a delivery before it makes durable effects in its UoW."""
+    async def assert_current_lease(
+        self, command: CommandEnvelope, *, wait: bool = True
+    ) -> CommandEnvelope:
+        """Fence a delivery; nonblocking contention requires recovery, not assumed lease loss."""
 
     async def has_pending_current_control_stop(
         self, *, run_id: UUID, expected_run_version: int

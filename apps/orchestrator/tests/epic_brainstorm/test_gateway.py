@@ -1223,6 +1223,8 @@ async def test_muse_authoring_terminal_settlement_and_diagnostics(
                 assert owner is not None
                 if "_cancel_" in case:
                     asyncio.get_running_loop().call_later(0.02, owner.cancel)
+                elif "_deadline_" in case:
+                    deadline.reschedule(asyncio.get_running_loop().time() + 0.02)
                 await asyncio.Event().wait()
 
         lifecycle.diagnostic = cancel_diagnostic  # type: ignore[method-assign]
@@ -1243,7 +1245,7 @@ async def test_muse_authoring_terminal_settlement_and_diagnostics(
         )
 
     if "diagnostic_deadline" in case:
-        async with asyncio.timeout(0.02) as deadline:
+        async with asyncio.timeout(None) as deadline:
             result = await invoke()
         assert deadline.expired()
     else:
@@ -2234,6 +2236,8 @@ async def test_authoring_quota_evidence_survives_stop_and_diagnostic_cancel(
                 assert owner is not None
                 if stop_case == "diagnostic_cancel":
                     asyncio.get_running_loop().call_later(0.02, owner.cancel)
+                elif stop_case == "diagnostic_deadline":
+                    deadline.reschedule(asyncio.get_running_loop().time() + 0.02)
                 await asyncio.Event().wait()
 
         lifecycle.diagnostic = cancel_diagnostic  # type: ignore[method-assign]
@@ -2247,7 +2251,7 @@ async def test_authoring_quota_evidence_survives_stop_and_diagnostic_cancel(
         )
 
     if stop_case == "diagnostic_deadline":
-        async with asyncio.timeout(0.02) as deadline:
+        async with asyncio.timeout(None) as deadline:
             result = await invoke()
         assert deadline.expired()
     else:

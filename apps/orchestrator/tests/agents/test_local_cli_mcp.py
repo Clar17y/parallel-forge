@@ -489,3 +489,74 @@ async def test_cancelled_close_stops_the_checks_it_was_waiting_for():
     with pytest.raises(asyncio.CancelledError):
         await closing
     await asyncio.wait_for(cancelled.wait(), 1)
+
+
+@pytest.mark.parametrize("during_close", [False, True])
+@pytest.mark.parametrize("uncancel", [False, True])
+async def test_explicit_check_cancellation_settles_without_the_normal_finish_wait(during_close, uncancel):
+    import asyncio
+
+    cancelled, settled = asyncio.Event(), asyncio.Event()
+
+    async def broker(call):
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            if uncancel:
+                asyncio.current_task().uncancel()
+            await asyncio.sleep(0.02)
+            settled.set()
+            raise
+
+    mcp = LocalCliMcp(_named_check_request(), broker, named_check_wait_seconds=0.01)
+    await mcp.start()
+    await initialize(mcp)
+    await mcp._handle(_check_call(1))
+    closing = asyncio.create_task(mcp.close()) if during_close else None
+    try:
+        mcp.cancel_checks()
+        await asyncio.wait_for(cancelled.wait(), 1)
+        mcp.cancel_checks()  # must not cancel the broker's settlement a second time
+        if closing is None:
+            closing = asyncio.create_task(mcp.close())
+        await asyncio.wait_for(asyncio.shield(closing), 1)
+        assert settled.is_set() and not mcp._inflight
+    finally:
+        if closing is None:
+            closing = asyncio.create_task(mcp.close())
+        if not closing.done():
+            closing.cancel()
+        await asyncio.gather(closing, return_exceptions=True)
+
+
+async def test_cancellation_during_close_bounds_an_unsettled_check():
+    import asyncio
+
+    release = asyncio.Event()
+
+    async def broker(call):
+        while not release.is_set():
+            try:
+                await asyncio.sleep(0.01)
+            except asyncio.CancelledError:
+                continue
+        return {"status": "cancelled"}
+
+    mcp = LocalCliMcp(
+        _named_check_request(), broker, named_check_wait_seconds=0.01, settle_seconds=0.03
+    )
+    await mcp.start()
+    await initialize(mcp)
+    await mcp._handle(_check_call(1))
+    closing = asyncio.create_task(mcp.close())
+    await asyncio.sleep(0)
+    mcp.cancel_checks()
+    try:
+        with pytest.raises(TimeoutError, match="did not settle"):
+            await asyncio.wait_for(asyncio.shield(closing), 1)
+        assert mcp._inflight  # retain ownership; timeout is not proof of cessation
+    finally:
+        release.set()
+        await asyncio.gather(*mcp._inflight.values(), return_exceptions=True)
+        await asyncio.gather(closing, return_exceptions=True)

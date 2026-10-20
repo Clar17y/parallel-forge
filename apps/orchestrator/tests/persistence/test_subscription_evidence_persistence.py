@@ -8,7 +8,7 @@ from forge.application.ports.evidence import CanonicalEvidenceArtifact, Validati
 from forge.application.ports.executions import ExecutionStatus
 from forge.artifacts.filesystem import FilesystemArtifactStore
 from forge.domain.evidence import ValidationEvidenceManifest, encode_evidence_manifest
-from forge.persistence.models import EvidenceSet, Step
+from forge.persistence.models import EvidenceSet, Run, Step
 from forge.persistence.unit_of_work import PostgresUnitOfWork
 from sqlalchemy import text
 
@@ -84,6 +84,9 @@ async def test_migration_preserves_existing_v1_evidence(
 
     store = FilesystemArtifactStore(tmp_path)
     async with PostgresUnitOfWork(session_factory) as work:
+        # This fixture represents v1 data, whose required token budget default was zero.
+        row = await work.session.get(Run, persisted_run.id)
+        row.token_budget = 0
         step_id = uuid4()
         await work.controller_steps.admit(persisted_run.id, step_id, "validate", 1)
         manifest = ValidationEvidenceManifest(

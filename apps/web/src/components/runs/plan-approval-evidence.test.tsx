@@ -112,6 +112,14 @@ describe('PlanApprovalEvidence', () => {
     expect(screen.queryByText(/unlimited/i)).toBeNull();
   });
 
+  test('displays an explicitly unlimited token budget without changing other limits', () => {
+    const unlimited = { ...legacyEvidence, token_budget: null };
+    render(<PlanApprovalEvidence evidence={unlimited} plan={plan} rawEvidence={JSON.stringify(unlimited)} />);
+    expect(screen.getByText('Unlimited')).toBeInTheDocument();
+    expect(screen.getByText('400 minor currency units')).toBeInTheDocument();
+    expect(screen.getByText('900 seconds')).toBeInTheDocument();
+  });
+
   test('legacy plan without owned_paths does not imply a scope guarantee', () => {
     const legacyPlan: Plan = {
       ...plan,

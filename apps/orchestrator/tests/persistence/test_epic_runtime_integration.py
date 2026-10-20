@@ -8,11 +8,15 @@ from uuid import uuid4
 import pytest
 import pytest_asyncio
 from alembic import command
+from alembic.script import ScriptDirectory
 from forge.domain.epic_brief import BriefContent
+from forge.domain.run import RunSnapshot
 from forge.persistence.database import create_engine, create_session_factory
+from forge.persistence.models import Project, ProjectPolicyVersion, Run, Task
 from forge.persistence.models.epic_brainstorm import BrainstormConversation
 from forge.persistence.unit_of_work import PostgresUnitOfWork
 from sqlalchemy import inspect, text
+from test_epic_brief_migration import _seed_task
 
 
 @pytest.fixture
@@ -28,6 +32,27 @@ async def session_factory(migrated_database_url):
         yield create_session_factory(engine)
     finally:
         await engine.dispose()
+
+
+@pytest_asyncio.fixture
+async def persisted_run(session_factory, migrated_database_url):
+    """Seed the actual old schema, including its required zero budget default."""
+    task_id, _ = await _seed_task(migrated_database_url)
+    async with session_factory() as session, session.begin():
+        task = await session.get(Task, task_id)
+        project = await session.get(Project, task.project_id)
+        session.add(ProjectPolicyVersion(
+            project_id=project.id, version=1, policy_digest="a" * 64,
+            document_schema_version=1, document={},
+        ))
+        await session.flush()
+        project.current_policy_version = 1
+        run = RunSnapshot(id=uuid4(), project_id=project.id, task_id=task.id, policy_version=1)
+        session.add(Run(
+            id=run.id, project_id=run.project_id, task_id=run.task_id, policy_version=1,
+            state="CREATED", version=0, token_budget=0,
+        ))
+    return run
 
 
 @pytest.mark.integration
@@ -131,5 +156,5 @@ async def test_brainstorm_downgrade_retains_concurrently_committed_conversation(
         assert await session.get(BrainstormConversation, conversation_id) is not None
         # PostgreSQL rolls the complete failed downgrade command back to head.
         assert (
-            await session.scalar(text("SELECT version_num FROM alembic_version")) == "20261010_0038"
+            await session.scalar(text("SELECT version_num FROM alembic_version")) == ScriptDirectory.from_config(alembic_config_factory(migrated_database_url)).get_current_head()
         )

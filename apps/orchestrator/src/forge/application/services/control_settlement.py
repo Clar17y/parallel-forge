@@ -14,12 +14,20 @@ from forge.domain.run import RunSnapshot, RunState
 
 
 async def controlled_stop(
-    work: UnitOfWork, command: CommandEnvelope, admitted_run: RunSnapshot
+    work: UnitOfWork, command: CommandEnvelope, admitted_run: RunSnapshot, *, wait: bool = True
 ) -> bool:
-    """Return whether exactly verified control authority stopped this delivery."""
+    """Return whether exactly verified control authority stopped this delivery.
+
+    Callers already holding a run lock may yield on command-lock contention.
+    A busy nonblocking fence requires recovery; it never proves a control stop.
+    """
 
     try:
-        fenced = await work.commands.assert_current_lease(command)
+        fenced = (
+            await work.commands.assert_current_lease(command)
+            if wait
+            else await work.commands.assert_current_lease(command, wait=False)
+        )
     except CommandLeaseLost:
         return False
     if not _same_normal_delivery(command, fenced):

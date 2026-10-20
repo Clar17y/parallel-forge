@@ -66,13 +66,14 @@ async def blobs_for(case, rows):
     return blobs
 
 
-async def upgrade_legacy_case(case, session_factory, database_url, config):
+async def restart_retained_legacy_case(case, session_factory, database_url, config):
     assert re.fullmatch(r"forge_test_[0-9a-f]{32}", make_url(database_url).database or "")
     await case.handlers.aclose()
-    # This exercises the retained legacy service under the final v0.1 schema;
-    # it does not claim execution of the historical v0.1 binary.
-    await asyncio.to_thread(command.downgrade, config, LEGACY_REVISION)
-    await upgrade_existing_legacy_case(case, session_factory, database_url, config)
+    # Current legacy services create real current usage admissions. A downgrade
+    # would discard them; historical_v01 owns the actual old-schema upgrade proof.
+    async with session_factory() as session:
+        case.retained_schema = await session.scalar(text("SELECT version_num FROM alembic_version"))
+    await _preserve_through_head_upgrades(case, session_factory, config)
 
 
 async def upgrade_existing_legacy_case(case, session_factory, database_url, config):
@@ -82,6 +83,11 @@ async def upgrade_existing_legacy_case(case, session_factory, database_url, conf
         assert (
             await session.scalar(text("SELECT version_num FROM alembic_version")) == LEGACY_REVISION
         )
+    case.retained_schema = LEGACY_REVISION
+    await _preserve_through_head_upgrades(case, session_factory, config)
+
+
+async def _preserve_through_head_upgrades(case, session_factory, config):
     frozen = await snapshot_rows(session_factory)
     original_blobs = await blobs_for(case, frozen)
     for _ in range(2):
@@ -107,7 +113,7 @@ async def retain_legacy_manifest(
     value = {
         "schema_version": 1,
         "scenario": scenario,
-        "legacy_schema": LEGACY_REVISION,
+        "retained_schema": case.retained_schema,
         "proof_limits": [
             (
                 "pinned historical v0.1 source in a separate interpreter; current test driver"
