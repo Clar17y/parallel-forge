@@ -26,7 +26,9 @@ def test_scoped_plan_retains_legacy_representation():
     original = legacy.model_dump_json()
     assert type(decode_plan_output(original)) is PlanOutput
     assert decode_plan_output(original).model_dump_json() == original
-    scoped = ScopedPlanOutput(**legacy.model_dump(), owned_paths=("apps/api", "tests/api"))
+    scoped = ScopedPlanOutput(
+        material_questions=(), **legacy.model_dump(), owned_paths=("apps/api", "tests/api")
+    )
     assert decode_plan_output(scoped.model_dump_json()) == scoped
     assert json.loads(scoped.model_dump_json())["owned_paths"] == ["apps/api", "tests/api"]
     assert "owned_paths" not in PlanOutput.model_json_schema()["properties"]
@@ -48,13 +50,18 @@ def test_scoped_plan_rejects_invalid_paths(paths):
     from forge.domain.plan import ScopedPlanOutput
 
     with pytest.raises(ValueError):
-        ScopedPlanOutput(**legacy_plan().model_dump(), owned_paths=paths)
+        ScopedPlanOutput(material_questions=(), **legacy_plan().model_dump(), owned_paths=paths)
 
 
 def test_explicit_empty_scope_grants_no_writable_paths():
     from forge.domain.plan import ScopedPlanOutput
 
-    assert ScopedPlanOutput(**legacy_plan().model_dump(), owned_paths=()).owned_paths == ()
+    assert (
+        ScopedPlanOutput(
+            material_questions=(), **legacy_plan().model_dump(), owned_paths=()
+        ).owned_paths
+        == ()
+    )
 
 
 @pytest.mark.parametrize("name", ["unit tests", "unit.test", "unit\n", "unit;exit"])
@@ -64,4 +71,4 @@ def test_scoped_checks_are_valid_subscription_command_identifiers(name):
     values = dict(legacy_plan().model_dump(), required_checks=(name,))
     assert PlanOutput(**values).required_checks == (name,)
     with pytest.raises(ValueError):
-        ScopedPlanOutput(**values, owned_paths=("src",))
+        ScopedPlanOutput(material_questions=(), **values, owned_paths=("src",))

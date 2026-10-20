@@ -47,6 +47,7 @@ class ParallelCatalogScript(CounterScript):
     async def execute(self, request, broker):
         if request.run_state is RunState.PLANNING:
             return ScopedPlanOutput(
+                material_questions=(),
                 summary="Update both independent catalog values",
                 assumptions=(),
                 affected_components=("alpha/value.txt", "beta/value.txt"),

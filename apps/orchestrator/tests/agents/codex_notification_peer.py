@@ -309,6 +309,7 @@ else:
                 "decision": {
                     "kind": "plan",
                     "plan": {
+                        "material_questions": [],
                         "summary": "One bounded change informed by the controlled read",
                         "assumptions": [],
                         "affected_components": ["apps"],

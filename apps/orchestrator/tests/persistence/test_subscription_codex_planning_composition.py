@@ -26,6 +26,7 @@ from forge.domain.subscription import (
     UnknownTelemetryPolicy,
 )
 from forge.domain.tool import ToolName
+from forge.domain.workflow import WorkflowPreferences
 from forge.evaluations.subscription_fixtures import get_acceptance_command_specs
 from forge.persistence.models.subscription import SubscriptionClientLaunch
 from forge.persistence.models.subscription_quota import SubscriptionQuotaObservation
@@ -64,7 +65,7 @@ async def test_concrete_codex_registration_uses_bound_read_and_preserves_human_p
 
     monkeypatch.setattr(planning_fixture, "_seed_project_task", seed_with_named_check)
     factory, original, command = await planning_fixture.planning_start_case(
-        session_factory, tmp_path
+        session_factory, tmp_path, workflow=WorkflowPreferences(review_plan_first=True)
     )
     (tmp_path / "repo/README.md").write_text(
         "Plan input from the registered repository", encoding="utf-8"

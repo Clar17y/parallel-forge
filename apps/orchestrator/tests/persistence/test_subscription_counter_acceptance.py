@@ -140,6 +140,7 @@ class CounterScript:
     async def execute(self, request, broker):
         if request.run_state is RunState.PLANNING:
             return ScopedPlanOutput(
+                material_questions=(),
                 summary="Correct counter increment and cover -1",
                 assumptions=(),
                 affected_components=("src/counter.py", "tests/test_counter.py"),

@@ -49,6 +49,7 @@ class TrivialScript(CounterScript):
         assert request.task.route.effective == PRIMARY
         if request.run_state is RunState.PLANNING:
             return ScopedPlanOutput(
+                material_questions=(),
                 summary="Correct one exact documentation typo",
                 assumptions=(),
                 affected_components=(DOC,),

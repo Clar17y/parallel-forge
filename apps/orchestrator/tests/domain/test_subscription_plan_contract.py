@@ -29,6 +29,7 @@ def _sample_contract(owned_paths=("src",)) -> LogicalTaskContract:
 def test_approved_implementation_contract_scoped_plan():
     original = _sample_contract(owned_paths=("src",))
     plan = ScopedPlanOutput(
+        material_questions=(),
         summary="Plan summary",
         assumptions=("assume 1",),
         affected_components=("comp 1",),

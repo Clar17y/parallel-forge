@@ -11,16 +11,20 @@ The loaded runtime inputs are recorded in `source-final-before.json` under
 changes are excluded from that identity and from the candidate.
 
 The final production aggregate is
-`255564fa93ca8c4cee593a5083ce49faa8465b5f8ddc59afd3ab7386fa97cfc4`,
-recorded in `source-simplify-final.json`. The production differences from the
+`8955067c58f507ceba2618837ec82662fcb5133982d3952ae297c36328106c4a`,
+recorded in `source-p1-final.json`. The production differences from the
 live trial are preference metadata excluded from lifecycle snapshot equality
 in `domain/run.py`, and shared plan validation returning the already validated
-plan to approval/continuation callers instead of reading its artifact again.
+plan to approval/continuation callers instead of reading its artifact again,
+and requiring explicit material-question status in fresh planner decisions
+while keeping retained artifact decoding and digest inputs compatible.
 The live trial made no preference edits, so its evidence is reused alongside
 the PostgreSQL/controller concurrent-edit regression. Artifact-read tests cover
 legacy, subscription and unanswered-question plans; affected approval and
 continuation checks cover the shared validation change. These final deltas were
 not repeated with a live provider or Docker race.
+The live UI trial predates the strict producer-field requirement; that boundary
+is covered by schema/protocol and supervised scripted-client checks below.
 
 ## Focused checks
 
@@ -40,6 +44,9 @@ unless another location is specified. Counts overlap; they are not a total.
 | Preference edit during validation; stale preference CAS; version, pause, cancel and acceptance-evidence fences | 6 passed | `preference-identity-final.txt` |
 | Validated plan reuse with one artifact read each: legacy, subscription and unanswered questions | 3 passed | `.llm-output/integration-checks/simplify-focused.txt` |
 | Post-simplify plan approval, subscription plan gate and ordinary development | 77 passed | `.llm-output/integration-checks/simplify-affected.txt` |
+| P1 follow-up: protocol, legacy artifact identities and client notification paths | 174 passed | `.llm-output/integration-checks/p1-protocol-domain-clients.txt` |
+| P1 follow-up: PostgreSQL plan gates, ordinary development and validated-plan reuse | 53 passed | `.llm-output/integration-checks/p1-affected-postgres.txt` |
+| Concrete scripted client planning with explicit plan-review preference; default planning start | 1 + 1 passed | `.llm-output/integration-checks/p1-client-planning.txt`, `p1-default-planning.txt` |
 | Epic profile freezing and replay, explicitly asserting unchanged child workflow | 1 passed | `.llm-output/integration-checks/epic-compatibility.txt` |
 | Ordinary primary local-candidate guidance, planning and closed-phase tool boundaries | 11 passed | `.llm-output/integration-checks/local-finalization-suite.txt` |
 | Web preference editor, creation, plan and status components | 153 passed | `.llm-output/integration-checks/ui-worker-command-evidence.json` |
@@ -60,6 +67,14 @@ validated-plan result was unavailable (`simplify-fail-first.txt`), then passed.
 An additional assertion initially assumed a different legacy JSON serialization;
 it now compares the returned plan against the actual frozen artifact bytes.
 That measurement failure is retained in `simplify-legacy-measurement.txt`.
+The P1 regression first demonstrated that a fresh response omitting
+`material_questions` was accepted (`p1-material-status-fail-first.txt`). Missing,
+null, malformed, blank and duplicate status now reject; explicit empty/nonempty
+status and the required provider schema pass. Retained scoped artifacts may
+still omit the field without changing their digest. The concrete client test's
+old implicit human-gate assumption is retained in
+`p1-client-planning-before-opt-in.txt`; it now explicitly opts into plan review.
+Changed Python lint and plan-contract typing passed (`p1-ruff.txt`, `p1-mypy.txt`).
 
 ## Lifecycle evidence
 
