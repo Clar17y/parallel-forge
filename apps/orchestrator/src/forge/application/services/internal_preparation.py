@@ -130,8 +130,7 @@ async def continue_pending_plan(
         is not None
     ):
         return run
-    evidence = await validator.validate(work, run.id)
-    plan = await validator.load_plan(work, run.id)
+    evidence, plan = await validator.validate_with_plan(work, run.id)
     if material_questions(plan):
         return run
     if run.pending_evidence_digest is None:

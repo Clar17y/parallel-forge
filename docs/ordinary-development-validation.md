@@ -11,13 +11,16 @@ The loaded runtime inputs are recorded in `source-final-before.json` under
 changes are excluded from that identity and from the candidate.
 
 The final production aggregate is
-`87e4fdfd6c35026b6cc422a6bc6cce06afabaf174362076175ec6d4c3ace08dc`,
-recorded in `source-final-after.json`. Its only production difference from the
-live trial is `domain/run.py`: preference metadata is excluded from lifecycle
-snapshot equality. The live trial made no preference edits, so its evidence is
-reused for that unchanged path. The concurrent-edit path is proved separately
-by the PostgreSQL/controller regression below; it was not repeated with a live
-provider or Docker race.
+`255564fa93ca8c4cee593a5083ce49faa8465b5f8ddc59afd3ab7386fa97cfc4`,
+recorded in `source-simplify-final.json`. The production differences from the
+live trial are preference metadata excluded from lifecycle snapshot equality
+in `domain/run.py`, and shared plan validation returning the already validated
+plan to approval/continuation callers instead of reading its artifact again.
+The live trial made no preference edits, so its evidence is reused alongside
+the PostgreSQL/controller concurrent-edit regression. Artifact-read tests cover
+legacy, subscription and unanswered-question plans; affected approval and
+continuation checks cover the shared validation change. These final deltas were
+not repeated with a live provider or Docker race.
 
 ## Focused checks
 
@@ -35,6 +38,8 @@ unless another location is specified. Counts overlap; they are not a total.
 | Preparation, resume controls/boundaries, usage checkpoints, request builder, plan-gate service | 45 passed | `affected-suites.txt` |
 | Delegation disabled/requested | 2 passed | `delegation-final.txt` |
 | Preference edit during validation; stale preference CAS; version, pause, cancel and acceptance-evidence fences | 6 passed | `preference-identity-final.txt` |
+| Validated plan reuse with one artifact read each: legacy, subscription and unanswered questions | 3 passed | `.llm-output/integration-checks/simplify-focused.txt` |
+| Post-simplify plan approval, subscription plan gate and ordinary development | 77 passed | `.llm-output/integration-checks/simplify-affected.txt` |
 | Epic profile freezing and replay, explicitly asserting unchanged child workflow | 1 passed | `.llm-output/integration-checks/epic-compatibility.txt` |
 | Ordinary primary local-candidate guidance, planning and closed-phase tool boundaries | 11 passed | `.llm-output/integration-checks/local-finalization-suite.txt` |
 | Web preference editor, creation, plan and status components | 153 passed | `.llm-output/integration-checks/ui-worker-command-evidence.json` |
@@ -50,6 +55,11 @@ Fail-first outputs are retained, including the combined lifecycle failures,
 fixtures pass in `ordinary-final-2.txt`. Failed evidence has not been erased.
 The final identity regression first produced two expected failures and four
 passing control cases in `preference-identity-fail-first.txt`, then all six passed.
+The plan-reuse regression first failed all three cases because the shared
+validated-plan result was unavailable (`simplify-fail-first.txt`), then passed.
+An additional assertion initially assumed a different legacy JSON serialization;
+it now compares the returned plan against the actual frozen artifact bytes.
+That measurement failure is retained in `simplify-legacy-measurement.txt`.
 
 ## Lifecycle evidence
 
@@ -141,7 +151,14 @@ coupled lifecycle boundaries. Its six substantive findings were repaired as one
 batch, followed by primary inspection of the repair delta and affected tests.
 The simplification pass reused typed workflow values, durable provenance and
 continuation helpers, existing delivery comparison, and generated request types.
-It adds no second orchestration engine. Jev preparation was partial; it is
+The owner's final requested simplify pass found repeated artifact reads in
+approval and continuation. Those callers now use the plan returned by the same
+validation operation; the redundant loader was removed, preserving all authority
+checks and the evidence-only validation interface. Typing for the four changed
+source files, lint and formatting passed, followed by 77 affected tests. No other
+justified simplification was found across reuse,
+quality and efficiency. It adds no second orchestration engine. Jev preparation
+was partial; it is
 advisory and does not establish passing tests or approval to publish. The final
 saved diff and its Jev binding are retained in `.llm-output/candidate-final.diff`
 and `.llm-output/jev-review-final.json`.

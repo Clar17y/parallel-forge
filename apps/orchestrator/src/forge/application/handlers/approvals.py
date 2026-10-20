@@ -61,8 +61,7 @@ class ApprovePlanHandler:
         ):
             raise ApprovalCommandValidationError("approval evidence is stale")
         try:
-            evidence = await self._evidence_validator.validate(work, run.id)
-            plan = await self._evidence_validator.load_plan(work, run.id)
+            evidence, plan = await self._evidence_validator.validate_with_plan(work, run.id)
             if material_questions(plan):
                 raise ApprovalCommandValidationError(
                     "answer material questions through plan revision before approval"

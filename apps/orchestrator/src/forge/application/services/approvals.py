@@ -272,8 +272,7 @@ class ApprovalAuthorizationService:
                 raise AuthorizationError("invalid or expired session")
             if gate == "plan" and self._plan_evidence_validator is not None:
                 try:
-                    await self._plan_evidence_validator.validate(cast(UnitOfWork, work), run_id)
-                    plan = await self._plan_evidence_validator.load_plan(
+                    _, plan = await self._plan_evidence_validator.validate_with_plan(
                         cast(UnitOfWork, work), run_id
                     )
                     if material_questions(plan):

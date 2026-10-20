@@ -53,6 +53,13 @@ class PlanEvidenceValidator:
         self._data_root = data_root
 
     async def validate(self, work: UnitOfWork, run_id: UUID) -> PlanApprovalEvidence:
+        evidence, _ = await self.validate_with_plan(work, run_id)
+        return evidence
+
+    async def validate_with_plan(
+        self, work: UnitOfWork, run_id: UUID
+    ) -> tuple[PlanApprovalEvidence, PlanOutput]:
+        """Return the evidence and exact plan after all authority checks pass."""
         try:
             run = await work.runs.get_for_update(run_id)
             if (
@@ -131,7 +138,7 @@ class PlanEvidenceValidator:
                 ):
                     raise PlanEvidenceValidationError
                 await validate_subscription_plan_fields(work, run, evidence, plan)
-                return evidence
+                return evidence, plan
             execution = await work.executions.get_outcome(run.id, "plan", evidence.plan_attempt)
             if (
                 execution is None
@@ -187,27 +194,10 @@ class PlanEvidenceValidator:
             )
             if canonical_digest(expected) != canonical_digest(evidence):
                 raise PlanEvidenceValidationError
-            return evidence
+            return evidence, plan
         except PlanEvidenceValidationError:
             raise
         except Exception as error:  # persisted/model/repository inputs are untrusted
-            raise PlanEvidenceValidationError from error
-
-    async def load_plan(self, work: UnitOfWork, run_id: UUID) -> PlanOutput:
-        """Load the exact plan bound to the pending gate; call ``validate`` first."""
-        try:
-            run = await work.runs.get_for_update(run_id)
-            if run.pending_evidence_digest is None:
-                raise PlanEvidenceValidationError
-            evidence_bytes = await self._load_artifact(work, run, run.pending_evidence_digest)
-            evidence = decode_plan_approval_evidence(evidence_bytes)
-            if canonical_digest(evidence) != run.pending_evidence_digest:
-                raise PlanEvidenceValidationError
-            plan_bytes = await self._load_artifact(work, run, evidence.plan_digest)
-            return decode_plan_output(plan_bytes)
-        except PlanEvidenceValidationError:
-            raise
-        except Exception as error:
             raise PlanEvidenceValidationError from error
 
     async def current_source(self, work: UnitOfWork, run_id: UUID) -> CurrentPlanSource:

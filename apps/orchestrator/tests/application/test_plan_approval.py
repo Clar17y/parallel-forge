@@ -288,10 +288,11 @@ class _FakeValidator:
             raise PlanEvidenceValidationError("source repository drifted")
         return object()
 
-    async def load_plan(self, work: Any, run_id: UUID):
+    async def validate_with_plan(self, work: Any, run_id: UUID):
         from forge.domain.plan import PlanOutput
 
-        return PlanOutput(
+        evidence = await self.validate(work, run_id)
+        return evidence, PlanOutput(
             summary="Plan",
             assumptions=(),
             affected_components=(),
@@ -749,9 +750,9 @@ async def test_material_questions_cannot_be_consumed_as_plan_approval() -> None:
     work = _FakeUnitOfWork(run, approval)
 
     class QuestionValidator(_FakeValidator):
-        async def load_plan(self, work, run_id):
-            base = await super().load_plan(work, run_id)
-            return ScopedPlanOutput(
+        async def validate_with_plan(self, work, run_id):
+            evidence, base = await super().validate_with_plan(work, run_id)
+            return evidence, ScopedPlanOutput(
                 **base.model_dump(),
                 owned_paths=("apps",),
                 material_questions=("Retention period?",),
