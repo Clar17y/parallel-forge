@@ -1098,6 +1098,8 @@ async def test_profile_is_frozen_for_epic_run_and_replay(session_factory, bridge
         assert envelope.profile_id == profile.profile_id
         assert envelope.profile_version == 1
         assert envelope.safety_policy_version == 1
+        # New ordinary-task defaults must not migrate the epic child workflow.
+        assert (await work.runs.get(attempt.run_id)).workflow is None
         await work.commit()
     assert (
         await service.launch(

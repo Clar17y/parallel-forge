@@ -18,8 +18,10 @@ from forge.api.schemas.runs import (
     RunCommandResponse,
     RunCreateRequest,
     RunResponse,
+    RunWorkflowUpdateRequest,
 )
 from forge.application.services.auth import AuthenticatedActor
+from forge.application.services.runs import WORKFLOW_OMITTED
 
 
 def router_for() -> APIRouter:
@@ -40,8 +42,7 @@ def router_for() -> APIRouter:
                 project_id=project_id, task_id=task_id
             )
             return [
-                RunResponse.from_snapshot(record, selections.get(record.id))
-                for record in records
+                RunResponse.from_snapshot(record, selections.get(record.id)) for record in records
             ]
         except Exception as error:  # noqa: BLE001 - translate service-boundary failures
             raise translate_error(error) from None
@@ -61,6 +62,36 @@ def router_for() -> APIRouter:
                 task_id=body.task_id,
                 profile_id=body.profile_id,
                 profile_version=body.profile_version,
+                workflow=(body.workflow.to_domain() if body.workflow is not None else None)
+                if "workflow" in body.model_fields_set
+                else WORKFLOW_OMITTED,
+            )
+            return RunResponse.from_snapshot(run, await _selection(service, run.id))
+        except Exception as error:  # noqa: BLE001 - translate service-boundary failures
+            raise translate_error(error) from None
+
+    @router.put("/runs/{run_id}/workflow", response_model=RunResponse)
+    async def update_run_workflow(
+        run_id: UUID,
+        body: RunWorkflowUpdateRequest,
+        request: Request,
+        idempotency_key: str = Depends(require_idempotency_key),
+        actor: AuthenticatedActor = Depends(require_operator_mutation),  # noqa: B008
+    ) -> RunResponse:
+        service = _service(request, "run_service")
+        try:
+            run = await service.update_workflow(
+                actor=actor,
+                idempotency_key=idempotency_key,
+                run_id=run_id,
+                expected_run_version=body.expected_run_version,
+                expected_workflow=(
+                    body.expected_workflow.to_domain()
+                    if body.expected_workflow is not None
+                    else None
+                ),
+                workflow=body.workflow.to_domain(),
+                note=body.note,
             )
             return RunResponse.from_snapshot(run, await _selection(service, run.id))
         except Exception as error:  # noqa: BLE001 - translate service-boundary failures

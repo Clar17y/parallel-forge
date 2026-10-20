@@ -143,3 +143,4 @@ class Run(Base, TimestampMixin):
     secret_id: Mapped[str | None] = mapped_column(String(512))
     pending_gate: Mapped[str | None] = mapped_column(String(16))
     pending_evidence_digest: Mapped[str | None] = mapped_column(String(64))
+    workflow: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)

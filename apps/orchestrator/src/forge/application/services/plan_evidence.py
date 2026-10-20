@@ -19,7 +19,7 @@ from forge.domain.approval import (
     canonical_digest,
     decode_plan_approval_evidence,
 )
-from forge.domain.plan import PlanOutput, ScopedPlanOutput, decode_plan_output
+from forge.domain.plan import PlanOutput, ScopedPlanOutput, decode_plan_output, plan_digest_bytes
 from forge.domain.policy import ProjectPolicy
 from forge.domain.run import RunSnapshot, RunState
 from forge.persistence.repositories.tasks import compute_task_digest
@@ -193,6 +193,23 @@ class PlanEvidenceValidator:
         except Exception as error:  # persisted/model/repository inputs are untrusted
             raise PlanEvidenceValidationError from error
 
+    async def load_plan(self, work: UnitOfWork, run_id: UUID) -> PlanOutput:
+        """Load the exact plan bound to the pending gate; call ``validate`` first."""
+        try:
+            run = await work.runs.get_for_update(run_id)
+            if run.pending_evidence_digest is None:
+                raise PlanEvidenceValidationError
+            evidence_bytes = await self._load_artifact(work, run, run.pending_evidence_digest)
+            evidence = decode_plan_approval_evidence(evidence_bytes)
+            if canonical_digest(evidence) != run.pending_evidence_digest:
+                raise PlanEvidenceValidationError
+            plan_bytes = await self._load_artifact(work, run, evidence.plan_digest)
+            return decode_plan_output(plan_bytes)
+        except PlanEvidenceValidationError:
+            raise
+        except Exception as error:
+            raise PlanEvidenceValidationError from error
+
     async def current_source(self, work: UnitOfWork, run_id: UUID) -> CurrentPlanSource:
         """Read current immutable policy and inspected base for a fresh semantic attempt."""
         try:
@@ -284,7 +301,7 @@ async def build_subscription_plan_evidence(
         task_version=1,
         plan_attempt=producer.plan_attempt,
         task_digest=task_digest,
-        plan_digest=hashlib.sha256(plan.model_dump_json(by_alias=False).encode()).hexdigest(),
+        plan_digest=hashlib.sha256(plan_digest_bytes(plan)).hexdigest(),
         repository=project.github_repository,
         base_ref=run.base_ref,
         base_sha=run.base_sha,

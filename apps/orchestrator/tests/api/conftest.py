@@ -119,6 +119,11 @@ class FakeTaskService:
         return self.task
 
 
+from forge.application.services.runs import WORKFLOW_OMITTED, _WorkflowOmitted
+from forge.domain.workflow import WorkflowPreferences
+from forge.persistence.repositories.runs import ConcurrencyConflict
+
+
 class FakeRunService:
     def __init__(self, run: RunSnapshot) -> None:
         self.run = run
@@ -127,10 +132,35 @@ class FakeRunService:
         self.get_calls: list[UUID] = []
 
     async def create_run(
-        self, *, actor: object, idempotency_key: str, task_id: UUID,
-        profile_id: UUID | None = None, profile_version: int | None = None,
+        self,
+        *,
+        actor: object,
+        idempotency_key: str,
+        task_id: UUID,
+        profile_id: UUID | None = None,
+        profile_version: int | None = None,
+        workflow: WorkflowPreferences | None | _WorkflowOmitted = WORKFLOW_OMITTED,
     ) -> RunSnapshot:
         self.create_calls.append((actor, idempotency_key, task_id))
+        self.run = self.run.with_workflow(
+            WorkflowPreferences.DEFAULT if isinstance(workflow, _WorkflowOmitted) else workflow
+        )
+        return self.run
+
+    async def update_workflow(
+        self,
+        *,
+        actor: object,
+        run_id: UUID,
+        idempotency_key: str,
+        expected_run_version: int,
+        expected_workflow: WorkflowPreferences | None,
+        workflow: WorkflowPreferences,
+        note: str | None = None,
+    ) -> RunSnapshot:
+        if self.run.version != expected_run_version or self.run.workflow != expected_workflow:
+            raise ConcurrencyConflict(run_id, expected_run_version, self.run.version)
+        self.run = self.run.with_workflow(workflow)
         return self.run
 
     async def profile_selection(self, run_id: UUID) -> None:

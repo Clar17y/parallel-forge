@@ -136,6 +136,43 @@ export function describeRunState(projection: Projection): RunDescription {
     }
     return descriptions.REMEDIATING;
   }
+  if (projection.run.state === 'CREATED' && projection.run.workflow && !projection.run.workflow.review_plan_first) {
+    return {
+      title: 'Run created',
+      description: 'Planning is next. Implementation proceeds after internal preparation.',
+      tone: 'neutral',
+    };
+  }
+  if (projection.run.state === 'PLANNING' && projection.run.workflow && !projection.run.workflow.review_plan_first) {
+    return {
+      title: 'Preparing a plan',
+      description: 'Forge is preparing the plan. Implementation proceeds after internal preparation.',
+      tone: 'info',
+    };
+  }
+  if (projection.run.state === 'AWAITING_PLAN_APPROVAL' && projection.run.workflow && !projection.run.workflow.review_plan_first) {
+    return {
+      title: 'Preparation needs owner input',
+      description: 'Review the plan, recorded blockers and available controls before continuing preparation.',
+      tone: 'warning',
+    };
+  }
+  if (projection.plan.authority === 'internal_preparation' &&
+    (projection.run.state === 'PREPARING_WORKTREE' || projection.run.state === 'IMPLEMENTING')) {
+    return {
+      ...descriptions[projection.run.state],
+      description: projection.run.state === 'PREPARING_WORKTREE'
+        ? 'Forge is preparing isolated resources for the internally prepared scope.'
+        : 'The primary may implement and check the internally prepared scope. Task scheduling and provider waits are shown in Tasks.',
+    };
+  }
+  if (projection.run.state === 'AWAITING_PR_APPROVAL' && projection.run.workflow) {
+    return {
+      title: 'Local result ready',
+      description: 'The locally tested candidate is ready for inspection. PR publication is an explicit owner action.',
+      tone: 'success',
+    };
+  }
   return descriptions[projection.run.state] ?? { title: readableLabel(projection.run.state), description: 'Inspect the recorded state and available controls.', tone: 'neutral' };
 }
 
@@ -202,7 +239,7 @@ export function workflowSteps(p: Projection): WorkflowStep[] {
           ? 'Repair in progress'
           : 'Current phase';
   const records: Array<[string, string, boolean, string]> = [
-    ['plan', 'Plan', !!p.plan.approval_id, 'Approval recorded'],
+    ['plan', 'Plan', !!p.plan.approval_id, p.plan.authority === 'internal_preparation' ? 'Internal preparation recorded' : 'Approval recorded'],
     // A commit alone does not prove that implementation or its checks passed.
     ['build', buildLabel, false, candidate ? 'Candidate recorded' : 'No candidate'],
     ['review', 'Review', reviewed, 'Review recorded'],
@@ -222,7 +259,18 @@ export function workflowSteps(p: Projection): WorkflowStep[] {
 export function nextGateMessage(p: Projection): string {
   if (p.recovery_hold) return 'Reconcile the unresolved operation before resuming work or removing resources.';
   if (!p.next_gate) return 'No approval gate is currently reported. Available controls remain authoritative.';
-  const label = { plan: 'Plan approval', pr: 'PR publication approval', merge: 'Merge approval' }[p.next_gate];
+  const isOrdinary = p.run.workflow && !p.run.workflow.review_plan_first;
+  if (isOrdinary && (p.run.state === 'CREATED' || p.run.state === 'PLANNING')) {
+    return 'Internal preparation in progress. Implementation will proceed without a separate plan approval gate.';
+  }
+  if (isOrdinary && p.run.state === 'AWAITING_PLAN_APPROVAL') {
+    return 'Owner input is needed before preparation can continue. Review the plan and recorded blockers; use Request revision to answer material questions.';
+  }
+  const label = {
+    plan: 'Plan approval',
+    pr: isOrdinary ? 'PR publication' : 'PR publication approval',
+    merge: 'Merge approval',
+  }[p.next_gate];
   return p.available_commands.some(command => command.name === `approve_${p.next_gate}`)
     ? `${label}: Review the exact current evidence using the approval control above.`
     : `${label} is not available yet. Review checks and activity; Forge will expose the action when authorised.`;

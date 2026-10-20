@@ -1451,6 +1451,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/{run_id}/workflow": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Update Run Workflow */
+        put: operations["update_run_workflow_api_runs__run_id__workflow_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/subscription-models": {
         parameters: {
             query?: never;
@@ -4753,6 +4770,8 @@ export interface components {
             approval_evidence_digest: string | null;
             /** Approval Id */
             approval_id: string | null;
+            /** Authority */
+            authority?: ("human_approval" | "internal_preparation") | null;
             /** Output Artifact Digest */
             output_artifact_digest: string | null;
         };
@@ -5546,6 +5565,7 @@ export interface components {
              * Format: uuid
              */
             task_id: string;
+            workflow?: components["schemas"]["RunWorkflowPreferences"] | null;
         };
         /** RunListCostSummary */
         RunListCostSummary: {
@@ -5724,6 +5744,7 @@ export interface components {
             task_id: string;
             /** Version */
             version: number;
+            workflow?: components["schemas"]["RunWorkflowPreferences"] | null;
         };
         /**
          * RunState
@@ -5775,6 +5796,41 @@ export interface components {
             tool_call_count: number;
             /** Unknown Price Reason */
             unknown_price_reason: string | null;
+        };
+        /**
+         * RunWorkflowPreferences
+         * @description Frozen per-run workflow preferences.
+         */
+        RunWorkflowPreferences: {
+            /**
+             * Delegation
+             * @default auto
+             * @enum {string}
+             */
+            delegation: "auto" | "disabled" | "requested";
+            /**
+             * Optional Review
+             * @default auto
+             * @enum {string}
+             */
+            optional_review: "auto" | "skip" | "required";
+            /**
+             * Review Plan First
+             * @default false
+             */
+            review_plan_first: boolean;
+        };
+        /**
+         * RunWorkflowUpdateRequest
+         * @description Closed authenticated workflow preference update request.
+         */
+        RunWorkflowUpdateRequest: {
+            /** Expected Run Version */
+            expected_run_version: number;
+            expected_workflow: components["schemas"]["RunWorkflowPreferences"] | null;
+            /** Note */
+            note?: string | null;
+            workflow: components["schemas"]["RunWorkflowPreferences"];
         };
         /**
          * RunnerMode
@@ -10321,6 +10377,43 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TaskUsageOwnerCommandResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_run_workflow_api_runs__run_id__workflow_put: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RunWorkflowUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunResponse"];
                 };
             };
             /** @description Validation Error */

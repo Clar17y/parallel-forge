@@ -77,7 +77,12 @@ class ProjectionService:
         result["available_commands"] = commands
         if result["next_gate"] is None:
             if state in {RunState.CREATED, RunState.PLANNING}:
-                result["next_gate"] = "plan"
+                result["next_gate"] = (
+                    "pr"
+                    if isinstance(run.get("workflow"), dict)
+                    and not run["workflow"].get("review_plan_first", False)
+                    else "plan"
+                )
             elif state in {
                 RunState.PREPARING_WORKTREE,
                 RunState.IMPLEMENTING,

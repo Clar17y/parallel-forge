@@ -3,9 +3,15 @@ import { remediationOrigin } from './run-presentation';
 
 export function AutonomyBanner({ projection }: { projection: components['schemas']['RunProjection'] }) {
   const state = projection.run.state;
+  const preparesInternally = projection.run.workflow && !projection.run.workflow.review_plan_first;
   let message = 'No autonomous work is currently authorized.';
-  if (state === 'CREATED' || state === 'PLANNING') message = 'Forge may prepare a plan. Implementation requires plan approval.';
-  else if (['PREPARING_WORKTREE', 'IMPLEMENTING', 'VALIDATING', 'REVIEWING'].includes(state)) message = 'Forge may implement and check the approved plan locally. Publishing a pull request requires separate approval.';
+  if (state === 'CREATED' || state === 'PLANNING') message = preparesInternally
+    ? 'Forge may prepare internally, then implement and check the requested scope locally. Unanswered material questions require owner input. Publishing a pull request requires separate approval.'
+    : 'Forge may prepare a plan. Implementation requires plan approval.';
+  else if (state === 'AWAITING_PLAN_APPROVAL' && preparesInternally) message = 'Preparation is waiting for owner input or a plan revision. Implementation and publication are not authorized yet.';
+  else if (['PREPARING_WORKTREE', 'IMPLEMENTING', 'VALIDATING', 'REVIEWING'].includes(state)) message = projection.plan.authority === 'internal_preparation'
+    ? 'Forge may implement and check the internally prepared scope locally. Publishing a pull request requires separate approval.'
+    : 'Forge may implement and check the approved plan locally. Publishing a pull request requires separate approval.';
   else if (state === 'REMEDIATING') {
     const origin = remediationOrigin(projection);
     if (origin === 'remote') {

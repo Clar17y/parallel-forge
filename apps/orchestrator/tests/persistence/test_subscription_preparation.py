@@ -34,15 +34,28 @@ async def test_preparation_retains_all_approved_checks(session_factory, tmp_path
         contract = decode_subscription_record(task.payload)
         assert isinstance(contract, LogicalTaskContract)
         assert contract.named_checks == checks
-        assert tuple(
-            check for criterion in contract.typed_acceptance
-            for check in criterion.required_check_names
-        ) == checks
-        assert all(len(criterion.required_check_names) <= 32 for criterion in contract.typed_acceptance)
+        assert (
+            tuple(
+                check
+                for criterion in contract.typed_acceptance
+                for check in criterion.required_check_names
+            )
+            == checks
+        )
+        assert all(
+            len(criterion.required_check_names) <= 32 for criterion in contract.typed_acceptance
+        )
 
 
 async def preparation_case(
-    session_factory, tmp_path, *, primary_budget=None, plan_scope=None, plan_checks=("unit",), review_route=None
+    session_factory,
+    tmp_path,
+    *,
+    primary_budget=None,
+    plan_scope=None,
+    plan_checks=("unit",),
+    review_route=None,
+    ordinary=False,
 ):
     factory, store, evidence, _, validator = await proposal_case(
         session_factory,
@@ -52,20 +65,41 @@ async def preparation_case(
         plan_checks=plan_checks,
         review_route=review_route,
     )
+    if ordinary:
+        from uuid import uuid4
+
+        from forge.domain.event import RunEvent
+        from forge.domain.workflow import WorkflowPreferences
+
+        async with factory() as work:
+            run = await work.runs.get(evidence.producer.run_id)
+            await work.runs.update_workflow(run.id, run.version, WorkflowPreferences.DEFAULT)
+            await work.events.append(
+                RunEvent(
+                    run_id=run.id,
+                    run_version=0,
+                    event_type="run.created",
+                    actor_class="operator",
+                    actor_id=uuid4(),
+                    payload={},
+                )
+            )
+            await work.commit()
     outcome = await SubscriptionPlanGateService(store, factory).request_settled(
         evidence.producer.attempt_id
     )
-    await approve_proposal(factory, session_factory, evidence, validator, outcome)
-    async with session_factory() as session:
-        approval_command_id = await session.scalar(
-            select(RunCommand.id).where(
-                RunCommand.run_id == evidence.producer.run_id,
-                RunCommand.command_type == "approve_plan",
+    if not ordinary:
+        await approve_proposal(factory, session_factory, evidence, validator, outcome)
+        async with session_factory() as session:
+            approval_command_id = await session.scalar(
+                select(RunCommand.id).where(
+                    RunCommand.run_id == evidence.producer.run_id,
+                    RunCommand.command_type == "approve_plan",
+                )
             )
+        await PostgresCommandRepository(session_factory).complete(
+            approval_command_id, worker_id="approval-worker"
         )
-    await PostgresCommandRepository(session_factory).complete(
-        approval_command_id, worker_id="approval-worker"
-    )
     command = await PostgresCommandRepository(session_factory).claim_next(
         worker_id="prepare-worker", lease_seconds=30
     )
@@ -207,11 +241,13 @@ async def test_approved_primary_context_refuses_route_and_contract_drift(session
         contract = decode_subscription_record(task.payload)
         assert isinstance(contract, LogicalTaskContract)
         context = await work.subscription_plan_gate.implementation_context(task.id, contract)
-        assert context is not None and context["source_attempt_id"] == str(evidence.producer.attempt_id)
+        assert context is not None and context["source_attempt_id"] == str(
+            evidence.producer.attempt_id
+        )
         alternate = RouteSpec(provider="anthropic", client="claude_code", model="claude-opus-5-5")
-        changed_route = replace(contract, route=replace(
-            contract.route, requested=alternate, effective=alternate
-        ))
+        changed_route = replace(
+            contract, route=replace(contract.route, requested=alternate, effective=alternate)
+        )
         with pytest.raises(SubscriptionPlanGateError):
             await work.subscription_plan_gate.implementation_context(task.id, changed_route)
         with pytest.raises(SubscriptionPlanGateError):

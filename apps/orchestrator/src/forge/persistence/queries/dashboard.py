@@ -188,6 +188,14 @@ class DashboardQuery:
                     .limit(50)
                 )
             )
+            internal_preparation = await session.scalar(
+                select(RunEvent.id)
+                .where(
+                    RunEvent.run_id == run_id,
+                    RunEvent.event_type == "run.plan_internally_prepared",
+                )
+                .limit(1)
+            )
             branch_removed = await _branch_removed(session, snapshot)
             branch_retained = not branch_removed and await _owned_retained_branch(
                 session, snapshot, policy
@@ -206,6 +214,7 @@ class DashboardQuery:
                 "base_ref",
                 "base_sha",
                 "branch_name",
+                "workflow",
             )
             validation_digest = await _digest(
                 session, validation.manifest_artifact_id if validation else None
@@ -237,7 +246,12 @@ class DashboardQuery:
                 acceptance_digest = await _digest(session, acceptance.manifest_artifact_id)
                 candidate_tree_digest = acceptance.candidate_tree_digest
             return {
-                "run": {name: getattr(snapshot, name) for name in run_fields},
+                "run": {
+                    **{name: getattr(snapshot, name) for name in run_fields},
+                    "workflow": snapshot.workflow.to_dict()
+                    if snapshot.workflow is not None
+                    else None,
+                },
                 "task": {
                     "id": task.id,
                     "title": _text(task.title),
@@ -266,6 +280,9 @@ class DashboardQuery:
                     "output_artifact_digest": plan_output_digest,
                     "approval_id": approval.id if approval else None,
                     "approval_evidence_digest": displayed_plan_evidence_digest,
+                    "authority": "internal_preparation"
+                    if internal_preparation is not None
+                    else ("human_approval" if approval else None),
                 },
                 "candidate": {
                     "commit": candidate_commit,
@@ -297,10 +314,7 @@ class DashboardQuery:
                 if pr
                 else None,
                 "remote_observation": _remote_observation(pr),
-                "checks": [
-                    {key: check[key] for key in CHECK_FIELDS}
-                    for check in checks
-                ],
+                "checks": [{key: check[key] for key in CHECK_FIELDS} for check in checks],
                 "review": {
                     "execution_id": review.producer_execution_id if review else None,
                     "evidence_digest": review_digest,
@@ -394,7 +408,9 @@ async def _stall_reason(session: AsyncSession, run_id: UUID, state: RunState) ->
     if primary is not None and primary.state == "terminal":
         payload = await session.scalar(
             select(SubscriptionAttemptResult.result_payload)
-            .join(SubscriptionAttempt, SubscriptionAttempt.id == SubscriptionAttemptResult.attempt_id)
+            .join(
+                SubscriptionAttempt, SubscriptionAttempt.id == SubscriptionAttemptResult.attempt_id
+            )
             .where(SubscriptionAttempt.task_row_id == primary.id)
             .order_by(SubscriptionAttempt.attempt_number.desc())
             .limit(1)

@@ -1961,6 +1961,12 @@ class PostgresSubscriptionDecisionRepository:
             # Reject an invalid frozen route/child contract before closing the
             # candidate. Finalization rechecks the same contract before creation.
             try:
+                workflow = run.workflow
+                optional_review = workflow.optional_review if workflow is not None else "auto"
+                if optional_review == "skip" and decision.review_required:
+                    raise ValueError("review is skipped for this run")
+                if optional_review == "required" and not decision.review_required:
+                    raise ValueError("review is required for this run")
                 _selected_review_task(parent, decision, envelope, attempt_id)
             except KeyError, TypeError, ValueError:
                 return await self._reject(task, scheduled, attempt, result, decision, key)
@@ -2287,6 +2293,9 @@ class PostgresSubscriptionDecisionRepository:
             existing.append(contract)
         children = decision.child_tasks
         try:
+            workflow = run.workflow
+            if workflow is not None and workflow.delegation == "disabled":
+                raise ValueError("delegation is disabled for this run")
             if len(children) > 64:
                 raise ValueError("delegation is too large")
             for child in children:

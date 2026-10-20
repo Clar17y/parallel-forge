@@ -16,6 +16,7 @@ from forge.application.services.plan_evidence import (
 from forge.application.services.plan_restart import restart_source
 from forge.application.services.plan_revision import PlanRevisionService
 from forge.domain.command import CommandEnvelope, CommandStatus
+from forge.domain.plan import material_questions
 from forge.domain.run import RunState
 from forge.persistence.models import Approval
 
@@ -61,6 +62,11 @@ class ApprovePlanHandler:
             raise ApprovalCommandValidationError("approval evidence is stale")
         try:
             evidence = await self._evidence_validator.validate(work, run.id)
+            plan = await self._evidence_validator.load_plan(work, run.id)
+            if material_questions(plan):
+                raise ApprovalCommandValidationError(
+                    "answer material questions through plan revision before approval"
+                )
         except PlanEvidenceValidationError:
             # This is an owned, otherwise-valid approval whose authoritative
             # source drifted after API authorization.  Settle the stale gate

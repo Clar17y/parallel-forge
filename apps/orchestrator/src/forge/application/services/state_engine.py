@@ -16,6 +16,7 @@ LEGAL: Mapping[RunState, frozenset[RunState]] = MappingProxyType(
         RunState.PLANNING: frozenset(
             {
                 RunState.AWAITING_PLAN_APPROVAL,
+                RunState.PREPARING_WORKTREE,
                 RunState.AWAITING_HUMAN_INTERVENTION,
                 RunState.FAILED,
                 RunState.CANCELLED,
@@ -271,12 +272,17 @@ class StateEngine:
         if (
             run.state is not RunState.AWAITING_HUMAN_INTERVENTION
             or run.suspension_kind is not SuspensionKind.INTERVENTION
-            or run.suspended_state not in {
-                RunState.PLANNING, RunState.IMPLEMENTING, RunState.REMEDIATING,
+            or run.suspended_state
+            not in {
+                RunState.PLANNING,
+                RunState.IMPLEMENTING,
+                RunState.REMEDIATING,
             }
             or run.pending_gate is not None
         ):
-            raise InvalidTransition(run.state, run.state, reason="no interrupted execution to resume")
+            raise InvalidTransition(
+                run.state, run.state, reason="no interrupted execution to resume"
+            )
         return run.with_state(run.suspended_state)
 
     def resolve_intervention(self, run: RunSnapshot, target: RunState) -> RunSnapshot:

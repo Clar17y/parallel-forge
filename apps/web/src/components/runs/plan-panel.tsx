@@ -29,6 +29,14 @@ export function PlanPanel({ projection }: { projection: components['schemas']['R
           Plan evidence unavailable. <button onClick={artifact.refresh}>Retry</button>
         </p>
       )}
+      {plan?.material_questions && plan.material_questions.length > 0 && (
+        <div className="empty-state-notice" role="alert" style={{ marginBottom: '16px', borderColor: 'var(--warning)' }}>
+          <p><strong>Unresolved material questions</strong></p>
+          <p className="meta">
+            Answer these questions before implementation can start. Use <strong>Request revision</strong> in the header to provide your answers.
+          </p>
+        </div>
+      )}
       {plan && <PlanContent plan={plan} />}
       <details className="disclosure-card mt-4">
         <summary className="disclosure-summary cursor-pointer text-sm font-semibold">
@@ -38,6 +46,8 @@ export function PlanPanel({ projection }: { projection: components['schemas']['R
           <dl className="key-values">
             <dt>Plan digest</dt>
             <dd>{digest ?? 'Not yet available'}</dd>
+            <dt>Plan authority</dt>
+            <dd>{projection.plan.authority === 'internal_preparation' ? 'Internal preparation (ordinary development)' : projection.plan.authority === 'human_approval' ? 'Human approval' : 'Not recorded'}</dd>
             <dt>Base commit</dt>
             <dd>{projection.run.base_sha ?? 'Unavailable'}</dd>
             <dt>Policy version</dt>

@@ -149,7 +149,7 @@ export function RunCockpit({ initial, tasks, queueDiagnostics, onRefreshTasks, s
         <div className="overview-main">{prOutcome}<ChecksSummary projection={value} stale={stale} onInspect={() => openSection('checks')} />
           <PhaseTimeline events={value.latest_events} onInspect={() => openSection('activity')} />
         </div>
-        <RunContext projection={value} onTasks={tasks ? () => openSection('tasks') : undefined} />
+        <RunContext projection={value} onTasks={tasks ? () => openSection('tasks') : undefined} onChanged={() => void refresh().catch(() => {})} />
       </div> : null}
     </div>
     {/* Keep the inspector mounted: switching sections must not discard a pending

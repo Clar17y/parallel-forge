@@ -15,7 +15,7 @@ from forge.application.services.subscription_plan_gate import SubscriptionPlanGa
 from forge.artifacts.filesystem import FilesystemArtifactStore
 from forge.domain.approval import SubscriptionPlanApprovalEvidence, SubscriptionPlanProducer
 from forge.domain.operation import canonical_digest
-from forge.domain.plan import PlanOutput, ScopedPlanOutput
+from forge.domain.plan import PlanOutput, ScopedPlanOutput, plan_digest_bytes
 from forge.domain.policy import CommandSpec, ProjectPolicy, StepKind
 from forge.domain.run import RunSnapshot, RunState
 from forge.domain.scheduling import ScheduleTask
@@ -42,6 +42,7 @@ async def proposal_case(
     primary_budget=None,
     plan_scope=None,
     plan_checks=("unit",),
+    material_questions=(),
     review_route=None,
     pause_before_settle=False,
     pause_callback=None,
@@ -145,7 +146,9 @@ async def proposal_case(
         dependency_changes=(),
     )
     if plan_scope is not None:
-        plan = ScopedPlanOutput(**plan.model_dump(), owned_paths=plan_scope)
+        plan = ScopedPlanOutput(
+            **plan.model_dump(), owned_paths=plan_scope, material_questions=material_questions
+        )
     launch_proof = await record_stopped_launch(session_factory, admission)
     if pause_callback is not None:
         await pause_callback(factory, admission.attempt.run_id)
@@ -173,7 +176,7 @@ async def proposal_case(
         context = result.result_payload["proposal_context"]
         assert context["task"] == encode_subscription_record(admission.task)
         await work.rollback()
-    plan_digest = hashlib.sha256(plan.model_dump_json().encode()).hexdigest()
+    plan_digest = hashlib.sha256(plan_digest_bytes(plan)).hexdigest()
     producer = SubscriptionPlanProducer(
         run_id=admission.attempt.run_id,
         task_id=primary,

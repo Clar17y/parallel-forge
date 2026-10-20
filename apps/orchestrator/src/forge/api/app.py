@@ -155,14 +155,15 @@ def create_app(
         resolved_uow_factory,
         clock=clock,
     )
+    plan_evidence_validator = PlanEvidenceValidator(
+        FilesystemArtifactStore(resolved_settings.artifact_root),
+        LocalGitRepositoryInspector(),
+        data_root=str(resolved_settings.data_root),
+    )
     resolved_authorization_service = approval_authorization_service or ApprovalAuthorizationService(
         resolved_uow_factory,
         clock=clock,
-        plan_evidence_validator=PlanEvidenceValidator(
-            FilesystemArtifactStore(resolved_settings.artifact_root),
-            LocalGitRepositoryInspector(),
-            data_root=str(resolved_settings.data_root),
-        ),
+        plan_evidence_validator=plan_evidence_validator,
     )
     resolved_project_service = project_service or ProjectService(
         resolved_uow_factory, settings=resolved_settings
@@ -189,7 +190,9 @@ def create_app(
         subscription_recovery_service or SubscriptionRecoveryService(resolved_uow_factory)
     )
     resolved_run_service = run_service or RunService(
-        resolved_uow_factory, settings=resolved_settings
+        resolved_uow_factory,
+        settings=resolved_settings,
+        plan_evidence_validator=plan_evidence_validator,
     )
     resolved_epic_eligibility_service = EpicEligibilityService(
         resolved_uow_factory, data_root=str(resolved_settings.data_root)
@@ -269,7 +272,9 @@ def create_app(
     app.state.approval_authorization_service = resolved_authorization_service
     app.state.project_service = resolved_project_service
     app.state.task_usage_policy_service = resolved_task_usage_policy_service
-    task_usage_composition = compose_task_usage(session_factory) if session_factory is not None else None
+    task_usage_composition = (
+        compose_task_usage(session_factory) if session_factory is not None else None
+    )
     if task_usage_baseline_service is None and task_usage_composition is not None:
         task_usage_baseline_service = task_usage_composition.baselines
     app.state.task_usage_baseline_service = task_usage_baseline_service

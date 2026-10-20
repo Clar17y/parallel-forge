@@ -10,6 +10,31 @@ from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
 from forge.application.services.runs import RunCommandRequest as ServiceRunCommandRequest
 from forge.domain.command import CommandEnvelope
 from forge.domain.run import RunSnapshot, RunState, SuspensionKind
+from forge.domain.workflow import WorkflowPreferences
+
+
+class RunWorkflowPreferences(BaseModel):
+    """Frozen per-run workflow preferences."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    review_plan_first: bool = False
+    delegation: Literal["auto", "disabled", "requested"] = "auto"
+    optional_review: Literal["auto", "skip", "required"] = "auto"
+
+    def to_domain(self) -> WorkflowPreferences:
+        return WorkflowPreferences(**self.model_dump())
+
+
+class RunWorkflowUpdateRequest(BaseModel):
+    """Closed authenticated workflow preference update request."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    expected_run_version: StrictInt = Field(ge=0)
+    expected_workflow: RunWorkflowPreferences | None
+    workflow: RunWorkflowPreferences
+    note: str | None = None
 
 
 class RunCreateRequest(BaseModel):
@@ -20,6 +45,7 @@ class RunCreateRequest(BaseModel):
     task_id: UUID
     profile_id: UUID | None = None
     profile_version: StrictInt | None = Field(default=None, gt=0)
+    workflow: RunWorkflowPreferences | None = None
 
     @model_validator(mode="after")
     def complete_profile_identity(self) -> RunCreateRequest:
@@ -55,13 +81,21 @@ class RunResponse(BaseModel):
     base_sha: str | None
     branch_name: str | None
     subscription_profile: RunProfileSelection | None = None
+    workflow: RunWorkflowPreferences | None = None
 
     @classmethod
     def from_snapshot(
-        cls, run: RunSnapshot, subscription_profile: RunProfileSelection | dict[str, object] | None = None
+        cls,
+        run: RunSnapshot,
+        subscription_profile: RunProfileSelection | dict[str, object] | None = None,
     ) -> RunResponse:
         if isinstance(subscription_profile, dict):
             subscription_profile = RunProfileSelection.model_validate(subscription_profile)
+        workflow = (
+            RunWorkflowPreferences.model_validate(run.workflow.to_dict())
+            if run.workflow is not None
+            else None
+        )
         return cls(
             id=run.id,
             project_id=run.project_id,
@@ -77,6 +111,7 @@ class RunResponse(BaseModel):
             base_sha=run.base_sha,
             branch_name=run.branch_name,
             subscription_profile=subscription_profile,
+            workflow=workflow,
         )
 
 
@@ -119,4 +154,6 @@ __all__ = [
     "RunCreate",
     "RunCreateRequest",
     "RunResponse",
+    "RunWorkflowPreferences",
+    "RunWorkflowUpdateRequest",
 ]

@@ -56,7 +56,9 @@ async def test_invalid_selected_profile_rolls_back_run_command_and_receipt(
 
 
 @pytest.mark.integration
-async def test_missing_explicit_profile_rolls_back_run_command_and_receipt(session_factory, tmp_path):
+async def test_missing_explicit_profile_rolls_back_run_command_and_receipt(
+    session_factory, tmp_path
+):
     from forge.persistence.models import ApiMutation, Run, RunCommand, SubscriptionEnvelope
     from forge.persistence.models.execution import RunEvent as RunEventRecord
     from forge.persistence.repositories.runs import RunCreationError
@@ -72,8 +74,11 @@ async def test_missing_explicit_profile_rolls_back_run_command_and_receipt(sessi
 
     with pytest.raises(RunCreationError) as exc_info:
         await service.create_run(
-            actor=actor, idempotency_key="missing-override", task_id=task_id,
-            profile_id=uuid4(), profile_version=1,
+            actor=actor,
+            idempotency_key="missing-override",
+            task_id=task_id,
+            profile_id=uuid4(),
+            profile_version=1,
         )
     assert isinstance(exc_info.value, RunProfileSelectionError)
     async with session_factory() as session:
@@ -81,9 +86,14 @@ async def test_missing_explicit_profile_rolls_back_run_command_and_receipt(sessi
         assert await session.scalar(select(func.count()).select_from(RunCommand)) == 0
         assert await session.scalar(select(func.count()).select_from(RunEventRecord)) == 0
         assert await session.scalar(select(func.count()).select_from(SubscriptionEnvelope)) == 0
-        assert await session.scalar(
-            select(func.count()).select_from(ApiMutation).where(ApiMutation.action == "create_run")
-        ) == 0
+        assert (
+            await session.scalar(
+                select(func.count())
+                .select_from(ApiMutation)
+                .where(ApiMutation.action == "create_run")
+            )
+            == 0
+        )
 
 
 @pytest.mark.integration
@@ -101,10 +111,11 @@ async def test_corrupt_explicit_profile_rolls_back_every_run_creation_record(
 
     actor, _project_id, task_id = await _seed_project_task(session_factory, tmp_path)
     profile = OperatorProfile(
-        profile_id=uuid4(), version=1,
-        preferences=(RolePreference(
-            purpose=SpecialistPurpose.PRIMARY, preferred_route=_route("openai")
-        ),),
+        profile_id=uuid4(),
+        version=1,
+        preferences=(
+            RolePreference(purpose=SpecialistPurpose.PRIMARY, preferred_route=_route("openai")),
+        ),
     )
     payload = encode_subscription_record(profile)
     if corruption == "malformed":
@@ -120,32 +131,45 @@ async def test_corrupt_explicit_profile_rolls_back_every_run_creation_record(
 
         await PostgresSubscriptionRepository(session).store_profile(profile)
         await session.execute(
-            text("UPDATE subscription_profile_versions SET payload = CAST(:payload AS jsonb) WHERE profile_id = :id"),
+            text(
+                "UPDATE subscription_profile_versions SET payload = CAST(:payload AS jsonb) WHERE profile_id = :id"
+            ),
             {"id": profile.profile_id, "payload": json.dumps(payload)},
         )
         await session.commit()
     service = RunService(
         lambda: PostgresUnitOfWork(session_factory),
-        repository_inspector=StableInspector(tmp_path / "repo"), data_root=tmp_path / "data",
+        repository_inspector=StableInspector(tmp_path / "repo"),
+        data_root=tmp_path / "data",
     )
     from forge.application.services.runs import RunProfileSelectionError
 
     with pytest.raises(RunCreationError) as exc_info:
         await service.create_run(
-            actor=actor, idempotency_key="corrupt-override", task_id=task_id,
-            profile_id=profile.profile_id, profile_version=1,
+            actor=actor,
+            idempotency_key="corrupt-override",
+            task_id=task_id,
+            profile_id=profile.profile_id,
+            profile_version=1,
         )
     assert isinstance(exc_info.value, RunProfileSelectionError)
     async with session_factory() as session:
         for model in (Run, RunCommand, RunEventRecord, SubscriptionEnvelope):
             assert await session.scalar(select(func.count()).select_from(model)) == 0
-        assert await session.scalar(
-            select(func.count()).select_from(ApiMutation).where(ApiMutation.action == "create_run")
-        ) == 0
+        assert (
+            await session.scalar(
+                select(func.count())
+                .select_from(ApiMutation)
+                .where(ApiMutation.action == "create_run")
+            )
+            == 0
+        )
 
 
 @pytest.mark.integration
-async def test_project_default_profile_decoder_error_keeps_its_original_type(session_factory, tmp_path):
+async def test_project_default_profile_decoder_error_keeps_its_original_type(
+    session_factory, tmp_path
+):
     from sqlalchemy import text
 
     _actor, project_id, _task_id = await _seed_project_task(session_factory, tmp_path)
@@ -156,7 +180,9 @@ async def test_project_default_profile_decoder_error_keeps_its_original_type(ses
         await work.commit()
     async with session_factory() as session:
         await session.execute(
-            text("UPDATE subscription_profile_versions SET payload = '{}'::jsonb WHERE profile_id = :id"),
+            text(
+                "UPDATE subscription_profile_versions SET payload = '{}'::jsonb WHERE profile_id = :id"
+            ),
             {"id": profile.profile_id},
         )
         await session.commit()
@@ -220,16 +246,25 @@ async def test_run_override_freezes_requested_profile_without_changing_project_d
 
     actor, project_id, task_id = await _seed_project_task(session_factory, tmp_path)
     default = OperatorProfile(
-        profile_id=uuid4(), version=1,
-        preferences=(RolePreference(purpose=SpecialistPurpose.PRIMARY, preferred_route=_route("openai")),),
+        profile_id=uuid4(),
+        version=1,
+        preferences=(
+            RolePreference(purpose=SpecialistPurpose.PRIMARY, preferred_route=_route("openai")),
+        ),
     )
     override = OperatorProfile(
-        profile_id=uuid4(), version=1,
-        preferences=(RolePreference(purpose=SpecialistPurpose.PRIMARY, preferred_route=_route("anthropic")),),
+        profile_id=uuid4(),
+        version=1,
+        preferences=(
+            RolePreference(purpose=SpecialistPurpose.PRIMARY, preferred_route=_route("anthropic")),
+        ),
     )
     other = OperatorProfile(
-        profile_id=uuid4(), version=1,
-        preferences=(RolePreference(purpose=SpecialistPurpose.PRIMARY, preferred_route=_route("google")),),
+        profile_id=uuid4(),
+        version=1,
+        preferences=(
+            RolePreference(purpose=SpecialistPurpose.PRIMARY, preferred_route=_route("google")),
+        ),
     )
     factory = lambda: PostgresUnitOfWork(session_factory)
     async with factory() as work:
@@ -238,11 +273,16 @@ async def test_run_override_freezes_requested_profile_without_changing_project_d
         await work.subscription.store_profile(other)
         await work.commit()
     service = RunService(
-        factory, repository_inspector=StableInspector(tmp_path / "repo"), data_root=tmp_path / "data"
+        factory,
+        repository_inspector=StableInspector(tmp_path / "repo"),
+        data_root=tmp_path / "data",
     )
     run = await service.create_run(
-        actor=actor, idempotency_key="run-profile-override", task_id=task_id,
-        profile_id=override.profile_id, profile_version=override.version,
+        actor=actor,
+        idempotency_key="run-profile-override",
+        task_id=task_id,
+        profile_id=override.profile_id,
+        profile_version=override.version,
     )
     async with factory() as work:
         envelope = await work.subscription.envelope_for_run(run.id)
@@ -254,20 +294,34 @@ async def test_run_override_freezes_requested_profile_without_changing_project_d
         created = next(event for event in events if event.event_type == "run.created")
         assert created.payload["subscription_profile_selection_source"] == "run_override"
         await work.commit()
-    assert await service.create_run(
-        actor=actor, idempotency_key="run-profile-override", task_id=task_id,
-        profile_id=override.profile_id, profile_version=override.version,
-    ) == run
+    assert (
+        await service.create_run(
+            actor=actor,
+            idempotency_key="run-profile-override",
+            task_id=task_id,
+            profile_id=override.profile_id,
+            profile_version=override.version,
+        )
+        == run
+    )
     with pytest.raises(MutationConflict):
-        await service.create_run(actor=actor, idempotency_key="run-profile-override", task_id=task_id)
+        await service.create_run(
+            actor=actor, idempotency_key="run-profile-override", task_id=task_id
+        )
     first, second = await asyncio.gather(
         service.create_run(
-            actor=actor, idempotency_key="concurrent-profile-a", task_id=task_id,
-            profile_id=override.profile_id, profile_version=1,
+            actor=actor,
+            idempotency_key="concurrent-profile-a",
+            task_id=task_id,
+            profile_id=override.profile_id,
+            profile_version=1,
         ),
         service.create_run(
-            actor=actor, idempotency_key="concurrent-profile-b", task_id=task_id,
-            profile_id=other.profile_id, profile_version=1,
+            actor=actor,
+            idempotency_key="concurrent-profile-b",
+            task_id=task_id,
+            profile_id=other.profile_id,
+            profile_version=1,
         ),
     )
     async with factory() as work:
@@ -289,10 +343,11 @@ async def test_profile_selection_batch_reads_frozen_headers_and_creation_marker_
     factory = lambda: PostgresUnitOfWork(session_factory)
     profiles = [
         OperatorProfile(
-            profile_id=uuid4(), version=1,
-            preferences=(RolePreference(
-                purpose=SpecialistPurpose.PRIMARY, preferred_route=_route("openai")
-            ),),
+            profile_id=uuid4(),
+            version=1,
+            preferences=(
+                RolePreference(purpose=SpecialistPurpose.PRIMARY, preferred_route=_route("openai")),
+            ),
         )
         for _ in range(2)
     ]
@@ -301,25 +356,36 @@ async def test_profile_selection_batch_reads_frozen_headers_and_creation_marker_
             await work.subscription.store_profile(profile)
         await work.commit()
     service = RunService(
-        factory, repository_inspector=StableInspector(tmp_path / "repo"), data_root=tmp_path / "data"
+        factory,
+        repository_inspector=StableInspector(tmp_path / "repo"),
+        data_root=tmp_path / "data",
     )
     selected = [
         await service.create_run(
-            actor=actor, idempotency_key=f"batch-profile-{i}", task_id=task_id,
-            profile_id=profile.profile_id, profile_version=profile.version,
+            actor=actor,
+            idempotency_key=f"batch-profile-{i}",
+            task_id=task_id,
+            profile_id=profile.profile_id,
+            profile_version=profile.version,
         )
         for i, profile in enumerate(profiles)
     ]
-    legacy = await service.create_run(actor=actor, idempotency_key="batch-profile-legacy", task_id=task_id)
+    legacy = await service.create_run(
+        actor=actor, idempotency_key="batch-profile-legacy", task_id=task_id
+    )
     async with session_factory() as session:
         # A historical creation event without the optional marker remains unknown.
         await session.execute(
-            text("UPDATE run_events SET payload = payload - 'subscription_profile_selection_source' WHERE run_id = :id AND sequence = 1"),
+            text(
+                "UPDATE run_events SET payload = payload - 'subscription_profile_selection_source' WHERE run_id = :id AND sequence = 1"
+            ),
             {"id": selected[0].id},
         )
         # Display reads only the frozen envelope header and treats non-string provenance as unknown.
         await session.execute(
-            text("UPDATE run_events SET payload = jsonb_set(payload, '{subscription_profile_selection_source}', '[]'::jsonb) WHERE run_id = :id AND sequence = 1"),
+            text(
+                "UPDATE run_events SET payload = jsonb_set(payload, '{subscription_profile_selection_source}', '[]'::jsonb) WHERE run_id = :id AND sequence = 1"
+            ),
             {"id": selected[1].id},
         )
         await session.execute(
@@ -328,7 +394,9 @@ async def test_profile_selection_batch_reads_frozen_headers_and_creation_marker_
         )
         # Later events are outside this read path, even if their payload is malformed.
         await session.execute(
-            text("INSERT INTO run_events (id, run_id, sequence, run_version, event_type, actor_class, payload_schema_version, payload, occurred_at) VALUES (gen_random_uuid(), :id, 2, 0, 'unrelated', 'system', 1, '[]'::jsonb, now())"),
+            text(
+                "INSERT INTO run_events (id, run_id, sequence, run_version, event_type, actor_class, payload_schema_version, payload, occurred_at) VALUES (gen_random_uuid(), :id, 2, 0, 'unrelated', 'system', 1, '[]'::jsonb, now())"
+            ),
             {"id": selected[1].id},
         )
         await session.commit()
@@ -339,3 +407,85 @@ async def test_profile_selection_batch_reads_frozen_headers_and_creation_marker_
     assert result[selected[1].id]["selection_source"] is None
     assert legacy.id not in result
     assert await service.profile_selection(legacy.id) is None
+
+
+@pytest.mark.integration
+async def test_ordinary_defaults_null_and_pre_upgrade_omitted_receipt(session_factory, tmp_path):
+    from forge.application.services.runs import _digest
+    from forge.domain.workflow import WorkflowPreferences
+    from forge.persistence.models import ApiMutation, RunCommand
+    from forge.persistence.repositories.mutations import MutationConflict
+    from sqlalchemy import select
+
+    actor, project_id, task_id = await _seed_project_task(session_factory, tmp_path)
+    factory = lambda: PostgresUnitOfWork(session_factory)
+    async with factory() as work:
+        await work.subscription.select_project_profile(
+            project_id,
+            OperatorProfile(
+                profile_id=uuid4(),
+                version=1,
+                preferences=(
+                    RolePreference(
+                        purpose=SpecialistPurpose.PRIMARY, preferred_route=_route("openai")
+                    ),
+                ),
+            ),
+        )
+        await work.commit()
+    service = RunService(
+        factory,
+        repository_inspector=StableInspector(tmp_path / "repo"),
+        data_root=tmp_path / "data",
+    )
+    first = await service.create_run(actor=actor, idempotency_key="upgrade-replay", task_id=task_id)
+    assert first.workflow == WorkflowPreferences.DEFAULT
+    async with factory() as work:
+        receipt = await work.session.scalar(
+            select(ApiMutation).where(ApiMutation.action == "create_run")
+        )
+        # Exact request digest written by the pre-workflow implementation.
+        assert receipt.request_digest == _digest({"task_id": str(task_id)})
+        queued = await work.session.scalar(select(RunCommand).where(RunCommand.run_id == first.id))
+        await work.runs.update_workflow(
+            first.id, first.version, WorkflowPreferences(delegation="disabled")
+        )
+        assert queued.expected_run_version == first.version
+        await work.commit()
+    replay = await service.create_run(
+        actor=actor, idempotency_key="upgrade-replay", task_id=task_id
+    )
+    assert replay.id == first.id and replay.workflow.delegation == "disabled"
+    with pytest.raises(MutationConflict):
+        await service.create_run(
+            actor=actor, idempotency_key="upgrade-replay", task_id=task_id, workflow=None
+        )
+    explicit_null = await service.create_run(
+        actor=actor, idempotency_key="legacy-null", task_id=task_id, workflow=None
+    )
+    assert explicit_null.workflow is None
+
+
+@pytest.mark.integration
+async def test_non_subscription_keeps_legacy_and_rejects_explicit_ordinary_controls(
+    session_factory, tmp_path
+):
+    from forge.domain.workflow import WorkflowPreferences
+    from forge.persistence.repositories.runs import RunCreationError
+
+    actor, _, task_id = await _seed_project_task(session_factory, tmp_path)
+    factory = lambda: PostgresUnitOfWork(session_factory)
+    service = RunService(
+        factory,
+        repository_inspector=StableInspector(tmp_path / "repo"),
+        data_root=tmp_path / "data",
+    )
+    legacy = await service.create_run(actor=actor, idempotency_key="legacy", task_id=task_id)
+    assert legacy.workflow is None
+    with pytest.raises(RunCreationError, match="only available for subscription"):
+        await service.create_run(
+            actor=actor,
+            idempotency_key="unsupported",
+            task_id=task_id,
+            workflow=WorkflowPreferences(),
+        )

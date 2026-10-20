@@ -15,6 +15,7 @@ export type PlanSectionKey = (typeof PLAN_SECTIONS)[number][0];
 export type Plan = {
   summary: string;
   owned_paths?: string[];
+  material_questions?: string[];
 } & Record<PlanSectionKey, string[]>;
 
 export function parsePlan(text: string): Plan | null {
@@ -40,6 +41,14 @@ export function parsePlan(text: string): Plan | null {
     ) {
       return null;
     }
+    if (
+      'material_questions' in value &&
+      (!Array.isArray(value.material_questions) ||
+        value.material_questions.length > 20 ||
+        !value.material_questions.every((item: unknown) => typeof item === 'string' && item.trim().length > 0 && Array.from(item).length <= 5000))
+    ) {
+      return null;
+    }
     return value as Plan;
   } catch {
     return null;
@@ -60,6 +69,16 @@ export function PlanContent({ plan }: { plan: Plan }): ReactNode {
   return (
     <>
       <p>{plan.summary}</p>
+      {plan.material_questions && plan.material_questions.length > 0 && (
+        <section aria-label="Material questions">
+          <h3>Material questions</h3>
+          <ol>
+            {plan.material_questions.map((question, index) => (
+              <li key={index}>{question}</li>
+            ))}
+          </ol>
+        </section>
+      )}
       {plan.owned_paths !== undefined && (
         <section>
           <h3>Writable paths</h3>

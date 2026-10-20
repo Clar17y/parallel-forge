@@ -51,6 +51,7 @@ class PlanSection(ProjectionModel):
     output_artifact_digest: str | None
     approval_id: UUID | None
     approval_evidence_digest: str | None
+    authority: Literal["human_approval", "internal_preparation"] | None = None
 
 
 class CandidateSection(ProjectionModel):

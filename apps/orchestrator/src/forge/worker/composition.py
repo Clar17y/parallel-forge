@@ -657,6 +657,8 @@ def compose_worker_handlers(
         inspector,
         data_root=str(settings.data_root),
     )
+    from forge.application.handlers.continue_plan import ContinuePlanHandler
+
     approve_plan_handler = ApprovePlanHandler(validator, clock=clock)
     request_plan_revision_handler = RequestPlanRevisionHandler(
         artifact_store, validator, clock=clock
@@ -707,6 +709,7 @@ def compose_worker_handlers(
         {
             "start_planning": start_planning_handler,
             "approve_plan": approve_plan_handler,
+            "continue_plan": ContinuePlanHandler(validator, artifact_store),
             "request_plan_revision": request_plan_revision_handler,
             "prepare_worktree": preparation.execute,
             "implement": development.execute,
@@ -802,9 +805,9 @@ def compose_worker_handlers(
         acceptance=subscription_acceptance,
         eligible_routes=runtime_factory.subscription_routes,
         jev_service=jev_service,
-        review_snapshot=lambda policy, tree: delivery_dependencies.git(policy).working_tree_snapshot(
-            tree, secret_paths=tuple(policy.effective_secret_paths)
-        ),
+        review_snapshot=lambda policy, tree: delivery_dependencies.git(
+            policy
+        ).working_tree_snapshot(tree, secret_paths=tuple(policy.effective_secret_paths)),
         review_reader=delivery_dependencies.reader,
     )
     handlers.subscription_status = SubscriptionRuntimeReporter(
