@@ -22,6 +22,9 @@ class PriorAttemptEvidence:
     disposition: str | None
     failure: str | None
     tool_calls: tuple[ToolCallRecord, ...]
+    # "current" for the current contract digest, "pre_plan" for attempts
+    # crossed over the recorded approved-plan boundary.
+    contract: str = "current"
 
 
 class SubscriptionRecoveryRepository(Protocol):
@@ -35,6 +38,7 @@ class SubscriptionRecoveryRepository(Protocol):
         *,
         before_attempt_number: int,
         task_digest: str,
+        source_attempt_id: UUID | None = None,
     ) -> tuple[PriorAttemptEvidence, ...]: ...
     async def attempt_run_id(self, attempt_id: UUID) -> UUID: ...
     async def due(self, attempt_id: UUID) -> bool: ...

@@ -33,13 +33,38 @@ def _call(tool, arguments, *, status=ToolCallStatus.SUCCEEDED, attempt_id=None):
     )
 
 
-def _attempt(number, calls, *, disposition="failed", failure="protocol"):
+def _attempt(number, calls, *, disposition="failed", failure="protocol", contract="current"):
     return PriorAttemptEvidence(
         attempt_number=number,
         disposition=disposition,
         failure=failure,
         tool_calls=tuple(calls),
+        contract=contract,
     )
+
+
+def test_checkpoint_labels_pre_plan_attempts():
+    checkpoint = summarize_prior_attempts(
+        [
+            _attempt(1, [], disposition="plan_approval", failure=None, contract="pre_plan"),
+            _attempt(2, [], disposition="failed"),
+        ]
+    )
+    assert checkpoint is not None
+    assert [entry["contract"] for entry in checkpoint["attempts"]] == ["pre_plan", "current"]
+
+
+def test_checkpoint_truncation_drops_oldest_pre_plan_attempt_first():
+    # Deterministic degradation: newest attempts are kept, so a lone pre-plan
+    # attempt (the oldest) is dropped before any current-contract attempt.
+    attempts = [_attempt(1, [], contract="pre_plan")] + [
+        _attempt(number, []) for number in range(2, 10)
+    ]
+    checkpoint = summarize_prior_attempts(attempts)
+    assert checkpoint is not None
+    assert checkpoint["truncated"] is True
+    assert [entry["attempt_number"] for entry in checkpoint["attempts"]] == list(range(2, 10))
+    assert all(entry["contract"] == "current" for entry in checkpoint["attempts"])
 
 
 def test_checkpoint_summarizes_only_persisted_tool_records():

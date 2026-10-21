@@ -131,7 +131,7 @@ async def test_repair_primary_receives_failed_checks_under_its_original_contract
         request.trusted_system_prompt
     )
     assert "does not override a controller failure" in request.trusted_system_prompt
-    assert request.prompt_version == "forge-subscription-v22"
+    assert request.prompt_version == "forge-subscription-v23"
     async with factory() as work:
         debit = await work.session.get(SubscriptionRepairDebit, proposal.attempt_id)
         assert debit.next_attempt_id == following.attempt.attempt_id

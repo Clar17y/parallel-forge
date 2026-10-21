@@ -94,6 +94,7 @@ def _summarize_attempt(evidence: PriorAttemptEvidence) -> dict[str, object]:
             commits += 1
     return {
         "attempt_number": evidence.attempt_number,
+        "contract": _text(evidence.contract) or "current",
         "disposition": _text(evidence.disposition),
         "failure": _text(evidence.failure),
         "files_read": _distinct(read, _CAPS["files_read"]),
@@ -133,6 +134,7 @@ def _checkpoint_variants(checkpoint: Mapping[str, object]) -> list[dict[str, obj
     summary_only = [
         {
             "attempt_number": item.get("attempt_number"),
+            "contract": item.get("contract"),
             "disposition": item.get("disposition"),
             "failure": item.get("failure"),
         }

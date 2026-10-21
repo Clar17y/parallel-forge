@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import func, literal, select
+from sqlalchemy import func, literal, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from forge.application.ports.subscription_gateway import RoleDecisionRejection, SubscriptionFailure
@@ -314,13 +314,38 @@ class PostgresSubscriptionRecoveryRepository:
         *,
         before_attempt_number: int,
         task_digest: str,
+        source_attempt_id: UUID | None = None,
     ) -> tuple[PriorAttemptEvidence, ...]:
         """Earlier attempts of this task under the same frozen contract digest.
 
         The digest gate mirrors ``correction_feedback``: attempts recorded
         under a different task contract never leak into a new contract's
         invocation. Only persisted tool-call rows are returned.
+
+        The sole crossing is the recorded approved-plan boundary: when
+        ``source_attempt_id`` resolves to an earlier attempt of this same
+        run/task, attempts up to that source attempt are also included
+        regardless of digest and labelled ``pre_plan``. An unresolvable,
+        foreign, or non-earlier source id means no crossing.
         """
+        source_number: int | None = None
+        if source_attempt_id is not None:
+            source = await self._session.get(SubscriptionAttempt, source_attempt_id)
+            if (
+                source is not None
+                and source.run_id == run_id
+                and source.task_row_id == task_id
+                and source.attempt_number < before_attempt_number
+            ):
+                source_number = source.attempt_number
+        digest_gate = (
+            SubscriptionAttempt.task_digest == task_digest
+            if source_number is None
+            else or_(
+                SubscriptionAttempt.task_digest == task_digest,
+                SubscriptionAttempt.attempt_number <= source_number,
+            )
+        )
         rows = (
             await self._session.execute(
                 select(SubscriptionAttempt, SubscriptionAttemptResult)
@@ -332,7 +357,7 @@ class PostgresSubscriptionRecoveryRepository:
                     SubscriptionAttempt.run_id == run_id,
                     SubscriptionAttempt.task_row_id == task_id,
                     SubscriptionAttempt.attempt_number < before_attempt_number,
-                    SubscriptionAttempt.task_digest == task_digest,
+                    digest_gate,
                 )
                 .order_by(SubscriptionAttempt.attempt_number)
             )
@@ -373,6 +398,9 @@ class PostgresSubscriptionRecoveryRepository:
                     disposition=result.disposition if result is not None else attempt.status,
                     failure=failure,
                     tool_calls=tuple(by_attempt.get(attempt.id, ())),
+                    contract=(
+                        "current" if attempt.task_digest == task_digest else "pre_plan"
+                    ),
                 )
             )
         return tuple(evidence)
