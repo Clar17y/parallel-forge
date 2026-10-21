@@ -32,6 +32,7 @@ def _handoff(
     validation_digest: str,
     failed_checks: tuple[str, ...],
     repaired: bool,
+    failure_detail: str = "",
 ) -> TaskHandoff:
     if (
         not failed_checks
@@ -47,6 +48,7 @@ def _handoff(
         summary="Controller final validation failed: "
         + ", ".join(failed_checks)
         + f". Validation evidence: {validation_digest}. "
+        + (f"{failure_detail} " if failure_detail else "")
         + (
             "Repair within the approved scope and obtain fresh candidate acceptance."
             if repaired
@@ -62,6 +64,7 @@ async def reject_acceptance_validation(
     validation_digest: str,
     failed_checks: tuple[str, ...],
     repair_limit: int,
+    failure_detail: str = "",
 ) -> AcceptanceValidationRepair:
     current, _ = await acceptance_validation_source(session, proposal.attempt_id)
     if (
@@ -75,7 +78,9 @@ async def reject_acceptance_validation(
         proposal,
         key=f"validation-rejection:{command_id}",
         local_limit=repair_limit,
-        handoff=lambda repaired: _handoff(proposal, validation_digest, failed_checks, repaired),
+        handoff=lambda repaired: _handoff(
+            proposal, validation_digest, failed_checks, repaired, failure_detail
+        ),
     )
 
 
@@ -127,14 +132,29 @@ async def verify_acceptance_validation_rejection(
     validation_digest: str,
     failed_checks: tuple[str, ...],
     receipt: AcceptanceValidationRepair,
+    failure_detail: str = "",
 ) -> None:
-    await _verify_reopening(
-        session,
-        source,
-        f"validation-rejection:{command_id}",
-        _handoff(source, validation_digest, failed_checks, receipt.repaired),
-        receipt,
-    )
+    # Records written before failure detail existed carry the detail-free
+    # summary; accept either that legacy form or the current detailed form,
+    # both derived deterministically from the same persisted inputs.
+    candidates = [
+        _handoff(source, validation_digest, failed_checks, receipt.repaired, failure_detail)
+    ]
+    if failure_detail:
+        candidates.append(
+            _handoff(source, validation_digest, failed_checks, receipt.repaired)
+        )
+    last_error: SubscriptionDecisionError | None = None
+    for handoff in candidates:
+        try:
+            await _verify_reopening(
+                session, source, f"validation-rejection:{command_id}", handoff, receipt
+            )
+            return
+        except SubscriptionDecisionError as error:
+            last_error = error
+    assert last_error is not None
+    raise last_error
 
 
 async def _verify_reopening(

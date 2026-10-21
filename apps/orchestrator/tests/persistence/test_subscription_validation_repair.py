@@ -1,5 +1,6 @@
 """Failed final checks reopen bounded work without rewriting accepted history."""
 
+import json
 from copy import deepcopy
 from dataclasses import replace
 
@@ -10,7 +11,11 @@ from forge.application.services.subscription_execution import SubscriptionDecisi
 from forge.application.services.subscription_requests import SubscriptionRequestBuilder
 from forge.domain.event import thaw_payload
 from forge.domain.run import RunState
-from forge.domain.subscription import TaskHandoff, decode_subscription_record
+from forge.domain.subscription import (
+    TaskHandoff,
+    decode_subscription_record,
+    encode_subscription_record,
+)
 from forge.persistence.models import Run, RunEvent
 from forge.persistence.models.scheduling import SubscriptionScheduledTask, SubscriptionSchedulerRun
 from forge.persistence.models.subscription import SubscriptionDecisionRecord, SubscriptionTask
@@ -120,9 +125,113 @@ async def test_repair_primary_receives_failed_checks_under_its_original_contract
     assert isinstance(handoff, TaskHandoff)
     assert "Controller final validation failed: unit" in handoff.summary
     assert outcome.validation_digest in handoff.summary
+    assert "Controller validation failure detail:" in handoff.summary
+    assert "- unit: failing tests: none identified" in handoff.summary
+    assert "Controller validation evidence recorded in a handoff is authoritative" in (
+        request.trusted_system_prompt
+    )
+    assert "does not override a controller failure" in request.trusted_system_prompt
+    assert request.prompt_version == "forge-subscription-v22"
     async with factory() as work:
         debit = await work.session.get(SubscriptionRepairDebit, proposal.attempt_id)
         assert debit.next_attempt_id == following.attempt.attempt_id
+
+
+async def _with_failing_pytest_output(case):
+    dispatch, runner = case[2], case[5]
+    text = (
+        "FAILED tests/test_alpha.py::test_one - AssertionError: boom\n"
+        "== 1 failed, 5 passed in 0.50s ==\n"
+    )
+    envelope = json.dumps(
+        {
+            "captured_byte_count": len(text.encode()),
+            "encoding": "utf-8-replacement",
+            "original_byte_count": len(text.encode()),
+            "stream": "stdout",
+            "text": text,
+            "truncated": False,
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    descriptor = await dispatch._store.put_bytes(
+        envelope, media_type="application/vnd.forge.command-output+json"
+    )
+    runner.runner.terminal = replace(
+        runner.runner.terminal,
+        result=replace(
+            runner.runner.terminal.result,
+            stdout_digest=descriptor.digest,
+            stdout_original_byte_count=len(text.encode()),
+            stdout_truncated=False,
+        ),
+    )
+    return case
+
+
+@pytest.mark.integration
+async def test_repair_handoff_names_the_failing_test_from_controller_output(
+    session_factory, tmp_path
+):
+    factory, proposal, _, command, controller, _, _ = await _with_failing_pytest_output(
+        await failed_validation_case(session_factory, tmp_path)
+    )
+    async with factory() as work:
+        outcome = await controller.validate(command, work)
+    assert outcome.state is RunState.REMEDIATING
+    async with factory() as work:
+        assert await controller.validate(command, work) == outcome
+    await PostgresCommandRepository(session_factory).complete(
+        command.id, worker_id=command.lease_owner
+    )
+    following = await SubscriptionDecisionExecutor(factory).admit_next(
+        "validation-repair-evidence", _reservation()
+    )
+    assert following is not None
+    request = await SubscriptionRequestBuilder(factory).build(following)
+    context = next(
+        item
+        for item in request.untrusted_context["task_outcomes"]
+        if item["task_id"] == str(proposal.decision.task_id)
+    )
+    handoff = decode_subscription_record(thaw_payload(context["recorded_handoff"]))
+    assert isinstance(handoff, TaskHandoff)
+    assert "tests/test_alpha.py::test_one" in handoff.summary
+    assert "counts: 1 failed, 5 passed" in handoff.summary
+    assert len(handoff.summary) <= 2200
+
+
+@pytest.mark.integration
+async def test_rejection_replay_accepts_a_pre_change_detail_free_handoff(
+    session_factory, tmp_path
+):
+    factory, _, _, command, controller, _, _ = await _with_failing_pytest_output(
+        await failed_validation_case(session_factory, tmp_path)
+    )
+    async with factory() as work:
+        outcome = await controller.validate(command, work)
+    async with factory() as work:
+        record = await work.session.scalar(
+            select(SubscriptionDecisionRecord).where(
+                SubscriptionDecisionRecord.run_id == command.run_id,
+                SubscriptionDecisionRecord.idempotency_key
+                == f"validation-rejection:{command.id}",
+            )
+        )
+        assert record is not None
+        handoff = decode_subscription_record(thaw_payload(record.payload))
+        assert isinstance(handoff, TaskHandoff) and "test_one" in handoff.summary
+        legacy = replace(
+            handoff,
+            summary="Controller final validation failed: unit. "
+            f"Validation evidence: {outcome.validation_digest}. "
+            "Repair within the approved scope and obtain fresh candidate acceptance.",
+        )
+        record.payload = encode_subscription_record(legacy)
+        await work.commit()
+    async with factory() as work:
+        assert await controller.validate(command, work) == outcome
 
 
 @pytest.mark.integration

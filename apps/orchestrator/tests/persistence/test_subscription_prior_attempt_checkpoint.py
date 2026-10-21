@@ -78,7 +78,7 @@ async def test_resumed_primary_receives_checkpoint_for_its_own_prior_attempt(
     assert "sibling" not in repr(checkpoint)
     assert "current" not in repr(checkpoint)
     assert "SECRET-CONTENT-MUST-NOT-APPEAR" not in repr(request.untrusted_context)
-    assert request.prompt_version == "forge-subscription-v21"
+    assert request.prompt_version == "forge-subscription-v22"
     assert "prior_attempt_checkpoint, when present, is a historical summary" in (
         request.trusted_system_prompt
     )

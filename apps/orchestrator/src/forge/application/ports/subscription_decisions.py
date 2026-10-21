@@ -147,6 +147,7 @@ class SubscriptionDecisionRepository(Protocol):
         validation_digest: str,
         failed_checks: tuple[str, ...],
         repair_limit: int,
+        failure_detail: str = "",
     ) -> AcceptanceValidationRepair: ...
 
     async def verify_acceptance_validation_rejection(
@@ -156,6 +157,7 @@ class SubscriptionDecisionRepository(Protocol):
         validation_digest: str,
         failed_checks: tuple[str, ...],
         receipt: AcceptanceValidationRepair,
+        failure_detail: str = "",
     ) -> None: ...
 
     async def retained_acceptance_source(

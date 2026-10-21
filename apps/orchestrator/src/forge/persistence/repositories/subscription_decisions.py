@@ -450,13 +450,20 @@ class PostgresSubscriptionDecisionRepository:
         validation_digest: str,
         failed_checks: tuple[str, ...],
         repair_limit: int,
+        failure_detail: str = "",
     ) -> AcceptanceValidationRepair:
         from forge.persistence.repositories.subscription_validation_repair import (
             reject_acceptance_validation,
         )
 
         return await reject_acceptance_validation(
-            self._session, proposal, command_id, validation_digest, failed_checks, repair_limit
+            self._session,
+            proposal,
+            command_id,
+            validation_digest,
+            failed_checks,
+            repair_limit,
+            failure_detail,
         )
 
     async def verify_acceptance_validation_rejection(
@@ -466,13 +473,20 @@ class PostgresSubscriptionDecisionRepository:
         validation_digest: str,
         failed_checks: tuple[str, ...],
         receipt: AcceptanceValidationRepair,
+        failure_detail: str = "",
     ) -> None:
         from forge.persistence.repositories.subscription_validation_repair import (
             verify_acceptance_validation_rejection,
         )
 
         await verify_acceptance_validation_rejection(
-            self._session, source, command_id, validation_digest, failed_checks, receipt
+            self._session,
+            source,
+            command_id,
+            validation_digest,
+            failed_checks,
+            receipt,
+            failure_detail,
         )
 
     async def candidate_review_evidence(
