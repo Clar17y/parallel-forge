@@ -1,9 +1,11 @@
 """Persistence boundary for one recovery preview and locked transition."""
 
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 from uuid import UUID
 
+from forge.application.ports.tools import ToolCallRecord
 from forge.domain.subscription_recovery import (
     RecoveryAction,
     RecoveryReceipt,
@@ -12,10 +14,28 @@ from forge.domain.subscription_recovery import (
 )
 
 
+@dataclass(frozen=True, slots=True)
+class PriorAttemptEvidence:
+    """Persisted evidence for one earlier attempt of the same task."""
+
+    attempt_number: int
+    disposition: str | None
+    failure: str | None
+    tool_calls: tuple[ToolCallRecord, ...]
+
+
 class SubscriptionRecoveryRepository(Protocol):
     async def correction_feedback(
         self, task_id: UUID, contract_digest: str
     ) -> dict[str, str] | None: ...
+    async def prior_attempts(
+        self,
+        run_id: UUID,
+        task_id: UUID,
+        *,
+        before_attempt_number: int,
+        task_digest: str,
+    ) -> tuple[PriorAttemptEvidence, ...]: ...
     async def attempt_run_id(self, attempt_id: UUID) -> UUID: ...
     async def due(self, attempt_id: UUID) -> bool: ...
     async def due_version(self, attempt_id: UUID) -> int | None: ...
