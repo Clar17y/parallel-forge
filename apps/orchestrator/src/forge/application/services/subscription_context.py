@@ -36,11 +36,16 @@ def _text(value: object) -> str | None:
 
 
 def _distinct(values: list[str], cap: int) -> list[str]:
-    seen: list[str] = []
-    for value in values:
-        if value not in seen:
-            seen.append(value)
-    return seen[:cap]
+    return list(dict.fromkeys(values))[:cap]
+
+
+def _search_entry(args: Mapping[str, object], term_key: str) -> dict[str, object]:
+    entry: dict[str, object] = {}
+    if (term := _text(args.get(term_key))) is not None:
+        entry[term_key] = term
+    if (path := _text(args.get("path"))) is not None:
+        entry["path"] = path
+    return entry
 
 
 def _summarize_attempt(evidence: PriorAttemptEvidence) -> dict[str, object]:
@@ -66,20 +71,10 @@ def _summarize_attempt(evidence: PriorAttemptEvidence) -> dict[str, object]:
         if call.tool_name is ToolName.REPOSITORY_READ_FILE:
             if (path := _text(args.get("path"))) is not None:
                 read.append(path)
-        elif call.tool_name is ToolName.REPOSITORY_SEARCH:
-            entry: dict[str, object] = {}
-            if (literal := _text(args.get("literal"))) is not None:
-                entry["literal"] = literal
-            if (path := _text(args.get("path"))) is not None:
-                entry["path"] = path
-            if entry and entry not in searches:
-                searches.append(entry)
-        elif call.tool_name is ToolName.REPOSITORY_SEARCH_SEMANTIC:
-            entry = {}
-            if (query := _text(args.get("query"))) is not None:
-                entry["query"] = query
-            if (path := _text(args.get("path"))) is not None:
-                entry["path"] = path
+        elif call.tool_name in (ToolName.REPOSITORY_SEARCH, ToolName.REPOSITORY_SEARCH_SEMANTIC):
+            entry = _search_entry(
+                args, "literal" if call.tool_name is ToolName.REPOSITORY_SEARCH else "query"
+            )
             if entry and entry not in searches:
                 searches.append(entry)
         elif call.tool_name is ToolName.REPOSITORY_WRITE_FILE:
