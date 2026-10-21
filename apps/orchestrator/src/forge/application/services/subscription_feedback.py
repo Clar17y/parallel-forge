@@ -15,13 +15,17 @@ from forge.application.services.auth import AuthenticatedActor
 from forge.application.services.subscription_profiles import LocalOperatorProfileActor, ProfileActor
 from forge.domain.operation import canonical_digest
 from forge.domain.subscription_feedback import (
+    PrimaryFeedbackReceipt,
+    StoredPrimaryFeedback,
     StoredTaskFeedback,
+    SubscriptionPrimaryFeedbackRequest,
     SubscriptionTaskFeedbackRequest,
     TaskFeedbackConflict,
     TaskFeedbackReceipt,
 )
 
 ACTION = "subscription.task.feedback"
+PRIMARY_ACTION = "subscription.task.primary_feedback"
 
 
 class TaskFeedbackUnitOfWork(Protocol):
@@ -64,6 +68,33 @@ def _stored(receipt: ApiMutationRecord, run_id: UUID, task_id: UUID) -> StoredTa
         return stored
     except TypeError, ValueError:
         raise TaskFeedbackConflict("stored task feedback receipt differs") from None
+
+
+def _stored_primary(
+    receipt: ApiMutationRecord, run_id: UUID, task_id: UUID
+) -> StoredPrimaryFeedback:
+    try:
+        if (
+            receipt.action != PRIMARY_ACTION
+            or receipt.scope != f"run:{run_id}:task:{task_id}"
+            or receipt.lifecycle_state != "COMPLETED"
+            or receipt.resource_kind != "subscription_primary_feedback"
+            or receipt.resource_id != receipt.id
+            or receipt.response_status != 200
+        ):
+            raise ValueError
+        stored = StoredPrimaryFeedback.model_validate_json(json.dumps(receipt.response_payload))
+        if (
+            stored.receipt.receipt_id != receipt.id
+            or stored.receipt.operator_id != receipt.actor_id
+            or stored.receipt.run_id != run_id
+            or stored.receipt.task_id != task_id
+            or stored.receipt.primary_task_id != task_id
+        ):
+            raise ValueError
+        return stored
+    except TypeError, ValueError:
+        raise TaskFeedbackConflict("stored primary feedback receipt differs") from None
 
 
 class SubscriptionTaskFeedbackService:
@@ -160,6 +191,94 @@ class SubscriptionTaskFeedbackService:
                 response_status=200,
                 response_payload=payload,
                 resource_kind="subscription_feedback",
+                resource_id=mutation.id,
+            )
+            await work.commit()
+            return receipt
+
+    async def submit_primary(
+        self,
+        *,
+        run_id: UUID,
+        task_id: UUID,
+        actor: ProfileActor,
+        idempotency_key: str,
+        request: SubscriptionPrimaryFeedbackRequest,
+    ) -> PrimaryFeedbackReceipt:
+        if not isinstance(actor, (AuthenticatedActor, LocalOperatorProfileActor)):
+            raise TypeError("operator actor is required")
+        if any(
+            not isinstance(value, UUID) or value.int == 0
+            for value in (run_id, task_id, actor.actor_id)
+        ):
+            raise ValueError("primary feedback identity is invalid")
+        if not isinstance(request, SubscriptionPrimaryFeedbackRequest):
+            raise TypeError("typed primary feedback request is required")
+        body = SubscriptionPrimaryFeedbackRequest.model_validate(request.model_dump())
+        digest = hashlib.sha256(
+            json.dumps(body.model_dump(mode="json"), sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        async with self._factory() as work:
+            await work.runs.get_for_update(run_id)
+            mutation = await work.mutations.reserve(
+                actor_id=actor.actor_id,
+                action=PRIMARY_ACTION,
+                scope=f"run:{run_id}:task:{task_id}",
+                idempotency_key=idempotency_key,
+                request_digest=digest,
+            )
+            if mutation.is_replay:
+                stored = _stored_primary(mutation, run_id, task_id)
+                await work.subscription_feedback.verify_primary_receipt(
+                    stored,
+                    actor_id=mutation.actor_id,
+                    request_digest=mutation.request_digest,
+                )
+                await work.commit()
+                return stored.receipt
+            observed_at = self._now()
+            if observed_at.tzinfo is None or observed_at.utcoffset() is None:
+                raise ValueError("primary feedback clock must be timezone-aware")
+            changed = await work.subscription_feedback.submit_primary(
+                run_id,
+                task_id,
+                body,
+                actor_id=actor.actor_id,
+                request_digest=digest,
+                receipt_id=mutation.id,
+            )
+            receipt = PrimaryFeedbackReceipt(
+                receipt_id=mutation.id,
+                operator_id=actor.actor_id,
+                run_id=run_id,
+                primary_task_id=changed.primary_task_id,
+                task_id=task_id,
+                status=changed.status,
+                run_version=changed.run_version,
+                task_version=changed.task_version,
+                feedback_digest=changed.feedback_digest,
+                binding_digest=changed.binding_digest,
+                feedback_bytes=changed.feedback_bytes,
+                observed_at=observed_at.astimezone(UTC),
+            )
+            payload = StoredPrimaryFeedback(receipt=receipt).model_dump(mode="json")
+            await work.audit.append(
+                actor_id=actor.actor_id,
+                event_type="subscription.task_primary_feedback_submitted",
+                subject_type="subscription_task",
+                subject_id=task_id,
+                correlation_id=mutation.id,
+                payload={
+                    **receipt.model_dump(mode="json"),
+                    "request_digest": digest,
+                    "response_digest": canonical_digest(payload),
+                },
+            )
+            await work.mutations.complete(
+                mutation.id,
+                response_status=200,
+                response_payload=payload,
+                resource_kind="subscription_primary_feedback",
                 resource_id=mutation.id,
             )
             await work.commit()

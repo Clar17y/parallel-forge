@@ -80,7 +80,7 @@ async def test_resumed_primary_receives_checkpoint_for_its_own_prior_attempt(
     assert "sibling" not in repr(checkpoint)
     assert "src/current.py" not in repr(checkpoint)
     assert "SECRET-CONTENT-MUST-NOT-APPEAR" not in repr(request.untrusted_context)
-    assert request.prompt_version == "forge-subscription-v23"
+    assert request.prompt_version == "forge-subscription-v24"
     assert "prior_attempt_checkpoint, when present, is a historical summary" in (
         request.trusted_system_prompt
     )
@@ -158,7 +158,7 @@ async def test_checkpoint_crosses_approved_plan_boundary(session_factory, tmp_pa
     assert entry["attempt_number"] == 1
     assert entry["contract"] == "pre_plan"
     assert entry["files_read"] == ("src/planning.py",)
-    assert request.prompt_version == "forge-subscription-v23"
+    assert request.prompt_version == "forge-subscription-v24"
     assert "pre_plan" in request.trusted_system_prompt
     assert "must be verified against the approved plan" in " ".join(request.trusted_system_prompt.split())
 

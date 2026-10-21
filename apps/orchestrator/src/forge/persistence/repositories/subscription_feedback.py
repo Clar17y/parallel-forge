@@ -12,6 +12,7 @@ from forge.application.ports.subscription_execution import SubscriptionAdmission
 from forge.application.ports.subscription_feedback import (
     FeedbackInvocationContext,
     FeedbackTransition,
+    PrimaryFeedbackTransition,
 )
 from forge.domain.operation import canonical_digest
 from forge.domain.payload import validate_durable_payload
@@ -26,7 +27,10 @@ from forge.domain.subscription import (
 )
 from forge.domain.subscription_feedback import (
     MAX_FEEDBACK_PER_TASK,
+    MAX_PRIMARY_FEEDBACK_PENDING,
+    StoredPrimaryFeedback,
     StoredTaskFeedback,
+    SubscriptionPrimaryFeedbackRequest,
     SubscriptionTaskFeedbackRequest,
     TaskFeedbackConflict,
 )
@@ -40,6 +44,7 @@ from forge.persistence.models.subscription import (
     SubscriptionTask,
 )
 from forge.persistence.models.subscription_feedback import SubscriptionTaskFeedback
+from forge.persistence.models.subscription_primary_feedback import SubscriptionPrimaryFeedback
 from forge.persistence.models.subscription_results import SubscriptionAttemptResult
 from forge.persistence.models.subscription_usage import (
     SubscriptionAttemptConsumption,
@@ -92,6 +97,59 @@ def _context(row: SubscriptionTaskFeedback) -> dict[str, object]:
     }
     validate_durable_payload(payload)
     return payload
+
+
+def _primary_binding_digest(row: SubscriptionPrimaryFeedback) -> str:
+    return canonical_digest(
+        {
+            "schema_version": 1,
+            "kind": "primary_feedback",
+            "receipt_id": str(row.id),
+            "operator_id": str(row.actor_id),
+            "run_id": str(row.run_id),
+            "primary_task_id": str(row.primary_task_id),
+            "observed_run_version": row.observed_run_version,
+            "observed_task_version": row.observed_task_version,
+            "observed_task_digest": row.observed_task_digest,
+            "envelope_digest": row.envelope_digest,
+            "request_digest": row.request_digest,
+            "feedback_digest": row.feedback_digest,
+            "feedback_bytes": row.feedback_bytes,
+        }
+    )
+
+
+def _primary_context(row: SubscriptionPrimaryFeedback) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "receipt_id": str(row.id),
+        "operator_id": str(row.actor_id),
+        "run_id": str(row.run_id),
+        "primary_task_id": str(row.primary_task_id),
+        "task_id": str(row.primary_task_id),
+        "observed_run_version": row.observed_run_version,
+        "observed_task_version": row.observed_task_version,
+        "feedback": row.feedback,
+        "feedback_digest": row.feedback_digest,
+        "binding_digest": _primary_binding_digest(row),
+        "feedback_bytes": row.feedback_bytes,
+        "delivery_attempt_id": str(row.delivery_attempt_id) if row.delivery_attempt_id else None,
+    }
+    validate_durable_payload(payload)
+    return payload
+
+
+def _close_primary(row: SubscriptionPrimaryFeedback, reason: str) -> None:
+    application: dict[str, object] = {
+        "schema_version": 1,
+        "kind": "primary_feedback_closed",
+        "feedback_receipt_id": str(row.id),
+        "feedback_digest": row.feedback_digest,
+        "binding_digest": _primary_binding_digest(row),
+        "reason": reason,
+    }
+    row.state = "closed"
+    row.closed_reason = reason
+    row.application_digest = canonical_digest(application)
 
 
 def _close_before_forwarding(row: SubscriptionTaskFeedback, reason: str) -> None:
@@ -330,6 +388,191 @@ class PostgresSubscriptionFeedbackRepository:
             feedback_bytes=feedback_bytes,
         )
 
+    async def verify_primary_receipt(
+        self,
+        stored: StoredPrimaryFeedback,
+        *,
+        actor_id: UUID,
+        request_digest: str,
+    ) -> None:
+        receipt = stored.receipt
+        row = await self._session.get(
+            SubscriptionPrimaryFeedback, receipt.receipt_id, populate_existing=True
+        )
+        if (
+            row is None
+            or row.actor_id != actor_id
+            or receipt.operator_id != actor_id
+            or row.request_digest != request_digest
+            or row.run_id != receipt.run_id
+            or row.primary_task_id != receipt.primary_task_id
+            or row.primary_task_id != receipt.task_id
+            or row.observed_run_version != receipt.run_version
+            or row.observed_task_version != receipt.task_version
+            or receipt.status != "pending"
+            or row.feedback_digest != receipt.feedback_digest
+            or _primary_binding_digest(row) != receipt.binding_digest
+            or row.feedback_bytes != receipt.feedback_bytes
+            or _digest(row.feedback) != row.feedback_digest
+        ):
+            raise TaskFeedbackConflict("stored primary feedback receipt differs")
+
+    async def submit_primary(
+        self,
+        run_id: UUID,
+        task_id: UUID,
+        request: SubscriptionPrimaryFeedbackRequest,
+        *,
+        actor_id: UUID,
+        request_digest: str,
+        receipt_id: UUID,
+    ) -> PrimaryFeedbackTransition:
+        run = await self._session.get(Run, run_id, populate_existing=True)
+        task = await self._session.get(
+            SubscriptionTask, task_id, with_for_update=True, populate_existing=True
+        )
+        scheduled = await self._session.get(
+            SubscriptionScheduledTask, task_id, with_for_update=True, populate_existing=True
+        )
+        if run is None or task is None or scheduled is None or task.run_id != run_id:
+            raise TaskFeedbackConflict("primary feedback target is absent or foreign")
+        if run.version != request.expected_run_version or task.version != request.expected_task_version:
+            raise TaskFeedbackConflict("primary feedback observation is stale")
+        if run.state in {RunState.CANCELLED.value, RunState.COMPLETED.value, RunState.FAILED.value}:
+            raise TaskFeedbackConflict("primary feedback run is settled")
+        try:
+            target = decode_subscription_record(task.payload)
+        except TypeError, ValueError:
+            raise TaskFeedbackConflict("primary feedback target contract differs") from None
+        if (
+            not isinstance(target, LogicalTaskContract)
+            or target.run_id != run_id
+            or target.task_id != task_id
+            or target.parent_task_id is not None
+            or target.purpose is not SpecialistPurpose.PRIMARY
+            or scheduled.run_id != run_id
+            or scheduled.parent_task_id is not None
+            or task.parent_task_id is not None
+            or task.cancel_requested
+            or scheduled.cancel_requested
+        ):
+            raise TaskFeedbackConflict("primary feedback target is not the root primary")
+        pending = await self._session.scalar(
+            select(func.count()).select_from(SubscriptionPrimaryFeedback).where(
+                SubscriptionPrimaryFeedback.run_id == run_id,
+                SubscriptionPrimaryFeedback.primary_task_id == task_id,
+                SubscriptionPrimaryFeedback.state == "pending",
+            )
+        )
+        if int(pending or 0) >= MAX_PRIMARY_FEEDBACK_PENDING:
+            raise TaskFeedbackConflict("primary feedback pending bound reached")
+        total = await self._session.scalar(
+            select(func.count()).select_from(SubscriptionPrimaryFeedback).where(
+                SubscriptionPrimaryFeedback.run_id == run_id,
+                SubscriptionPrimaryFeedback.primary_task_id == task_id,
+            )
+        )
+        if int(total or 0) >= MAX_FEEDBACK_PER_TASK:
+            raise TaskFeedbackConflict("primary feedback history reached its bound")
+        envelope = await self._session.get(SubscriptionEnvelope, run_id)
+        try:
+            frozen_envelope = None if envelope is None else decode_subscription_record(envelope.payload)
+        except TypeError, ValueError:
+            frozen_envelope = None
+        if (
+            envelope is None
+            or not isinstance(frozen_envelope, ExecutionEnvelope)
+            or frozen_envelope.run_id != run_id
+            or not frozen_envelope.permits_route(target.purpose, target.route)
+        ):
+            raise TaskFeedbackConflict("primary feedback execution envelope is absent")
+        budget = await PostgresSubscriptionBudgetRepository(self._session).fit_reservation(
+            run_id, task_id, replace(target.budget, max_provider_attempts=1, max_repairs=0)
+        )
+        if budget is None and not await self._has_unsettled_reservation(run_id):
+            raise TaskFeedbackConflict("primary cumulative budget is exhausted")
+        feedback_digest = _digest(request.feedback)
+        feedback_bytes = len(request.feedback.encode("utf-8"))
+        row = SubscriptionPrimaryFeedback(
+            id=receipt_id,
+            actor_id=actor_id,
+            run_id=run_id,
+            primary_task_id=task_id,
+            observed_run_version=run.version,
+            observed_task_version=task.version,
+            observed_task_digest=canonical_digest(task.payload),
+            envelope_digest=canonical_digest(envelope.payload),
+            request_digest=request_digest,
+            feedback=request.feedback,
+            feedback_digest=feedback_digest,
+            feedback_bytes=feedback_bytes,
+        )
+        self._session.add(row)
+        # A blocked primary is requeued below; the receipt keeps the observed
+        # pre-requeue version so replay verification stays consistent.
+        observed_task_version = task.version
+        if (
+            task.state == "blocked"
+            and scheduled.state == "blocked"
+            and not task.pause_requested
+            and not scheduled.pause_requested
+        ):
+            task.state = scheduled.state = "queued"
+            task.version += 1
+        await self._session.flush()
+        return PrimaryFeedbackTransition(
+            primary_task_id=task_id,
+            status="pending",
+            run_version=run.version,
+            task_version=observed_task_version,
+            feedback_digest=feedback_digest,
+            binding_digest=_primary_binding_digest(row),
+            feedback_bytes=feedback_bytes,
+        )
+
+    async def _deliver_primary_feedback(
+        self, admission: SubscriptionAdmission
+    ) -> tuple[dict[str, object], ...]:
+        attempt_id = admission.attempt.attempt_id
+        already = list(
+            await self._session.scalars(
+                select(SubscriptionPrimaryFeedback)
+                .where(
+                    SubscriptionPrimaryFeedback.run_id == admission.task.run_id,
+                    SubscriptionPrimaryFeedback.primary_task_id == admission.task.task_id,
+                    SubscriptionPrimaryFeedback.delivery_attempt_id == attempt_id,
+                    SubscriptionPrimaryFeedback.state == "delivered",
+                )
+                .order_by(SubscriptionPrimaryFeedback.created_at, SubscriptionPrimaryFeedback.id)
+                .with_for_update()
+            )
+        )
+        if already:
+            return tuple(_primary_context(row) for row in already)
+        rows = list(
+            await self._session.scalars(
+                select(SubscriptionPrimaryFeedback)
+                .where(
+                    SubscriptionPrimaryFeedback.run_id == admission.task.run_id,
+                    SubscriptionPrimaryFeedback.primary_task_id == admission.task.task_id,
+                    SubscriptionPrimaryFeedback.state == "pending",
+                )
+                .order_by(SubscriptionPrimaryFeedback.created_at, SubscriptionPrimaryFeedback.id)
+                .limit(MAX_PRIMARY_FEEDBACK_PENDING + 1)
+                .with_for_update()
+            )
+        )
+        if len(rows) > MAX_PRIMARY_FEEDBACK_PENDING:
+            raise TaskFeedbackConflict("primary feedback invocation context exceeds its bound")
+        now = datetime.now(UTC)
+        for row in rows:
+            row.state = "delivered"
+            row.delivery_attempt_id = attempt_id
+            row.delivered_at = now
+        if rows:
+            await self._session.flush()
+        return tuple(_primary_context(row) for row in rows)
+
     async def invocation_context(
         self, admission: SubscriptionAdmission
     ) -> FeedbackInvocationContext:
@@ -345,10 +588,13 @@ class PostgresSubscriptionFeedbackRepository:
                 .limit(1)
                 .with_for_update()
             )
+            primary_feedback = await self._deliver_primary_feedback(admission)
             if row is None:
-                return FeedbackInvocationContext()
+                return FeedbackInvocationContext(primary_feedback=primary_feedback)
             await self._bind_primary(row, admission)
-            return FeedbackInvocationContext(pending_primary=_context(row))
+            return FeedbackInvocationContext(
+                pending_primary=_context(row), primary_feedback=primary_feedback
+            )
 
         rows = list(
             await self._session.scalars(
@@ -684,9 +930,49 @@ class PostgresSubscriptionFeedbackRepository:
                 row.state = "closed"
                 row.closed_reason = "cancelled"
             closed += 1
+        primary_rows = list(
+            await self._session.scalars(
+                select(SubscriptionPrimaryFeedback)
+                .where(
+                    SubscriptionPrimaryFeedback.run_id == run_id,
+                    SubscriptionPrimaryFeedback.state == "pending",
+                )
+                .order_by(SubscriptionPrimaryFeedback.created_at, SubscriptionPrimaryFeedback.id)
+                .with_for_update()
+            )
+        )
+        for prow in primary_rows:
+            _close_primary(prow, "cancelled")
+            closed += 1
         if closed:
             await self._session.flush()
         return closed
+
+    async def close_primary_terminal(self, run_id: UUID) -> int:
+        run = await self._session.get(Run, run_id, with_for_update=True, populate_existing=True)
+        if run is None or run.state not in {
+            RunState.CANCELLED.value,
+            RunState.COMPLETED.value,
+            RunState.FAILED.value,
+        }:
+            return 0
+        reason = "cancelled" if run.state == RunState.CANCELLED.value else "run_terminal"
+        rows = list(
+            await self._session.scalars(
+                select(SubscriptionPrimaryFeedback)
+                .where(
+                    SubscriptionPrimaryFeedback.run_id == run_id,
+                    SubscriptionPrimaryFeedback.state == "pending",
+                )
+                .order_by(SubscriptionPrimaryFeedback.created_at, SubscriptionPrimaryFeedback.id)
+                .with_for_update()
+            )
+        )
+        for row in rows:
+            _close_primary(row, reason)
+        if rows:
+            await self._session.flush()
+        return len(rows)
 
     async def close_exhausted(self, run_id: UUID) -> int:
         run = await self._session.get(Run, run_id, with_for_update=True, populate_existing=True)
@@ -783,6 +1069,48 @@ class PostgresSubscriptionFeedbackRepository:
                     row.state = "closed"
                     row.closed_reason = "budget_exhausted"
                 closed += 1
+        # Primary-directed feedback: close on terminal run or exhausted primary budget.
+        if run.state in {RunState.COMPLETED.value, RunState.FAILED.value}:
+            closed += await self.close_primary_terminal(run_id)
+        else:
+            primary_pending = list(
+                await self._session.scalars(
+                    select(SubscriptionPrimaryFeedback)
+                    .where(
+                        SubscriptionPrimaryFeedback.run_id == run_id,
+                        SubscriptionPrimaryFeedback.state == "pending",
+                    )
+                    .order_by(SubscriptionPrimaryFeedback.created_at, SubscriptionPrimaryFeedback.id)
+                    .with_for_update()
+                )
+            )
+            by_task: dict[UUID, list[SubscriptionPrimaryFeedback]] = {}
+            for prow in primary_pending:
+                by_task.setdefault(prow.primary_task_id, []).append(prow)
+            for ptask_id, candidates2 in by_task.items():
+                ptask = await self._session.get(
+                    SubscriptionTask, ptask_id, with_for_update=True, populate_existing=True
+                )
+                psched = await self._session.get(
+                    SubscriptionScheduledTask, ptask_id, with_for_update=True, populate_existing=True
+                )
+                try:
+                    pcontract = None if ptask is None else decode_subscription_record(ptask.payload)
+                except TypeError, ValueError:
+                    pcontract = None
+                if (
+                    ptask is None or psched is None or not isinstance(pcontract, LogicalTaskContract)
+                    or ptask.state == "running" or psched.state in {"leased", "reconciling"}
+                ):
+                    continue
+                remaining2 = await budget.fit_reservation(
+                    run_id, ptask_id, replace(pcontract.budget, max_provider_attempts=1, max_repairs=0)
+                )
+                if remaining2 is not None:
+                    continue
+                for prow in candidates2:
+                    _close_primary(prow, "budget_exhausted")
+                    closed += 1
         if closed:
             await self._session.flush()
         return closed

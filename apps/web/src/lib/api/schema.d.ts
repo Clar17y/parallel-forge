@@ -1400,6 +1400,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/{run_id}/subscription-tasks/{task_id}/primary-feedback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Submit Primary Feedback */
+        post: operations["submit_primary_feedback_api_runs__run_id__subscription_tasks__task_id__primary_feedback_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs/{run_id}/usage": {
         parameters: {
             query?: never;
@@ -4810,6 +4827,66 @@ export interface components {
             purpose: components["schemas"]["SpecialistPurpose"];
             token_budget?: components["schemas"]["TokenBudgetDefaultsInput"] | null;
         };
+        /** @enum {string} */
+        PrimaryFeedbackClosedReason: "cancelled" | "budget_exhausted" | "run_terminal";
+        /** PrimaryFeedbackReceipt */
+        PrimaryFeedbackReceipt: {
+            /** Binding Digest */
+            binding_digest: string;
+            /** Feedback Bytes */
+            feedback_bytes: number;
+            /** Feedback Digest */
+            feedback_digest: string;
+            /**
+             * Observed At
+             * Format: date-time
+             */
+            observed_at: string;
+            /**
+             * Operator Id
+             * Format: uuid
+             */
+            operator_id: string;
+            /**
+             * Primary Task Id
+             * Format: uuid
+             */
+            primary_task_id: string;
+            /**
+             * Receipt Id
+             * Format: uuid
+             */
+            receipt_id: string;
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            /** Run Version */
+            run_version: number;
+            status: components["schemas"]["PrimaryFeedbackStatus"];
+            /**
+             * Task Id
+             * Format: uuid
+             */
+            task_id: string;
+            /** Task Version */
+            task_version: number;
+        };
+        /**
+         * PrimaryFeedbackRequest
+         * @description Parse a closed JSON body while keeping version integers strict.
+         */
+        PrimaryFeedbackRequest: {
+            /** Expected Run Version */
+            expected_run_version: number;
+            /** Expected Task Version */
+            expected_task_version: number;
+            /** Feedback */
+            feedback: string;
+        };
+        /** @enum {string} */
+        PrimaryFeedbackStatus: "pending" | "delivered" | "closed";
         /** ProfileAppendRequest */
         ProfileAppendRequest: {
             /**
@@ -6046,6 +6123,34 @@ export interface components {
             /** Label */
             label: string;
         };
+        /** SubscriptionPrimaryFeedbackView */
+        SubscriptionPrimaryFeedbackView: {
+            closed_reason?: components["schemas"]["PrimaryFeedbackClosedReason"] | null;
+            /** Delivered At */
+            delivered_at?: string | null;
+            /** Delivery Attempt Id */
+            delivery_attempt_id?: string | null;
+            /** Feedback Bytes */
+            feedback_bytes: number;
+            /** Feedback Digest */
+            feedback_digest: string;
+            /**
+             * Observed At
+             * Format: date-time
+             */
+            observed_at: string;
+            /**
+             * Primary Task Id
+             * Format: uuid
+             */
+            primary_task_id: string;
+            /**
+             * Receipt Id
+             * Format: uuid
+             */
+            receipt_id: string;
+            status: components["schemas"]["PrimaryFeedbackStatus"];
+        };
         /** SubscriptionQueueDiagnosticView */
         SubscriptionQueueDiagnosticView: {
             /** Available Routes */
@@ -6241,6 +6346,8 @@ export interface components {
             parent_task_id: string | null;
             /** Pause Requested */
             pause_requested: boolean;
+            /** Primary Feedback Receipts */
+            primary_feedback_receipts?: components["schemas"]["SubscriptionPrimaryFeedbackView"][];
             /** Purpose */
             purpose: string;
             queue_diagnostic?: components["schemas"]["SubscriptionQueueDiagnosticView"] | null;
@@ -10277,6 +10384,44 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TaskFeedbackReceipt"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    submit_primary_feedback_api_runs__run_id__subscription_tasks__task_id__primary_feedback_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                run_id: string;
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PrimaryFeedbackRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PrimaryFeedbackReceipt"];
                 };
             };
             /** @description Validation Error */

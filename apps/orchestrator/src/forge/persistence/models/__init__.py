@@ -89,6 +89,7 @@ from forge.persistence.models.subscription import (
 from forge.persistence.models.subscription_feedback import SubscriptionTaskFeedback
 from forge.persistence.models.subscription_handoff import SubscriptionHandoffFence
 from forge.persistence.models.subscription_plan_gate import SubscriptionPlanGate
+from forge.persistence.models.subscription_primary_feedback import SubscriptionPrimaryFeedback
 from forge.persistence.models.subscription_quota import (
     SubscriptionQuotaAdmission,
     SubscriptionQuotaObservation,
@@ -195,6 +196,7 @@ __all__ = [
     "SubscriptionHandoffFence",
     "SubscriptionOperationBinding",
     "SubscriptionPlanGate",
+    "SubscriptionPrimaryFeedback",
     "SubscriptionProfileVersion",
     "SubscriptionQuotaAdmission",
     "SubscriptionQuotaObservation",

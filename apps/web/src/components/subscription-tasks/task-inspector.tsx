@@ -8,6 +8,7 @@ import { useApi } from '@/hooks/use-api';
 import { useSubscriptionTasks, useSubscriptionTasksContext, type SubscriptionTasksState } from '@/hooks/use-subscription-tasks';
 import { QuotaStatusCard, QuotaStatusList } from './quota-status';
 import { TaskControls, TaskControlSummary } from './task-controls';
+import { PrimaryFeedback } from './primary-feedback';
 import { TaskFeedback } from './task-feedback';
 import { recoveryReason, TaskRecovery } from './task-recovery';
 import { RecoveryReceiptHistory } from './recovery-receipt-history';
@@ -90,6 +91,9 @@ function TaskInspectorView({ runId, controller }: { runId: string; controller: S
             </div> : null}
             {selected === task.task_id ? <>
               <TaskFeedback key={`${task.task_id}-feedback`} runId={runId}
+                runVersion={tasks.value!.run_version ?? -1} runIsTerminal={tasks.value!.run_is_terminal ?? false}
+                task={task} projectionToken={tasks.token} onRefresh={tasks.refresh} />
+              <PrimaryFeedback key={`${task.task_id}-primary-feedback`} runId={runId}
                 runVersion={tasks.value!.run_version ?? -1} runIsTerminal={tasks.value!.run_is_terminal ?? false}
                 task={task} projectionToken={tasks.token} onRefresh={tasks.refresh} />
               <TaskControls key={`${task.task_id}-controls`} runId={runId}
