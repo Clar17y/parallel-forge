@@ -9,6 +9,8 @@ from sqlalchemy import func, literal, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from forge.application.ports.subscription_gateway import RoleDecisionRejection, SubscriptionFailure
+from forge.application.ports.subscription_recovery import PriorAttemptEvidence
+from forge.application.ports.tools import ToolCallRecord
 from forge.domain.event import RunEvent as DomainRunEvent
 from forge.domain.operation import canonical_digest
 from forge.domain.paths import policy_path_key
@@ -44,6 +46,7 @@ from forge.domain.subscription_recovery import (
     RecoverySnapshot,
 )
 from forge.observability.redaction import redact_value
+from forge.persistence.models import ToolCall
 from forge.persistence.models.execution import Approval, RunEvent
 from forge.persistence.models.project import Project
 from forge.persistence.models.run import Run
@@ -77,6 +80,7 @@ from forge.persistence.repositories.subscription_budget import PostgresSubscript
 from forge.persistence.repositories.subscription_launch import launches_confirmed
 from forge.persistence.repositories.subscription_resumption import verify_paused_attempts
 from forge.persistence.repositories.subscription_retry_allowance import SubscriptionRetryAllowance
+from forge.persistence.repositories.tool_calls import _record_from_row
 
 
 class RecoveryConflict(RuntimeError):
@@ -302,6 +306,76 @@ class PostgresSubscriptionRecoveryRepository:
         if not isinstance(kind, str) or not isinstance(reason, str):
             return None
         return {"kind": kind, "reason_code": reason, "source_attempt_id": str(row.attempt_id)}
+
+    async def prior_attempts(
+        self,
+        run_id: UUID,
+        task_id: UUID,
+        *,
+        before_attempt_number: int,
+        task_digest: str,
+    ) -> tuple[PriorAttemptEvidence, ...]:
+        """Earlier attempts of this task under the same frozen contract digest.
+
+        The digest gate mirrors ``correction_feedback``: attempts recorded
+        under a different task contract never leak into a new contract's
+        invocation. Only persisted tool-call rows are returned.
+        """
+        rows = (
+            await self._session.execute(
+                select(SubscriptionAttempt, SubscriptionAttemptResult)
+                .outerjoin(
+                    SubscriptionAttemptResult,
+                    SubscriptionAttemptResult.attempt_id == SubscriptionAttempt.id,
+                )
+                .where(
+                    SubscriptionAttempt.run_id == run_id,
+                    SubscriptionAttempt.task_row_id == task_id,
+                    SubscriptionAttempt.attempt_number < before_attempt_number,
+                    SubscriptionAttempt.task_digest == task_digest,
+                )
+                .order_by(SubscriptionAttempt.attempt_number)
+            )
+        ).all()
+        if not rows:
+            return ()
+        attempt_ids = [attempt.id for attempt, _ in rows]
+        calls = (
+            await self._session.execute(
+                select(ToolCall)
+                .where(
+                    ToolCall.run_id == run_id,
+                    ToolCall.subscription_task_id == task_id,
+                    ToolCall.subscription_attempt_id.in_(attempt_ids),
+                    ToolCall.authorized.is_(True),
+                )
+                .order_by(ToolCall.started_at, ToolCall.id)
+            )
+        ).scalars().all()
+        by_attempt: dict[UUID, list[ToolCallRecord]] = {
+            attempt_id: [] for attempt_id in attempt_ids
+        }
+        for row in calls:
+            if row.subscription_attempt_id in by_attempt:
+                by_attempt[row.subscription_attempt_id].append(_record_from_row(row))
+        evidence: list[PriorAttemptEvidence] = []
+        for attempt, result in rows:
+            failure: str | None = None
+            if result is not None:
+                for key in ("effective_failure", "failure"):
+                    value = result.result_payload.get(key)
+                    if isinstance(value, str) and value:
+                        failure = value
+                        break
+            evidence.append(
+                PriorAttemptEvidence(
+                    attempt_number=attempt.attempt_number,
+                    disposition=result.disposition if result is not None else attempt.status,
+                    failure=failure,
+                    tool_calls=tuple(by_attempt.get(attempt.id, ())),
+                )
+            )
+        return tuple(evidence)
 
     async def block_stale_queued_contract(
         self, run_id: UUID, task: SubscriptionTask, scheduled: SubscriptionScheduledTask
