@@ -1,12 +1,13 @@
 """Immutable run state and snapshot value types."""
 
 import re
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from uuid import UUID
 
 from forge.domain.approval import ApprovalGate
 from forge.domain.resource import ResourceState, validate_resource_shape
+from forge.domain.workflow import WorkflowPreferences
 
 
 class _Unset:
@@ -106,8 +107,12 @@ class RunSnapshot:
     secret_id: str | None = None
     pending_gate: ApprovalGate | None = None
     pending_evidence_digest: str | None = None
+    # Preferences are mutable metadata; lifecycle authority is compared separately.
+    workflow: WorkflowPreferences | None = field(default=None, compare=False)
 
     def __post_init__(self) -> None:
+        if self.workflow is not None and not isinstance(self.workflow, WorkflowPreferences):
+            raise TypeError("run workflow must be WorkflowPreferences")
         validate_resource_shape(
             self.database_state,
             self.database_name,
@@ -148,6 +153,10 @@ class RunSnapshot:
             pending_evidence_digest=pending_evidence_digest,
             version=self.version + 1,
         )
+
+    def with_workflow(self, workflow: WorkflowPreferences | None) -> RunSnapshot:
+        """Return a workflow update without changing the lifecycle version fence."""
+        return replace(self, workflow=workflow)
 
     def with_resource(
         self,

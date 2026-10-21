@@ -288,6 +288,21 @@ class _FakeValidator:
             raise PlanEvidenceValidationError("source repository drifted")
         return object()
 
+    async def validate_with_plan(self, work: Any, run_id: UUID):
+        from forge.domain.plan import PlanOutput
+
+        evidence = await self.validate(work, run_id)
+        return evidence, PlanOutput(
+            summary="Plan",
+            assumptions=(),
+            affected_components=(),
+            steps=("Implement",),
+            required_checks=("unit",),
+            risks=("Risk",),
+            security_considerations=(),
+            dependency_changes=(),
+        )
+
     async def current_source(self, work: Any, run_id: UUID) -> CurrentPlanSource:
         del work, run_id
         return CurrentPlanSource(
@@ -722,3 +737,27 @@ async def test_authoritative_drift_invalidates_approval_and_enqueues_restart_pla
     assert work.commit_count == 1
     assert work.auth.create_approval_count == 0
     assert work.auth.consume_challenge_count == 0
+
+
+@pytest.mark.asyncio
+async def test_material_questions_cannot_be_consumed_as_plan_approval() -> None:
+    from forge.domain.plan import ScopedPlanOutput
+
+    actor_id = uuid4()
+    run = _fixture_run()
+    approval = _fixture_approval(run, actor_id)
+    command = _fixture_command(run, approval, actor_id)
+    work = _FakeUnitOfWork(run, approval)
+
+    class QuestionValidator(_FakeValidator):
+        async def validate_with_plan(self, work, run_id):
+            evidence, base = await super().validate_with_plan(work, run_id)
+            return evidence, ScopedPlanOutput(
+                **base.model_dump(),
+                owned_paths=("apps",),
+                material_questions=("Retention period?",),
+            )
+
+    with pytest.raises(ApprovalCommandValidationError, match="answer material questions"):
+        await ApprovePlanHandler(QuestionValidator())(command, work)
+    assert work.runs.transitions == []

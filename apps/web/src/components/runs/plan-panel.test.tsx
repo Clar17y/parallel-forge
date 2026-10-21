@@ -46,3 +46,29 @@ test.each([{ scope: null }, { scope: 'src' }, { scope: [''] }])('rejects malform
   expect(await screen.findByRole('alert')).toHaveTextContent('Plan evidence unavailable.');
   expect(screen.queryByRole('heading', { name: 'Writable paths' })).toBeNull();
 });
+
+test('displays internal preparation plan authority in technical provenance', () => {
+  const view = projection();
+  view.plan.authority = 'internal_preparation';
+  render(<PlanPanel projection={view} />);
+  expect(screen.getByText('Internal preparation (ordinary development)')).toBeInTheDocument();
+});
+
+test('shows unresolved material questions and guides to revision path', async () => {
+  const plan = {
+    summary: 'Scoped plan with questions',
+    assumptions: [],
+    affected_components: ['API service'],
+    steps: ['Implement'],
+    required_checks: ['unit'],
+    risks: ['Regression'],
+    security_considerations: [],
+    dependency_changes: [],
+    material_questions: ['Should database migration drop column x?'],
+  };
+  vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ digest: 'c'.repeat(64), text: JSON.stringify(plan) })));
+  render(<PlanPanel projection={projection()} />);
+  await screen.findByText('Should database migration drop column x?');
+  expect(screen.getByRole('alert')).toHaveTextContent(/Unresolved material questions/i);
+  expect(screen.getByText(/Request revision/i)).toBeInTheDocument();
+});

@@ -144,6 +144,7 @@ class ReviewLifecycleScript(CounterScript):
     async def execute(self, request, broker):
         if request.run_state is RunState.PLANNING:
             return ScopedPlanOutput(
+                material_questions=(),
                 summary="Repair inclusive range and all four boundary cases",
                 assumptions=(),
                 affected_components=RANGE_PATHS,

@@ -64,6 +64,7 @@ class WorktreeScript(CounterScript):
     async def execute(self, request, broker):
         if request.run_state is RunState.PLANNING:
             return ScopedPlanOutput(
+                material_questions=(),
                 summary="Update alpha in this run's managed worktree",
                 assumptions=(),
                 affected_components=(ALPHA,),

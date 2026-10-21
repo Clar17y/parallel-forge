@@ -19,6 +19,7 @@ from forge.domain.errors import InvalidTransition
 from forge.domain.event import RunEvent
 from forge.domain.resource import ResourceState
 from forge.domain.run import RunSnapshot, RunState, SuspensionContext, SuspensionKind
+from forge.domain.workflow import WorkflowPreferences
 from forge.persistence.models import (
     AgentExecution,
     OperationIntent,
@@ -135,6 +136,47 @@ class PostgresRunRepository:
                 or current.base_sha != evidence.base_sha
             ):
                 raise PersistenceError("approved run budget evidence differs from the pending gate")
+            return self._state_engine.transition(current, RunState.PREPARING_WORKTREE)
+
+        def set_budget(record: Run) -> None:
+            record.token_budget = evidence.token_budget
+            record.cost_budget_minor = evidence.cost_budget_minor
+            record.duration_budget_seconds = evidence.duration_budget_seconds
+
+        return await self._change_state(
+            run_id,
+            expected_version,
+            change,
+            event_type,
+            event_payload,
+            actor_class=actor_class,
+            actor_id=actor_id,
+            occurred_at=occurred_at,
+            payload_schema_version=payload_schema_version,
+            record_update=set_budget,
+        )
+
+    async def prepare_plan_internally(
+        self,
+        run_id: UUID,
+        expected_version: int,
+        evidence: PlanApprovalEvidence,
+        event_type: str,
+        event_payload: Mapping[str, object],
+        *,
+        actor_class: str = "worker",
+        actor_id: UUID | None = None,
+        occurred_at: datetime | None = None,
+        payload_schema_version: int = 1,
+    ) -> RunSnapshot:
+        def change(current: RunSnapshot) -> RunSnapshot:
+            if (
+                current.state is not RunState.PLANNING
+                or current.policy_version != evidence.policy_version
+                or current.base_ref != evidence.base_ref
+                or current.base_sha != evidence.base_sha
+            ):
+                raise PersistenceError("prepared run budget evidence differs from current state")
             return self._state_engine.transition(current, RunState.PREPARING_WORKTREE)
 
         def set_budget(record: Run) -> None:
@@ -352,6 +394,7 @@ class PostgresRunRepository:
                 base_sha=run.base_sha,
                 branch_name=run.branch_name,
                 database_state="DISABLED",
+                workflow=run.workflow.to_dict() if run.workflow is not None else None,
             )
             self._session.add(record)
 
@@ -439,15 +482,25 @@ class PostgresRunRepository:
         )
 
     async def resume_interrupted_work(
-        self, run_id: UUID, expected_version: int, *, actor_id: UUID,
+        self,
+        run_id: UUID,
+        expected_version: int,
+        *,
+        actor_id: UUID,
         event_payload: Mapping[str, object],
         event_type: str = "run.interrupted_check_recovered",
     ) -> RunSnapshot:
         """Record owner recovery and restore the suspended execution state atomically."""
         return await self._change_state(
-            run_id, expected_version, self._state_engine.resume_interrupted_work,
-            event_type, event_payload,
-            actor_class="operator", actor_id=actor_id, occurred_at=None, payload_schema_version=1,
+            run_id,
+            expected_version,
+            self._state_engine.resume_interrupted_work,
+            event_type,
+            event_payload,
+            actor_class="operator",
+            actor_id=actor_id,
+            occurred_at=None,
+            payload_schema_version=1,
         )
 
     async def pause(
@@ -837,6 +890,33 @@ class PostgresRunRepository:
             raise
         return changed
 
+    async def update_workflow(
+        self,
+        run_id: UUID,
+        expected_version: int,
+        workflow: WorkflowPreferences | None,
+    ) -> RunSnapshot:
+        """Store preferences without moving the lifecycle version fence.
+
+        Pending commands, pause authority, and checkpoint fences are all
+        bound to ``version``; a preference edit must not invalidate them.
+        """
+        record = await self._session.get(Run, run_id, with_for_update=True)
+        if record is None:
+            raise RunNotFound(run_id)
+        if record.version != expected_version:
+            raise ConcurrencyConflict(run_id, expected_version, record.version)
+        record.workflow = workflow.to_dict() if workflow is not None else None
+        await self._session.flush()
+        return _snapshot_from_record(record)
+
+
+def _workflow_from_record(value: object) -> WorkflowPreferences | None:
+    try:
+        return WorkflowPreferences.from_mapping(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError) as error:
+        raise PersistenceDataError(f"run workflow is malformed: {error}") from error
+
 
 def _validate_new_snapshot(run: RunSnapshot) -> None:
     """Reject any input that is not an untouched new run."""
@@ -917,6 +997,7 @@ def _snapshot_from_record(record: Run) -> RunSnapshot:
             suspension_context=context,
             pending_gate=pending_gate,
             pending_evidence_digest=pending_evidence_digest,
+            workflow=_workflow_from_record(record.workflow),
         )
     except (TypeError, ValueError) as error:
         raise PersistenceDataError(f"run fields are malformed: {error}") from error
@@ -1056,6 +1137,7 @@ def _apply_snapshot(record: Run, snapshot: RunSnapshot) -> None:
     record.local_remediation_count = snapshot.local_remediation_count
     record.remote_remediation_count = snapshot.remote_remediation_count
     record.worktree_path = snapshot.worktree_path
+    record.workflow = snapshot.workflow.to_dict() if snapshot.workflow is not None else None
     record.branch_name = snapshot.branch_name
     record.database_state = snapshot.database_state.value
     record.database_name = snapshot.database_name

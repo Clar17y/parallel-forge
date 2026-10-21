@@ -135,6 +135,7 @@ def decide():
         return {
             "kind": "plan",
             "plan": {
+                "material_questions": [],
                 "summary": "Correct counter increment and cover -1",
                 "assumptions": [],
                 "affected_components": PATHS,

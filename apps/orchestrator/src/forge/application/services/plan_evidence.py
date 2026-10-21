@@ -19,7 +19,7 @@ from forge.domain.approval import (
     canonical_digest,
     decode_plan_approval_evidence,
 )
-from forge.domain.plan import PlanOutput, ScopedPlanOutput, decode_plan_output
+from forge.domain.plan import PlanOutput, ScopedPlanOutput, decode_plan_output, plan_digest_bytes
 from forge.domain.policy import ProjectPolicy
 from forge.domain.run import RunSnapshot, RunState
 from forge.persistence.repositories.tasks import compute_task_digest
@@ -53,6 +53,13 @@ class PlanEvidenceValidator:
         self._data_root = data_root
 
     async def validate(self, work: UnitOfWork, run_id: UUID) -> PlanApprovalEvidence:
+        evidence, _ = await self.validate_with_plan(work, run_id)
+        return evidence
+
+    async def validate_with_plan(
+        self, work: UnitOfWork, run_id: UUID
+    ) -> tuple[PlanApprovalEvidence, PlanOutput]:
+        """Return the evidence and exact plan after all authority checks pass."""
         try:
             run = await work.runs.get_for_update(run_id)
             if (
@@ -131,7 +138,7 @@ class PlanEvidenceValidator:
                 ):
                     raise PlanEvidenceValidationError
                 await validate_subscription_plan_fields(work, run, evidence, plan)
-                return evidence
+                return evidence, plan
             execution = await work.executions.get_outcome(run.id, "plan", evidence.plan_attempt)
             if (
                 execution is None
@@ -187,7 +194,7 @@ class PlanEvidenceValidator:
             )
             if canonical_digest(expected) != canonical_digest(evidence):
                 raise PlanEvidenceValidationError
-            return evidence
+            return evidence, plan
         except PlanEvidenceValidationError:
             raise
         except Exception as error:  # persisted/model/repository inputs are untrusted
@@ -284,7 +291,7 @@ async def build_subscription_plan_evidence(
         task_version=1,
         plan_attempt=producer.plan_attempt,
         task_digest=task_digest,
-        plan_digest=hashlib.sha256(plan.model_dump_json(by_alias=False).encode()).hexdigest(),
+        plan_digest=hashlib.sha256(plan_digest_bytes(plan)).hexdigest(),
         repository=project.github_repository,
         base_ref=run.base_ref,
         base_sha=run.base_sha,

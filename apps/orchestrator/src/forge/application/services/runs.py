@@ -8,7 +8,7 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Protocol, Self, runtime_checkable
+from typing import Any, Protocol, Self, cast, runtime_checkable
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -26,12 +26,21 @@ from forge.application.ports.projects import (
 from forge.application.ports.runs import RunRepository
 from forge.application.ports.subscription import SubscriptionRepository
 from forge.application.ports.tasks import TaskRecord, TaskRepository
-from forge.application.ports.unit_of_work import EventRepository
+from forge.application.ports.unit_of_work import EventRepository, UnitOfWork
 from forge.application.services.auth import AuthenticatedActor
+from forge.application.services.internal_preparation import (
+    InternalPreparationError,
+    continue_pending_plan,
+)
+from forge.application.services.plan_evidence import (
+    PlanEvidenceValidationError,
+    PlanEvidenceValidator,
+)
 from forge.application.services.task_usage_composition import (
     configured_project_cohort,
     configured_run_cohort,
 )
+from forge.domain.approval import ApprovalGate
 from forge.domain.command import CommandEnvelope
 from forge.domain.event import RunEvent
 from forge.domain.operation import canonical_digest
@@ -41,6 +50,7 @@ from forge.domain.subscription import OperatorProfile, encode_subscription_recor
 from forge.domain.subscription_envelope import freeze_profile
 from forge.domain.task_usage_contract import SubjectKey
 from forge.domain.teardown import TEARDOWN_STATES, has_removable_resources, teardown_confirmation
+from forge.domain.workflow import WorkflowPreferences
 from forge.persistence.repositories.commands import IdempotencyConflict
 from forge.persistence.repositories.runs import (
     ConcurrencyConflict,
@@ -51,6 +61,13 @@ from forge.settings import Settings
 _BASE_SHA = re.compile(r"^[0-9a-f]{40}$")
 _MAX_IDEMPOTENCY_KEY_BYTES = 255
 _MAX_FEEDBACK_BYTES = 4096
+
+
+class _WorkflowOmitted:
+    """Marker distinguishing an omitted workflow field from explicit ``None``."""
+
+
+WORKFLOW_OMITTED = _WorkflowOmitted()
 _TERMINAL_STATES = frozenset({RunState.COMPLETED, RunState.FAILED, RunState.CANCELLED})
 _MERGE_SETTLEMENT_REFUSAL = "cancellation is unavailable while merge settlement is in progress"
 _STALE_POLICY_PREPARATION_RESUME_REFUSAL = "cannot resume preparation after project policy changed"
@@ -221,8 +238,10 @@ class RunService:
         repository_inspector: RepositoryInspector | None = None,
         settings: Settings | None = None,
         data_root: str | Path | None = None,
+        plan_evidence_validator: PlanEvidenceValidator | None = None,
     ) -> None:
         self._unit_of_work_factory = unit_of_work_factory
+        self._plan_evidence_validator = plan_evidence_validator
         self._repository_inspector = repository_inspector or LocalGitRepositoryInspector()
         configured_root: str | Path
         if settings is not None:
@@ -241,8 +260,14 @@ class RunService:
         task_id: UUID,
         profile_id: UUID | None = None,
         profile_version: int | None = None,
+        workflow: WorkflowPreferences | None | _WorkflowOmitted = WORKFLOW_OMITTED,
     ) -> RunSnapshot:
-        """Atomically create a CREATED run, event, planning command, and receipt."""
+        """Atomically create a CREATED run, event, planning command, and receipt.
+
+        An omitted workflow keeps the pre-upgrade request digest so saved
+        receipts replay; explicit ``None`` and explicit preferences digest
+        distinctly.  Ordinary defaults apply only to subscription runs.
+        """
 
         if (profile_id is None) != (profile_version is None):
             raise RunProfileSelectionError("subscription profile identity is incomplete")
@@ -252,10 +277,21 @@ class RunService:
             type(profile_version) is not int or profile_version < 1
         ):
             raise RunProfileSelectionError("subscription profile version is invalid")
+        if (
+            not isinstance(workflow, (WorkflowPreferences, _WorkflowOmitted))
+            and workflow is not None
+        ):
+            raise RunCreationError("workflow preferences are invalid")
+        omitted = isinstance(workflow, _WorkflowOmitted)
+        explicit_workflow = None if isinstance(workflow, _WorkflowOmitted) else workflow
         request: dict[str, object] = {"task_id": str(task_id)}
         if profile_id is not None:
             request["profile_id"] = str(profile_id)
             request["profile_version"] = profile_version
+        if not omitted:
+            request["workflow"] = (
+                explicit_workflow.to_dict() if explicit_workflow is not None else None
+            )
         request_digest = _digest(request)
         async with self._unit_of_work_factory() as work:
             receipt = await work.mutations.reserve(
@@ -279,6 +315,8 @@ class RunService:
                 project=project,
                 profile_id=profile_id,
                 profile_version=profile_version,
+                workflow=explicit_workflow,
+                apply_ordinary_defaults=omitted,
             )
             await work.mutations.complete(
                 receipt.id,
@@ -322,6 +360,8 @@ class RunService:
         profile_id: UUID | None = None,
         profile_version: int | None = None,
         inspection: RepositoryInspection | None = None,
+        workflow: WorkflowPreferences | None = None,
+        apply_ordinary_defaults: bool = False,
     ) -> RunSnapshot:
         """Create the ordinary run/event/queue inside an already-owned transaction."""
         if (profile_id is None) != (profile_version is None):
@@ -378,6 +418,15 @@ class RunService:
                     encode_subscription_record(envelope)
                 ),
             }
+        # Ordinary preferences only exist on subscription runs; legacy ADK
+        # and epic flows keep workflow=None and their frozen gates.
+        if workflow is not None and envelope is None:
+            raise RunCreationError("workflow preferences are only available for subscription runs")
+        effective_workflow = workflow
+        if effective_workflow is None and apply_ordinary_defaults and envelope is not None:
+            effective_workflow = WorkflowPreferences.DEFAULT
+        if effective_workflow is not None:
+            run = await work.runs.update_workflow(run.id, run.version, effective_workflow)
         admissions = getattr(work, "task_usage_admissions", None)
         if admissions is not None:
             if envelope is not None:
@@ -392,6 +441,17 @@ class RunService:
                 SubjectKey(project_id=project.id, kind="run", subject_id=run.id), cohort
             )
         event_writer = _event_writer(work.events)
+        created_payload = {
+            "project_id": str(project.id),
+            "task_id": str(task.id),
+            "task_digest": task.task_digest,
+            "policy_version": run.policy_version,
+            "base_ref": run.base_ref,
+            "base_sha": run.base_sha,
+            **routing,
+        }
+        if effective_workflow is not None:
+            created_payload["workflow"] = effective_workflow.to_dict()
         await event_writer.append(
             RunEvent(
                 run_id=run.id,
@@ -399,15 +459,7 @@ class RunService:
                 event_type="run.created",
                 actor_class="operator",
                 actor_id=actor.actor_id,
-                payload={
-                    "project_id": str(project.id),
-                    "task_id": str(task.id),
-                    "task_digest": task.task_digest,
-                    "policy_version": run.policy_version,
-                    "base_ref": run.base_ref,
-                    "base_sha": run.base_sha,
-                    **routing,
-                },
+                payload=created_payload,
             )
         )
         await work.commands.enqueue(
@@ -419,6 +471,128 @@ class RunService:
             actor_id=actor.actor_id,
         )
         return run
+
+    async def update_workflow(
+        self,
+        *,
+        actor: RunActor,
+        run_id: UUID,
+        idempotency_key: str,
+        expected_run_version: int,
+        expected_workflow: WorkflowPreferences | None,
+        workflow: WorkflowPreferences,
+        note: str | None = None,
+    ) -> RunSnapshot:
+        """Update ordinary preferences without moving lifecycle fences.
+
+        The run version, pending commands, pause authority, and checkpoint
+        fences are preserved.  Turning ``review_plan_first`` off at a pending
+        plan gate continues exactly once through internal preparation when
+        no control stop or checkpoint fences it and the plan carries no
+        unresolved material questions.
+        """
+        if type(expected_run_version) is not int or expected_run_version < 0:
+            raise RunCommandValidationError("expected run version is invalid")
+        if not isinstance(workflow, WorkflowPreferences) or (
+            expected_workflow is not None and not isinstance(expected_workflow, WorkflowPreferences)
+        ):
+            raise RunCommandValidationError("workflow preferences are invalid")
+        request_digest = _digest(
+            {
+                "run_id": str(run_id),
+                "expected_run_version": expected_run_version,
+                "expected_workflow": (
+                    expected_workflow.to_dict() if expected_workflow is not None else None
+                ),
+                "workflow": workflow.to_dict(),
+                "note": note,
+            }
+        )
+        async with self._unit_of_work_factory() as work:
+            receipt = await work.mutations.reserve(
+                actor_id=actor.actor_id,
+                action="update_run_workflow",
+                scope=f"run:{run_id}",
+                idempotency_key=idempotency_key,
+                request_digest=request_digest,
+            )
+            if receipt.is_replay:
+                run = await work.runs.get(run_id)
+                await work.commit()
+                return run
+
+            run = await work.runs.get_for_update(run_id)
+            if run.version != expected_run_version:
+                raise ConcurrencyConflict(run.id, expected_run_version, run.version)
+            if run.state in _TERMINAL_STATES:
+                raise RunCommandValidationError("cannot update workflow for terminal run")
+            if run.workflow is None:
+                raise RunCommandValidationError(
+                    "workflow preferences are not available for this run"
+                )
+            if run.workflow != expected_workflow:
+                raise ConcurrencyConflict(run.id, expected_run_version, run.version)
+
+            previous_workflow = run.workflow
+            updated_run = await work.runs.update_workflow(run_id, expected_run_version, workflow)
+            event_writer = _event_writer(work.events)
+            await event_writer.append(
+                RunEvent(
+                    run_id=run.id,
+                    run_version=run.version,
+                    event_type="run.workflow_updated",
+                    actor_class="operator",
+                    actor_id=actor.actor_id,
+                    payload={
+                        "workflow": workflow.to_dict(),
+                        "previous_workflow": previous_workflow.to_dict(),
+                        "note": note,
+                    },
+                )
+            )
+            if (
+                not workflow.review_plan_first
+                and run.state is RunState.AWAITING_PLAN_APPROVAL
+                and run.pending_gate is ApprovalGate.PLAN
+            ):
+                updated_run = await self._continue_pending_plan(
+                    work, run, actor=actor, fallback=updated_run
+                )
+            await work.mutations.complete(
+                receipt.id,
+                response_status=200,
+                response_payload={"id": str(run.id), "version": updated_run.version},
+                resource_kind="run",
+                resource_id=run.id,
+            )
+            await work.commit()
+            return updated_run
+
+    async def _continue_pending_plan(
+        self,
+        work: RunUnitOfWork,
+        run: RunSnapshot,
+        *,
+        actor: RunActor,
+        fallback: RunSnapshot,
+    ) -> RunSnapshot:
+        """Internally prepare a pending gate once, honoring current fences."""
+        if self._plan_evidence_validator is None:
+            raise RunServiceError("plan continuation evidence validator is unavailable")
+        try:
+            return await continue_pending_plan(
+                cast(UnitOfWork, work),
+                fallback,
+                validator=self._plan_evidence_validator,
+                authorized_by=actor.actor_id,
+                authorization="workflow_update",
+            )
+        except PlanEvidenceValidationError:
+            raise RunCommandValidationError(
+                "pending plan evidence is stale; workflow was not changed"
+            ) from None
+        except InternalPreparationError as error:
+            raise RunServiceError(str(error)) from None
 
     async def profile_selection(self, run_id: UUID) -> dict[str, object] | None:
         """Read the frozen profile identity and immutable creation provenance."""
@@ -721,6 +895,7 @@ def _digest(value: object) -> str:
 
 
 __all__ = [
+    "WORKFLOW_OMITTED",
     "ProjectWork",
     "RunApplicationService",
     "RunCommandApplicationService",

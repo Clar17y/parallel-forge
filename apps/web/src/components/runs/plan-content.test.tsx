@@ -94,6 +94,18 @@ describe('parsePlan', () => {
     expect(parsePlan(JSON.stringify({ ...validPlan, owned_paths: [''] }))).toBeNull();
     expect(parsePlan(JSON.stringify({ ...validPlan, owned_paths: Array(65).fill('path') }))).toBeNull();
   });
+
+  test('parses valid plan with material_questions', () => {
+    const questionsPlan = { ...validPlan, material_questions: ['Which auth mechanism should be used?'] };
+    const result = parsePlan(JSON.stringify(questionsPlan));
+    expect(result).toEqual(questionsPlan);
+  });
+
+  test('rejects malformed material_questions', () => {
+    expect(parsePlan(JSON.stringify({ ...validPlan, material_questions: 'not-an-array' }))).toBeNull();
+    expect(parsePlan(JSON.stringify({ ...validPlan, material_questions: [''] }))).toBeNull();
+    expect(parsePlan(JSON.stringify({ ...validPlan, material_questions: Array(21).fill('question') }))).toBeNull();
+  });
 });
 
 describe('PlanContent', () => {
@@ -170,5 +182,15 @@ describe('PlanContent', () => {
     expect(details).not.toBeNull();
     expect(details).toHaveTextContent('5 assumptions');
     expect(screen.getByText('Assump 5')).toBeInTheDocument();
+  });
+
+  test('renders material questions when present', () => {
+    const questionsPlan: Plan = {
+      ...basePlan,
+      material_questions: ['Should we support OAuth or SAML?'],
+    };
+    render(<PlanContent plan={questionsPlan} />);
+    expect(screen.getByRole('region', { name: 'Material questions' })).toBeInTheDocument();
+    expect(screen.getByText('Should we support OAuth or SAML?')).toBeInTheDocument();
   });
 });

@@ -24,7 +24,7 @@ from forge.domain.approval import (
 from forge.domain.approval import canonical_digest as evidence_digest
 from forge.domain.operation import canonical_digest
 from forge.domain.paths import policy_path_key
-from forge.domain.plan import ScopedPlanOutput, decode_plan_output
+from forge.domain.plan import ScopedPlanOutput, decode_plan_output, plan_digest_bytes
 from forge.domain.policy import ProjectPolicy
 from forge.domain.resource import WorktreeIdentity
 from forge.domain.run import RunState
@@ -311,9 +311,7 @@ class PostgresSubscriptionPlanGateRepository:
                 run_id=attempt.run_id,
                 task_id=attempt.task_row_id,
                 plan_attempt=attempt.attempt_number,
-                plan_digest=hashlib.sha256(
-                    plan.model_dump_json(by_alias=False).encode()
-                ).hexdigest(),
+                plan_digest=hashlib.sha256(plan_digest_bytes(plan)).hexdigest(),
                 task_digest=canonical_digest(context["task"]),
                 envelope_digest=canonical_digest(context["envelope"]),
                 budget_digest=canonical_digest(context["budget"]),
@@ -548,12 +546,30 @@ class PostgresSubscriptionPlanGateRepository:
             if row is None:
                 if run.state is not RunState.PLANNING or run.pending_gate is not None:
                     raise SubscriptionPlanGateError("subscription plan run is not planning")
-            elif (
-                run.state is not RunState.AWAITING_PLAN_APPROVAL
-                or run.pending_gate is not ApprovalGate.PLAN
-                or run.pending_evidence_digest != evidence_digest(evidence)
-            ):
-                raise SubscriptionPlanGateError("subscription plan gate is no longer pending")
+            else:
+                if run.pending_gate is ApprovalGate.PLAN:
+                    if (
+                        run.state is not RunState.AWAITING_PLAN_APPROVAL
+                        or run.pending_evidence_digest != evidence_digest(evidence)
+                    ):
+                        raise SubscriptionPlanGateError(
+                            "subscription plan gate is no longer pending"
+                        )
+                elif (run.suspended_state if run.state is RunState.PAUSED else run.state) not in {
+                    RunState.PREPARING_WORKTREE,
+                    RunState.IMPLEMENTING,
+                    RunState.VALIDATING,
+                    RunState.REVIEWING,
+                    RunState.REMEDIATING,
+                    RunState.AWAITING_PR_APPROVAL,
+                    RunState.PUBLISHING_PR,
+                    RunState.MONITORING_PR,
+                    RunState.AWAITING_MERGE_APPROVAL,
+                    RunState.MERGING,
+                    RunState.COMPLETED,
+                }:
+                    raise SubscriptionPlanGateError("subscription plan gate is no longer pending")
+
         if (
             attempt is None
             or result is None
@@ -635,8 +651,7 @@ class PostgresSubscriptionPlanGateRepository:
                     "output_tokens": telemetry.output_tokens,
                     "duration_ms": telemetry.duration_ms,
                 }
-                or hashlib.sha256(plan.model_dump_json(by_alias=False).encode()).hexdigest()
-                != producer.plan_digest
+                or hashlib.sha256(plan_digest_bytes(plan)).hexdigest() != producer.plan_digest
             ):
                 raise ValueError
         except KeyError, TypeError, ValueError:

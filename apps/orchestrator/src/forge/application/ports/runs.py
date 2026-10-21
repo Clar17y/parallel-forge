@@ -11,6 +11,7 @@ from uuid import UUID
 from forge.domain.approval import ApprovalGate, PlanApprovalEvidence
 from forge.domain.resource import ResourceState
 from forge.domain.run import RunSnapshot, RunState
+from forge.domain.workflow import WorkflowPreferences
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +59,20 @@ class RunRepository(Protocol):
         event_payload: Mapping[str, object],
         *,
         actor_class: str = "system",
+        actor_id: UUID | None = None,
+        occurred_at: datetime | None = None,
+        payload_schema_version: int = 1,
+    ) -> RunSnapshot: ...
+
+    async def prepare_plan_internally(
+        self,
+        run_id: UUID,
+        expected_version: int,
+        evidence: PlanApprovalEvidence,
+        event_type: str,
+        event_payload: Mapping[str, object],
+        *,
+        actor_class: str = "worker",
         actor_id: UUID | None = None,
         occurred_at: datetime | None = None,
         payload_schema_version: int = 1,
@@ -215,6 +230,13 @@ class RunRepository(Protocol):
         actor_id: UUID | None = None,
         occurred_at: datetime | None = None,
         payload_schema_version: int = 1,
+    ) -> RunSnapshot: ...
+
+    async def update_workflow(
+        self,
+        run_id: UUID,
+        expected_version: int,
+        workflow: WorkflowPreferences | None,
     ) -> RunSnapshot: ...
 
 

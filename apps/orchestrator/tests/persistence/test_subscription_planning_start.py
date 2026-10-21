@@ -3,7 +3,7 @@
 from uuid import uuid4
 
 import pytest
-from forge.application.services.runs import RunService
+from forge.application.services.runs import WORKFLOW_OMITTED, RunService
 from forge.application.services.subscription_execution import SubscriptionDecisionExecutor
 from forge.domain.run import RunState
 from forge.domain.subscription import OperatorProfile, RolePreference, SpecialistPurpose, TaskBudget
@@ -14,7 +14,7 @@ from test_subscription_usage import _reservation
 from test_task10_run_service_integration import StableInspector, _seed_project_task
 
 
-async def planning_start_case(session_factory, tmp_path):
+async def planning_start_case(session_factory, tmp_path, *, workflow=WORKFLOW_OMITTED):
     actor, project_id, task_id = await _seed_project_task(session_factory, tmp_path)
     factory = lambda: PostgresUnitOfWork(session_factory)
     profile = OperatorProfile(
@@ -31,7 +31,9 @@ async def planning_start_case(session_factory, tmp_path):
         factory,
         repository_inspector=StableInspector(tmp_path / "repo"),
         data_root=tmp_path / "data",
-    ).create_run(actor=actor, idempotency_key="subscription-start", task_id=task_id)
+    ).create_run(
+        actor=actor, idempotency_key="subscription-start", task_id=task_id, workflow=workflow
+    )
     from forge.persistence.repositories.commands import PostgresCommandRepository
 
     command = await PostgresCommandRepository(session_factory).claim_next(

@@ -14,7 +14,18 @@ type Project = components['schemas']['ProjectResponse'];
 type TaskInput = components['schemas']['TaskCreateRequest'];
 type IssueInput = { project_id: string; issue_number: number };
 type Profile = components['schemas']['ProfileResponse'];
-type Attempt = { endpoint: '/tasks' | '/tasks/import-github'; payload: TaskInput | IssueInput; taskKey: string; runKey: string; taskId?: string; profileId?: string; profileVersion?: number; correctionAllowed?: boolean };
+type WorkflowPreferences = components['schemas']['RunWorkflowPreferences'];
+type Attempt = {
+  endpoint: '/tasks' | '/tasks/import-github';
+  payload: TaskInput | IssueInput;
+  taskKey: string;
+  runKey: string;
+  taskId?: string;
+  profileId?: string;
+  profileVersion?: number;
+  workflow?: WorkflowPreferences | null;
+  correctionAllowed?: boolean;
+};
 
 export function NewRunForm({ projects, initialProjectId, onCreated }: {
   projects: Project[];
@@ -33,14 +44,20 @@ export function NewRunForm({ projects, initialProjectId, onCreated }: {
   const [error, setError] = useState('');
   const [fields, setFields] = useState<Record<string, string>>({});
   const profileList = useApi<Profile[]>('/subscription-profiles');
+  const projectProfile = useApi<Profile | null>(projectId ? `/projects/${projectId}/subscription-profile` : null);
   const profiles = profileList.value ?? [];
   const [profileChoice, setProfileChoice] = useState('default');
   const profilesLoading = profileList.loading;
   const [correctionAllowed, setCorrectionAllowed] = useState(false);
+  const [reviewPlanFirst, setReviewPlanFirst] = useState(false);
+  const [delegation, setDelegation] = useState<'auto' | 'disabled' | 'requested'>('auto');
+  const [optionalReview, setOptionalReview] = useState<'auto' | 'skip' | 'required'>('auto');
   const attempt = useRef<Attempt | null>(null);
   const busy = useRef(false);
   const project = projects.find(item => item.id === projectId);
   const choice = profiles.find(item => `${item.profile_id}:${item.version}` === profileChoice);
+  const isSubscription = Boolean(choice || (profileChoice === 'default' && projectProfile.value));
+  const workflowUnavailable = profileChoice === 'default' && (projectProfile.loading || projectProfile.failed);
   const importing = source === 'github' && project?.issue_import_available === true;
   const validSource = importing
     ? /^[1-9][0-9]*$/.test(issueNumber) && Number.isSafeInteger(Number(issueNumber))
@@ -48,17 +65,24 @@ export function NewRunForm({ projects, initialProjectId, onCreated }: {
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (busy.current || !project || (!attempt.current && !validSource)) return;
+    if (busy.current || !project || (!attempt.current && !validSource) ||
+      (workflowUnavailable && (!attempt.current || attempt.current.correctionAllowed))) return;
     busy.current = true;
     setPending(true);
     setLocked(true);
     setError('');
     setFields({});
+    const initialWorkflow = isSubscription ? {
+      review_plan_first: reviewPlanFirst,
+      delegation,
+      optional_review: optionalReview,
+    } : null;
     attempt.current ??= {
       endpoint: importing ? '/tasks/import-github' : '/tasks',
       payload: importing ? { project_id: projectId, issue_number: Number(issueNumber) } : { project_id: projectId, title, body },
       taskKey: crypto.randomUUID(), runKey: crypto.randomUUID(),
       ...(choice ? { profileId: choice.profile_id, profileVersion: choice.version } : {}),
+      workflow: initialWorkflow,
     };
     const current = attempt.current;
     if (current.correctionAllowed) {
@@ -66,6 +90,7 @@ export function NewRunForm({ projects, initialProjectId, onCreated }: {
       current.runKey = crypto.randomUUID();
       current.profileId = choice?.profile_id;
       current.profileVersion = choice?.version;
+      current.workflow = isSubscription ? (current.workflow ?? initialWorkflow) : null;
       current.correctionAllowed = false;
     }
     try {
@@ -78,6 +103,7 @@ export function NewRunForm({ projects, initialProjectId, onCreated }: {
       const run = await mutate<components['schemas']['RunResponse']>('/runs', {
         task_id: current.taskId,
         ...(current.profileId ? { profile_id: current.profileId, profile_version: current.profileVersion } : {}),
+        workflow: current.workflow ?? null,
       },
         { idempotencyKey: current.runKey });
       if (!run?.id) throw new Error('Run response unavailable');
@@ -230,6 +256,69 @@ export function NewRunForm({ projects, initialProjectId, onCreated }: {
               </>
             )}
 
+            {profileChoice === 'default' && projectProfile.loading ? (
+              <p role="status">Loading project workflow…</p>
+            ) : profileChoice === 'default' && projectProfile.failed ? (
+              <p role="alert" className="field-error">
+                Project workflow could not be loaded.{' '}
+                <button type="button" onClick={projectProfile.refresh}>Retry project workflow</button>
+              </p>
+            ) : isSubscription ? (
+              <div className="form-field-group" aria-label="Workflow preferences" style={{ marginTop: '16px', marginBottom: '16px' }}>
+                <div className="form-field">
+                  <label className="checkbox-label" htmlFor="review-plan-first" style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      id="review-plan-first"
+                      checked={reviewPlanFirst}
+                      disabled={locked}
+                      onChange={event => setReviewPlanFirst(event.target.checked)}
+                    />
+                    <span style={{ fontWeight: 500 }}>Review plan before implementation</span>
+                  </label>
+                  <span className="field-hint">
+                    {reviewPlanFirst
+                      ? 'Wait for explicit human plan approval before workspaces and tasks are prepared.'
+                      : 'Ordinary development: Forge prepares isolated resources and implements directly after internal preparation.'}
+                  </span>
+                </div>
+                <div className="form-row" style={{ display: 'flex', gap: '16px', marginTop: '12px' }}>
+                  <div className="form-field" style={{ flex: 1 }}>
+                    <label htmlFor="delegation-preference">Delegation</label>
+                    <select
+                      id="delegation-preference"
+                      value={delegation}
+                      disabled={locked}
+                      onChange={event => setDelegation(event.target.value as 'auto' | 'disabled' | 'requested')}
+                    >
+                      <option value="auto">Auto (let primary decide)</option>
+                      <option value="disabled">Disabled (primary implements directly)</option>
+                      <option value="requested">Requested (prefer specialist subtasks)</option>
+                    </select>
+                  </div>
+                  <div className="form-field" style={{ flex: 1 }}>
+                    <label htmlFor="optional-review-preference">Optional review</label>
+                    <select
+                      id="optional-review-preference"
+                      value={optionalReview}
+                      disabled={locked}
+                      onChange={event => setOptionalReview(event.target.value as 'auto' | 'skip' | 'required')}
+                    >
+                      <option value="auto">Auto (let primary decide)</option>
+                      <option value="skip">Skip (no specialist review required)</option>
+                      <option value="required">Required (always require independent review)</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="form-field-group" aria-label="Workflow" style={{ marginTop: '16px', marginBottom: '16px' }}>
+                <span className="field-hint">
+                  Legacy workflow: Plan approval required before implementation. This route uses legacy planning and does not support automatic ordinary preparation.
+                </span>
+              </div>
+            )}
+
             <div className="form-actions">
               {error && <p role="alert" className="field-error">{error}</p>}
               {pending && <p role="status" className="meta">Creating task and run…</p>}
@@ -237,7 +326,7 @@ export function NewRunForm({ projects, initialProjectId, onCreated }: {
                 type="submit"
                 variant="primary"
                 busy={pending}
-                disabled={pending || !project || (!locked && !validSource)}
+                disabled={pending || !project || (!locked && !validSource) || (workflowUnavailable && (!locked || correctionAllowed))}
               >
                 {pending ? 'Creating…' : (locked && error) || correctionAllowed ? 'Retry creation' : 'Create run'}
               </Button>

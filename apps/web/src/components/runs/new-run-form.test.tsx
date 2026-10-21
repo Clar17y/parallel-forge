@@ -18,12 +18,100 @@ const project: components['schemas']['ProjectResponse'] = {
   policy: { runner_mode: 'docker', commands: [], planner_model: { provider: 'google', model: 'test-model' } },
 };
 
+const defaultWorkflow = {
+  review_plan_first: false,
+  delegation: 'auto',
+  optional_review: 'auto',
+};
+
 async function fill() {
   const user = userEvent.setup();
   await user.type(screen.getByLabelText('Task title'), 'Build feature');
   await user.type(screen.getByLabelText('Task description'), 'A concrete change');
   return user;
 }
+
+test('waits for the project workflow before creating a default-profile run', async () => {
+  let resolveProfile!: (profile: null) => void;
+  const profile = new Promise<null>(resolve => { resolveProfile = resolve; });
+  vi.mocked(api).mockImplementation(path => path === '/subscription-profiles' ? Promise.resolve([]) : profile);
+  vi.mocked(mutate).mockResolvedValueOnce({ id: 'task-1' }).mockResolvedValueOnce({ id: 'run-1' });
+  render(<NewRunForm projects={[project]} onCreated={vi.fn()} />);
+  const user = await fill();
+  expect(screen.getByRole('button', { name: 'Create run' })).toBeDisabled();
+  expect(screen.queryByLabelText('Review plan before implementation')).not.toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: 'Create run' }));
+  expect(mutate).not.toHaveBeenCalled();
+  await act(async () => { resolveProfile(null); });
+  expect(screen.getByText(/Legacy workflow: Plan approval required/)).toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: 'Create run' }));
+  await waitFor(() => expect(mutate).toHaveBeenCalledTimes(2));
+  expect(vi.mocked(mutate).mock.calls[1][1]).toEqual({ task_id: 'task-1', workflow: null });
+});
+
+test('failed project workflow lookup offers recovery without inventing ordinary authority', async () => {
+  let recovered = false;
+  vi.mocked(api).mockImplementation(path => {
+    if (path === '/subscription-profiles') return Promise.resolve([]);
+    return recovered ? Promise.resolve(null) : Promise.reject(new Error('connection failed'));
+  });
+  render(<NewRunForm projects={[project]} onCreated={vi.fn()} />);
+  const user = await fill();
+  expect(screen.getByRole('button', { name: 'Create run' })).toBeDisabled();
+  expect(screen.queryByLabelText('Review plan before implementation')).not.toBeInTheDocument();
+  expect(await screen.findByRole('alert')).toHaveTextContent(/project workflow/i);
+  recovered = true;
+  await user.click(screen.getByRole('button', { name: /Retry project workflow/i }));
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Create run' })).toBeEnabled());
+  expect(screen.getByText(/Legacy workflow: Plan approval required/)).toBeInTheDocument();
+});
+
+test('an explicit profile lets the owner proceed when the default workflow cannot load', async () => {
+  const selected = {
+    profile_id: 'profile-override', version: 2,
+    preferences: [{ purpose: 'primary', preferred_route: { provider: 'openai', model: 'gpt-test' } }],
+    approved_mappings: [], default_billing_mode: 'allowance_only', jev: null,
+  };
+  vi.mocked(api).mockImplementation(path => path === '/subscription-profiles'
+    ? Promise.resolve([selected]) : Promise.reject(new Error('lookup failed')));
+  vi.mocked(mutate).mockResolvedValueOnce({ id: 'task-1' }).mockResolvedValueOnce({ id: 'run-1' });
+  render(<NewRunForm projects={[project]} onCreated={vi.fn()} />);
+  const user = await fill();
+  expect(screen.getByRole('button', { name: 'Create run' })).toBeDisabled();
+  await user.selectOptions(screen.getByLabelText('Subscription profile'), 'profile-override:2');
+  expect(screen.getByRole('button', { name: 'Create run' })).toBeEnabled();
+  expect(screen.getByLabelText('Review plan before implementation')).not.toBeChecked();
+  await user.click(screen.getByRole('button', { name: 'Create run' }));
+  await waitFor(() => expect(mutate).toHaveBeenCalledTimes(2));
+  expect(vi.mocked(mutate).mock.calls[1][1]).toMatchObject({
+    profile_id: 'profile-override', profile_version: 2, workflow: defaultWorkflow,
+  });
+});
+
+test('correcting a rejected legacy selection to a subscription profile uses ordinary preferences', async () => {
+  const selected = {
+    profile_id: 'profile-override', version: 2,
+    preferences: [{ purpose: 'primary', preferred_route: { provider: 'openai', model: 'gpt-test' } }],
+    approved_mappings: [], default_billing_mode: 'allowance_only', jev: null,
+  };
+  vi.mocked(api).mockImplementation(path => Promise.resolve(path === '/subscription-profiles' ? [selected] : null));
+  vi.mocked(mutate)
+    .mockResolvedValueOnce({ id: 'task-1' })
+    .mockRejectedValueOnce(new ApiError(422, 'invalid-run-profile'))
+    .mockResolvedValueOnce({ id: 'run-1' });
+  render(<NewRunForm projects={[project]} onCreated={vi.fn()} />);
+  const user = await fill();
+  await user.click(screen.getByRole('button', { name: 'Create run' }));
+  await screen.findByRole('alert');
+  expect(vi.mocked(mutate).mock.calls[1][1]).toMatchObject({ workflow: null });
+  await user.selectOptions(screen.getByLabelText('Subscription profile'), 'profile-override:2');
+  await user.click(screen.getByRole('button', { name: 'Retry creation' }));
+  await waitFor(() => expect(mutate).toHaveBeenCalledTimes(3));
+  expect(vi.mocked(mutate).mock.calls[2][1]).toMatchObject({
+    task_id: 'task-1', profile_id: 'profile-override', workflow: defaultWorkflow,
+  });
+  expect(vi.mocked(mutate).mock.calls[2][2].idempotencyKey).not.toBe(vi.mocked(mutate).mock.calls[1][2].idempotencyKey);
+});
 
 test('an initial project from a deep link wins over the first project', () => {
   const second: components['schemas']['ProjectResponse'] = { ...project, id: 'project-2', name: 'Second project' };
@@ -55,7 +143,14 @@ test('creates a plain task then a run and navigates only after the run exists', 
   expect(mutate).toHaveBeenNthCalledWith(1, '/tasks', {
     project_id: 'project-1', title: 'Build feature', body: 'A concrete change',
   }, expect.objectContaining({ idempotencyKey: expect.any(String) }));
-  expect(mutate).toHaveBeenNthCalledWith(2, '/runs', { task_id: 'task-1' }, expect.any(Object));
+  expect(mutate).toHaveBeenNthCalledWith(2, '/runs', {
+    task_id: 'task-1',
+    workflow: {
+      review_plan_first: false,
+      delegation: 'auto',
+      optional_review: 'auto',
+    },
+  }, expect.any(Object));
 });
 
 test('retries an uncertain run response using the same task and run key', async () => {
@@ -96,7 +191,7 @@ test('captures a chosen immutable profile in the run request and permits correct
   expect(screen.getByLabelText('Project')).toHaveValue('project-1');
   expect(screen.getByLabelText('Task title')).toHaveValue('Build feature');
   expect(screen.getByLabelText('Task description')).toHaveValue('A concrete change');
-  expect(vi.mocked(mutate).mock.calls[1][1]).toEqual({ task_id: 'task-1', profile_id: 'profile-1', profile_version: 3 });
+  expect(vi.mocked(mutate).mock.calls[1][1]).toEqual({ task_id: 'task-1', profile_id: 'profile-1', profile_version: 3, workflow: defaultWorkflow });
   await user.selectOptions(screen.getByLabelText('Subscription profile'), 'default');
   await user.click(screen.getByRole('button', { name: 'Retry creation' }));
   await waitFor(() => expect(vi.mocked(mutate)).toHaveBeenCalledTimes(3));
@@ -104,7 +199,7 @@ test('captures a chosen immutable profile in the run request and permits correct
   expect(screen.getByLabelText('Subscription profile')).toBeDisabled();
   await user.click(screen.getByRole('button', { name: 'Retry creation' }));
   await waitFor(() => expect(vi.mocked(mutate)).toHaveBeenCalledTimes(4));
-  expect(vi.mocked(mutate).mock.calls[2][1]).toEqual({ task_id: 'task-1' });
+  expect(vi.mocked(mutate).mock.calls[2][1]).toEqual({ task_id: 'task-1', workflow: defaultWorkflow });
   expect(vi.mocked(mutate).mock.calls[3]).toEqual(vi.mocked(mutate).mock.calls[2]);
   expect(vi.mocked(mutate).mock.calls[2][2].idempotencyKey).not.toBe(vi.mocked(mutate).mock.calls[1][2].idempotencyKey);
   expect(vi.mocked(mutate).mock.calls.filter(call => call[0] === '/tasks')).toHaveLength(1);
@@ -212,7 +307,7 @@ test('choosing a profile then changing projects resets to the new project defaul
   await user.click(screen.getByRole('button', { name: 'Create run' }));
   await waitFor(() => expect(vi.mocked(mutate)).toHaveBeenCalledTimes(2));
   expect(vi.mocked(mutate).mock.calls[0][1]).toMatchObject({ project_id: 'project-2' });
-  expect(vi.mocked(mutate).mock.calls[1][1]).toEqual({ task_id: 'task-2' });
+  expect(vi.mocked(mutate).mock.calls[1][1]).toEqual({ task_id: 'task-2', workflow: defaultWorkflow });
 });
 
 test('submitting while profile options are loading captures project default for uncertain retry', async () => {
@@ -226,7 +321,7 @@ test('submitting while profile options are loading captures project default for 
   await screen.findByRole('alert');
   await user.click(screen.getByRole('button', { name: 'Retry creation' }));
   await waitFor(() => expect(vi.mocked(mutate)).toHaveBeenCalledTimes(3));
-  expect(vi.mocked(mutate).mock.calls[1][1]).toEqual({ task_id: 'task-1' });
+  expect(vi.mocked(mutate).mock.calls[1][1]).toEqual({ task_id: 'task-1', workflow: defaultWorkflow });
   expect(vi.mocked(mutate).mock.calls[2]).toEqual(vi.mocked(mutate).mock.calls[1]);
 });
 
@@ -241,7 +336,14 @@ test('server capability exposes mutually exclusive issue import with no browser 
   await userEvent.click(screen.getByRole('button', { name: 'Create run' }));
   await waitFor(() => expect(onCreated).toHaveBeenCalledWith('imported-run'));
   expect(vi.mocked(mutate).mock.calls[0].slice(0, 2)).toEqual(['/tasks/import-github', { project_id: 'project-1', issue_number: 42 }]);
-  expect(vi.mocked(mutate).mock.calls[1].slice(0, 2)).toEqual(['/runs', { task_id: 'imported-task' }]);
+  expect(vi.mocked(mutate).mock.calls[1].slice(0, 2)).toEqual(['/runs', {
+    task_id: 'imported-task',
+    workflow: {
+      review_plan_first: false,
+      delegation: 'auto',
+      optional_review: 'auto',
+    },
+  }]);
 });
 
 test('renders provider-tinted compact role cards with explicit provider labels and grouped metadata', () => {
@@ -377,4 +479,122 @@ test('displays project policy models heading and explanatory help before and aft
   expect(screen.getByRole('heading', { name: 'Project policy models' })).toBeInTheDocument();
   expect(screen.queryByRole('heading', { name: 'Assigned Agent Roles' })).not.toBeInTheDocument();
   expect(screen.getByText(/Subscription runs use the selected profile's primary and specialist routes\. Changing the subscription profile does not change these project policy models\./)).toBeInTheDocument();
+});
+
+test('submits custom workflow preferences when chosen by operator', async () => {
+  vi.mocked(mutate).mockReset().mockResolvedValueOnce({ id: 'task-1' }).mockResolvedValueOnce({ id: 'run-1' });
+  const navigate = vi.fn();
+  render(<NewRunForm projects={[project]} onCreated={navigate} />);
+  const user = await fill();
+
+  // Customize workflow preferences
+  await user.click(screen.getByLabelText('Review plan before implementation'));
+  await user.selectOptions(screen.getByLabelText('Delegation'), 'disabled');
+  await user.selectOptions(screen.getByLabelText('Optional review'), 'skip');
+
+  await user.click(screen.getByRole('button', { name: 'Create run' }));
+  await waitFor(() => expect(navigate).toHaveBeenCalledWith('run-1'));
+
+  expect(mutate).toHaveBeenNthCalledWith(2, '/runs', {
+    task_id: 'task-1',
+    workflow: {
+      review_plan_first: true,
+      delegation: 'disabled',
+      optional_review: 'skip',
+    },
+  }, expect.any(Object));
+});
+
+test('freezes custom workflow preferences across uncertain retry', async () => {
+  vi.mocked(mutate).mockReset()
+    .mockResolvedValueOnce({ id: 'task-1' })
+    .mockRejectedValueOnce(new Error('run timeout'))
+    .mockResolvedValueOnce({ id: 'run-1' });
+  const navigate = vi.fn();
+  render(<NewRunForm projects={[project]} onCreated={navigate} />);
+  const user = await fill();
+
+  await user.click(screen.getByLabelText('Review plan before implementation'));
+  await user.selectOptions(screen.getByLabelText('Delegation'), 'disabled');
+
+  await user.click(screen.getByRole('button', { name: 'Create run' }));
+  await screen.findByRole('alert');
+
+  await user.click(screen.getByRole('button', { name: 'Retry creation' }));
+  await waitFor(() => expect(navigate).toHaveBeenCalledWith('run-1'));
+
+  expect(vi.mocked(mutate).mock.calls[1][1]).toEqual({
+    task_id: 'task-1',
+    workflow: {
+      review_plan_first: true,
+      delegation: 'disabled',
+      optional_review: 'auto',
+    },
+  });
+  expect(vi.mocked(mutate).mock.calls[2]).toEqual(vi.mocked(mutate).mock.calls[1]);
+});
+
+test('legacy project with no subscription profile defaults to workflow=null and explains human gate', async () => {
+  vi.mocked(api).mockImplementation(async (path: string) => {
+    if (path.includes('/subscription-profile')) return null;
+    return [];
+  });
+  vi.mocked(mutate).mockReset()
+    .mockResolvedValueOnce({ id: 'task-1' })
+    .mockResolvedValueOnce({ id: 'run-1' });
+  const navigate = vi.fn();
+  render(<NewRunForm projects={[project]} onCreated={navigate} />);
+  const user = await fill();
+
+  // Should NOT advertise automatic ordinary prep:
+  expect(screen.queryByText(/Ordinary development: Forge prepares isolated resources/)).toBeNull();
+  expect(screen.getByText(/Legacy workflow: Plan approval required before implementation/)).toBeInTheDocument();
+
+  await user.click(screen.getByRole('button', { name: 'Create run' }));
+  await waitFor(() => expect(navigate).toHaveBeenCalledWith('run-1'));
+
+  expect(mutate).toHaveBeenNthCalledWith(2, '/runs', {
+    task_id: 'task-1',
+    workflow: null,
+  }, expect.any(Object));
+});
+
+test('legacy project choosing explicit profile override enables ordinary workflow', async () => {
+  const profileOverride: components['schemas']['ProfileResponse'] = {
+    profile_id: 'override-1',
+    version: 2,
+    preferences: [],
+    approved_mappings: [],
+    default_billing_mode: 'unmetered',
+  };
+  vi.mocked(api).mockImplementation(async (path: string) => {
+    if (path === '/subscription-profiles') return [profileOverride];
+    if (path.includes('/subscription-profile')) return null;
+    return [];
+  });
+  vi.mocked(mutate).mockReset()
+    .mockResolvedValueOnce({ id: 'task-1' })
+    .mockResolvedValueOnce({ id: 'run-1' });
+  const navigate = vi.fn();
+  render(<NewRunForm projects={[project]} onCreated={navigate} />);
+  const user = await fill();
+
+  // Initially legacy
+  expect(screen.queryByText(/Ordinary development: Forge prepares isolated resources/)).toBeNull();
+
+  // Select profile override
+  await user.selectOptions(screen.getByLabelText('Subscription profile'), 'override-1:2');
+
+  // Now ordinary is supported and advertised
+  expect(screen.getByText(/Ordinary development: Forge prepares isolated resources/)).toBeInTheDocument();
+
+  await user.click(screen.getByRole('button', { name: 'Create run' }));
+  await waitFor(() => expect(navigate).toHaveBeenCalledWith('run-1'));
+
+  expect(mutate).toHaveBeenNthCalledWith(2, '/runs', {
+    task_id: 'task-1',
+    profile_id: 'override-1',
+    profile_version: 2,
+    workflow: defaultWorkflow,
+  }, expect.any(Object));
 });

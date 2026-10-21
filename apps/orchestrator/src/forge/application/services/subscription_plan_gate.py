@@ -12,6 +12,13 @@ from forge.application.ports.artifacts import ArtifactStore
 from forge.application.ports.subscription_execution import SubscriptionSettlement
 from forge.application.ports.subscription_plan_gate import SubscriptionPlanGateError
 from forge.application.ports.unit_of_work import UnitOfWork
+from forge.application.services.internal_preparation import (
+    INTERNAL_PREPARATION_EVENT,
+    InternalPreparationError,
+    enqueue_prepare_worktree,
+    originating_operator_id,
+    record_internal_preparation_approval,
+)
 from forge.application.services.plan_evidence import (
     InvalidSubscriptionPlan,
     PlanEvidenceValidationError,
@@ -23,7 +30,7 @@ from forge.domain.approval import (
     SubscriptionPlanApprovalEvidence,
     canonical_digest,
 )
-from forge.domain.plan import PlanOutput
+from forge.domain.plan import PlanOutput, material_questions, plan_digest_bytes
 from forge.domain.run import RunState
 from forge.domain.task_usage_contract import SubjectKey
 
@@ -105,7 +112,7 @@ class SubscriptionPlanGateService:
         )
         if evidence_descriptor.digest != canonical_digest(evidence):
             raise SubscriptionPlanGateError("subscription evidence storage digest differs")
-        plan_bytes = plan.model_dump_json(by_alias=False).encode()
+        plan_bytes = plan_digest_bytes(plan)
         plan_descriptor = await self._artifacts.put_bytes(
             plan_bytes,
             media_type="application/json",
@@ -131,12 +138,42 @@ class SubscriptionPlanGateService:
                 raise SubscriptionPlanGateError("subscription approval fields differ") from None
             existing = await work.subscription_plan_gate.get(evidence.producer.attempt_id)
             if existing is not None:
-                if (
-                    run.state is not RunState.AWAITING_PLAN_APPROVAL
-                    or run.pending_gate is not ApprovalGate.PLAN
-                    or existing.evidence_digest != canonical_digest(evidence)
-                    or run.pending_evidence_digest != existing.evidence_digest
-                ):
+                is_replay = existing.evidence_digest == canonical_digest(evidence) and (
+                    (
+                        run.state is RunState.AWAITING_PLAN_APPROVAL
+                        and run.pending_gate is ApprovalGate.PLAN
+                        and run.pending_evidence_digest == existing.evidence_digest
+                    )
+                    or (
+                        run.state
+                        in {
+                            RunState.PREPARING_WORKTREE,
+                            RunState.IMPLEMENTING,
+                            RunState.VALIDATING,
+                            RunState.REVIEWING,
+                            RunState.REMEDIATING,
+                            RunState.AWAITING_PR_APPROVAL,
+                            RunState.PUBLISHING_PR,
+                            RunState.MONITORING_PR,
+                            RunState.AWAITING_MERGE_APPROVAL,
+                            RunState.MERGING,
+                            RunState.COMPLETED,
+                        }
+                        or (
+                            run.state is RunState.PAUSED
+                            and run.suspended_state
+                            in {
+                                RunState.PREPARING_WORKTREE,
+                                RunState.IMPLEMENTING,
+                                RunState.VALIDATING,
+                                RunState.REVIEWING,
+                                RunState.REMEDIATING,
+                                RunState.AWAITING_PR_APPROVAL,
+                            }
+                        )
+                    )
+                )
+                if not is_replay:
                     raise SubscriptionPlanGateError("subscription plan replay conflicts")
                 await work.subscription_plan_gate.verify(evidence)
                 await work.commit()
@@ -164,18 +201,56 @@ class SubscriptionPlanGateService:
                 producer_id=evidence.producer.attempt_id,
                 parent_digests=(plan_descriptor.digest,),
             )
-            transitioned = await work.runs.await_approval(
-                run.id,
-                run.version,
-                ApprovalGate.PLAN,
-                evidence_descriptor.digest,
-                "run.plan_approval_requested",
-                {
+            questions = material_questions(plan)
+            review_plan_first = run.workflow.review_plan_first if run.workflow is not None else True
+            if review_plan_first or questions:
+                gate_payload: dict[str, object] = {
                     "attempt_id": str(evidence.producer.attempt_id),
                     "result_digest": evidence.result_digest,
-                },
-                actor_class="worker",
-            )
+                }
+                if questions:
+                    gate_payload["material_questions"] = list(questions)
+                transitioned = await work.runs.await_approval(
+                    run.id,
+                    run.version,
+                    ApprovalGate.PLAN,
+                    evidence_descriptor.digest,
+                    "run.plan_approval_requested",
+                    gate_payload,
+                    actor_class="worker",
+                )
+            else:
+                events = await work.events.list_after(run.id, 0)
+                originator_hint = originating_operator_id(events)
+                if originator_hint is None:
+                    raise SubscriptionPlanGateError(
+                        "internal preparation requires recorded run-creation provenance"
+                    )
+                try:
+                    _, originator, payload = await record_internal_preparation_approval(
+                        work,
+                        run,
+                        evidence_digest=evidence_descriptor.digest,
+                        authorized_by=originator_hint,
+                        authorization="run_creation",
+                    )
+                except InternalPreparationError as error:
+                    raise SubscriptionPlanGateError(str(error)) from None
+                transitioned = await work.runs.prepare_plan_internally(
+                    run.id,
+                    run.version,
+                    evidence,
+                    INTERNAL_PREPARATION_EVENT,
+                    payload,
+                    actor_class="worker",
+                    actor_id=None,
+                )
+                await enqueue_prepare_worktree(
+                    work,
+                    run_id=run.id,
+                    run_version=transitioned.version,
+                    actor_id=originator,
+                )
             await work.subscription_plan_gate.mark_applied(evidence)
             await work.commit()
             return SubscriptionPlanGateOutcome(

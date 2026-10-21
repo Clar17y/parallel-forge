@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import cast
 from uuid import UUID
 
 from forge.application.ports.artifacts import ArtifactStore
 from forge.application.ports.executions import ExecutionStatus
 from forge.application.ports.tasks import TaskRecord
 from forge.application.ports.unit_of_work import UnitOfWork
+from forge.application.services.internal_preparation import originating_operator_id
 from forge.application.services.plan_evidence import validate_subscription_plan_fields
 from forge.domain.agent import combined_token_cap
 from forge.domain.approval import (
@@ -52,10 +55,11 @@ class ApprovedPlanLoader:
     async def load(self, work: UnitOfWork, run_id: UUID) -> ApprovedPlan:
         try:
             run = await work.runs.get_for_update(run_id)
+            all_events = await work.events.list_after(run_id, 0)
             events = [
                 event
-                for event in await work.events.list_after(run_id, 0)
-                if event.event_type == "run.plan_approved"
+                for event in all_events
+                if event.event_type in ("run.plan_approved", "run.plan_internally_prepared")
             ]
             if len(events) != 1:
                 raise ApprovedPlanError
@@ -70,9 +74,58 @@ class ApprovedPlanLoader:
                 or approval.policy_version != run.policy_version
                 or event.run_version != approval.run_version + 1
                 or event.run_version > run.version
-                or event.actor_class != "operator"
-                or event.actor_id != approval.authenticated_actor_id
             ):
+                raise ApprovedPlanError
+            if event.event_type == "run.plan_approved":
+                if (
+                    event.actor_class != "operator"
+                    or event.actor_id != approval.authenticated_actor_id
+                ):
+                    raise ApprovedPlanError
+            elif event.event_type == "run.plan_internally_prepared":
+                if (
+                    event.actor_class != "worker"
+                    or event.actor_id is not None
+                    or originating_operator_id(all_events) != approval.authenticated_actor_id
+                    or event.payload.get("originating_actor_id")
+                    != str(approval.authenticated_actor_id)
+                    or event.payload.get("authority") != "internal_preparation"
+                ):
+                    raise ApprovedPlanError
+                authorization = event.payload.get("owner_action")
+                authorized_by = event.payload.get("authorized_by")
+                if authorization == "run_creation":
+                    if authorized_by != str(approval.authenticated_actor_id):
+                        raise ApprovedPlanError
+                elif authorization == "workflow_update":
+                    if not any(
+                        update.event_type == "run.workflow_updated"
+                        and update.run_version == approval.run_version
+                        and update.actor_class == "operator"
+                        and str(update.actor_id) == authorized_by
+                        and isinstance(update.payload.get("workflow"), Mapping)
+                        and cast(Mapping[str, object], update.payload["workflow"]).get(
+                            "review_plan_first"
+                        )
+                        is False
+                        for update in all_events
+                    ):
+                        raise ApprovedPlanError
+                elif authorization == "owner_continuation":
+                    continuation = await work.commands.get(
+                        UUID(str(event.payload.get("continuation_command_id")))
+                    )
+                    if (
+                        continuation.run_id != run.id
+                        or continuation.command_type != "continue_plan"
+                        or continuation.expected_run_version != approval.run_version
+                        or continuation.actor_id is None
+                        or str(continuation.actor_id) != authorized_by
+                    ):
+                        raise ApprovedPlanError
+                else:
+                    raise ApprovedPlanError
+            else:
                 raise ApprovedPlanError
             task = await work.tasks.get(run.task_id, for_update=True)
             project = await work.projects.get(run.project_id, for_update=True)

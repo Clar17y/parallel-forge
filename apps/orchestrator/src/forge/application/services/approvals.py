@@ -28,6 +28,7 @@ from forge.application.services.plan_evidence import (
 from forge.domain.approval import ApprovalGate, ApprovalRecord
 from forge.domain.command import CommandEnvelope
 from forge.domain.event import RunEvent
+from forge.domain.plan import material_questions
 from forge.persistence.models import Approval
 
 CHALLENGE_LIFETIME = timedelta(minutes=5)
@@ -271,7 +272,13 @@ class ApprovalAuthorizationService:
                 raise AuthorizationError("invalid or expired session")
             if gate == "plan" and self._plan_evidence_validator is not None:
                 try:
-                    await self._plan_evidence_validator.validate(cast(UnitOfWork, work), run_id)
+                    _, plan = await self._plan_evidence_validator.validate_with_plan(
+                        cast(UnitOfWork, work), run_id
+                    )
+                    if material_questions(plan):
+                        raise AuthorizationError(
+                            "answer material questions through plan revision before approval"
+                        )
                 except PlanEvidenceValidationError:
                     raise AuthorizationError("approval evidence is stale") from None
             challenge = await work.auth.get_challenge(

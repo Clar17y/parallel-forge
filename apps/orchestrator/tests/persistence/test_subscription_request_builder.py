@@ -109,6 +109,31 @@ async def test_large_approved_plan_uses_bounded_provenance_reference(
 
 
 @pytest.mark.integration
+async def test_ordinary_primary_can_prepare_the_clean_local_candidate_required_by_finalization(
+    session_factory, tmp_path
+):
+    from test_subscription_preparation import preparation_case
+
+    factory, _, command, preparation, _ = await preparation_case(
+        session_factory, tmp_path, ordinary=True
+    )
+    async with factory() as work:
+        await preparation.execute(command, work)
+    admission = await SubscriptionDecisionExecutor(factory).admit_next("primary", _reservation())
+    assert admission is not None
+    request = await SubscriptionRequestBuilder(factory).build(admission)
+    assert request.run_state is RunState.IMPLEMENTING
+    assert ToolName.GIT_COMMIT in request.authorization.permitted_tools
+    assert "Before review_selection, commit changed owned files locally with git.commit" in (
+        request.trusted_system_prompt
+    )
+    assert "Do not create an empty commit" in request.trusted_system_prompt
+    assert "Publication and merge still require their separate owner actions" in (
+        request.trusted_system_prompt
+    )
+
+
+@pytest.mark.integration
 async def test_real_planning_request_uses_frozen_context_and_read_only_authority(
     session_factory, tmp_path
 ):
@@ -125,6 +150,7 @@ async def test_real_planning_request_uses_frozen_context_and_read_only_authority
     assert request.budget == _reservation()
     assert request.budget.max_duration_seconds < request.task.budget.max_duration_seconds
     assert request.run_state is RunState.PLANNING
+    assert "Before review_selection, commit changed owned files" not in request.trusted_system_prompt
     assert request.authorization.worktree_id == repository_resource_identity(original.project_id)
     assert request.authorization.permitted_tools == frozenset(
         {
@@ -222,6 +248,7 @@ async def test_closed_candidate_request_advertises_only_inspection_tools(session
         ToolName.VALIDATION_RESULTS_READ, ToolName.REVIEW_ARTIFACTS_READ,
     })
     assert "candidate is CLOSED" in request.trusted_system_prompt
+    assert "Before review_selection, commit changed owned files" not in request.trusted_system_prompt
     # Acceptance dispatches controller validation. Requiring its result here
     # leaves a live primary waiting for work that only its proposal can start.
     assert "controller runs final validation after this proposal" in request.trusted_system_prompt

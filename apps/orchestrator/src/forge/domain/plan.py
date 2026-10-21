@@ -162,6 +162,21 @@ class ScopedPlanOutput(PlanOutput):
         max_length=64,
         description="Canonical repository-relative writable files or directories proposed for human approval. Empty means no writable paths.",
     )
+    material_questions: tuple[str, ...] = Field(
+        max_length=20,
+        description="Material owner decisions still missing. Non-empty blocks internal preparation until the owner answers via plan revision. Empty means the requested scope is clear.",
+    )
+
+    @field_validator("material_questions")
+    @classmethod
+    def validate_material_questions(cls, value: Sequence[str]) -> tuple[str, ...]:
+        return _validate_string_tuple(
+            value,
+            "material_questions",
+            reject_duplicates=True,
+            max_length=_MAX_ITEM_LENGTH,
+            max_items=20,
+        )
 
     @field_validator("owned_paths")
     @classmethod
@@ -177,14 +192,41 @@ class ScopedPlanOutput(PlanOutput):
         return value
 
 
+def plan_digest_bytes(plan: PlanOutput) -> bytes:
+    """Serialize a plan for digest/artifact identity.
+
+    Omit empty question status from digest inputs to retain the existing
+    question-free artifact identities. Fresh provider decisions still require
+    explicit status through ``ScopedPlanOutput``.
+    """
+    excluded = (
+        {"material_questions"}
+        if isinstance(plan, ScopedPlanOutput) and not plan.material_questions
+        else set()
+    )
+    return plan.model_dump_json(by_alias=False, exclude=excluded).encode()
+
+
+def material_questions(plan: PlanOutput) -> tuple[str, ...]:
+    """Explicit unresolved material owner input; legacy plans have none."""
+    return plan.material_questions if isinstance(plan, ScopedPlanOutput) else ()
+
+
 def decode_plan_output(value: object) -> PlanOutput:
     """Read retained legacy or scoped plans without changing legacy serialization."""
     if isinstance(value, (str, bytes, bytearray)):
         value = json.loads(value)
-    schema = (
-        ScopedPlanOutput if isinstance(value, Mapping) and "owned_paths" in value else PlanOutput
-    )
-    return schema.model_validate(value)
+    if isinstance(value, Mapping) and "owned_paths" in value:
+        # Retained artifacts predate material_questions; fresh provider output
+        # is validated directly against ScopedPlanOutput instead of this reader.
+        return ScopedPlanOutput.model_validate({"material_questions": (), **value})
+    return PlanOutput.model_validate(value)
 
 
-__all__ = ["PlanOutput", "ScopedPlanOutput", "decode_plan_output"]
+__all__ = [
+    "PlanOutput",
+    "ScopedPlanOutput",
+    "decode_plan_output",
+    "material_questions",
+    "plan_digest_bytes",
+]

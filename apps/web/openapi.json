@@ -7594,6 +7594,21 @@
             ],
             "title": "Approval Id"
           },
+          "authority": {
+            "anyOf": [
+              {
+                "enum": [
+                  "human_approval",
+                  "internal_preparation"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Authority"
+          },
           "output_artifact_digest": {
             "anyOf": [
               {
@@ -9799,6 +9814,16 @@
             "format": "uuid",
             "title": "Task Id",
             "type": "string"
+          },
+          "workflow": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunWorkflowPreferences"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -10327,6 +10352,16 @@
           "version": {
             "title": "Version",
             "type": "integer"
+          },
+          "workflow": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunWorkflowPreferences"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -10487,6 +10522,81 @@
           "created_at"
         ],
         "title": "RunUsageItem",
+        "type": "object"
+      },
+      "RunWorkflowPreferences": {
+        "additionalProperties": false,
+        "description": "Frozen per-run workflow preferences.",
+        "properties": {
+          "delegation": {
+            "default": "auto",
+            "enum": [
+              "auto",
+              "disabled",
+              "requested"
+            ],
+            "title": "Delegation",
+            "type": "string"
+          },
+          "optional_review": {
+            "default": "auto",
+            "enum": [
+              "auto",
+              "skip",
+              "required"
+            ],
+            "title": "Optional Review",
+            "type": "string"
+          },
+          "review_plan_first": {
+            "default": false,
+            "title": "Review Plan First",
+            "type": "boolean"
+          }
+        },
+        "title": "RunWorkflowPreferences",
+        "type": "object"
+      },
+      "RunWorkflowUpdateRequest": {
+        "additionalProperties": false,
+        "description": "Closed authenticated workflow preference update request.",
+        "properties": {
+          "expected_run_version": {
+            "minimum": 0.0,
+            "title": "Expected Run Version",
+            "type": "integer"
+          },
+          "expected_workflow": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunWorkflowPreferences"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "workflow": {
+            "$ref": "#/components/schemas/RunWorkflowPreferences"
+          }
+        },
+        "required": [
+          "expected_run_version",
+          "expected_workflow",
+          "workflow"
+        ],
+        "title": "RunWorkflowUpdateRequest",
         "type": "object"
       },
       "RunnerMode": {
@@ -20060,6 +20170,72 @@
           }
         ],
         "summary": "Owner Command"
+      }
+    },
+    "/api/runs/{run_id}/workflow": {
+      "put": {
+        "operationId": "update_run_workflow_api_runs__run_id__workflow_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RunWorkflowUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "CSRF": [],
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Update Run Workflow"
       }
     },
     "/api/subscription-models": {

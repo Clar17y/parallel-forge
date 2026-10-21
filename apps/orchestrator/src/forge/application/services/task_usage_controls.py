@@ -238,6 +238,20 @@ class RunTaskUsageControls:
                 usage_pauses_disabled=bypass,
                 monitoring_policy_revision=revision,
             )
+            if (
+                command.action == "continue"
+                and run.state == "AWAITING_PLAN_APPROVAL"
+                and run.workflow is not None
+                and not run.workflow.get("review_plan_first", False)
+            ):
+                await PostgresCommandRepository(session=session).enqueue(
+                    run_id=run.id,
+                    command_type="continue_plan",
+                    idempotency_key=f"{run.id}:continue-plan:checkpoint:{receipt.command_id}",
+                    payload={},
+                    expected_run_version=run.version,
+                    actor_id=actor.actor_id,
+                )
             updated = await repository.get(current.checkpoint_id)
             assert updated is not None
             return receipt, updated

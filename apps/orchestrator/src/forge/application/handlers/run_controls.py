@@ -261,7 +261,7 @@ class ResumeRunHandler:
 
         if not _same_delivery(command, await work.commands.assert_current_lease(command)):
             raise CommandRecoveryRequired("resume command delivery differs from its lease")
-        await work.runs.resume(
+        restored = await work.runs.resume(
             run.id,
             run.version,
             "run.resumed",
@@ -269,6 +269,19 @@ class ResumeRunHandler:
             actor_class="operator",
             actor_id=command.actor_id,
         )
+        if (
+            restored.state is RunState.AWAITING_PLAN_APPROVAL
+            and restored.workflow is not None
+            and not restored.workflow.review_plan_first
+        ):
+            await work.commands.enqueue(
+                run_id=restored.id,
+                command_type="continue_plan",
+                idempotency_key=f"{restored.id}:continue-plan:resume:{command.id}",
+                payload={},
+                expected_run_version=restored.version,
+                actor_id=command.actor_id,
+            )
         if not _same_delivery(command, await work.commands.assert_current_lease(command)):
             raise CommandRecoveryRequired("resume command delivery differs from its lease")
         await work.commit()
@@ -494,7 +507,10 @@ def _resume_payload(
         "restored_state": target.value,
         "restored_snapshot_digest": hashlib.sha256(
             json.dumps(
-                asdict(restored), default=str, sort_keys=True, separators=(",", ":")
+                {key: value for key, value in asdict(restored).items() if key != "workflow"},
+                default=str,
+                sort_keys=True,
+                separators=(",", ":"),
             ).encode()
         ).hexdigest(),
     }

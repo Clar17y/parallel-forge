@@ -282,11 +282,13 @@ def test_non_planning_primary_rejects_plan_decision(state: RunState) -> None:
         decode_final({"kind": "plan", "plan": {}}, request)
 
 
-def test_planning_primary_accepts_valid_plan() -> None:
+@pytest.mark.parametrize("questions", [(), ("Which database?",)])
+def test_planning_primary_accepts_valid_plan(questions) -> None:
     from forge.domain.plan import ScopedPlanOutput
 
     request = replace(_request(purpose=SpecialistPurpose.PRIMARY), run_state=RunState.PLANNING)
     plan = ScopedPlanOutput(
+        material_questions=questions,
         owned_paths=("src",),
         summary="Update the requested component",
         assumptions=(),
@@ -321,6 +323,35 @@ def test_new_planning_decision_requires_explicit_scope() -> None:
         decode_final({"kind": "plan", "plan": plan.model_dump(mode="json")}, request)
 
 
+@pytest.mark.parametrize(
+    "status",
+    [
+        {},
+        {"material_questions": None},
+        {"material_questions": ""},
+        {"material_questions": ["  "]},
+        {"material_questions": ["Q?", "Q?"]},
+    ],
+)
+def test_new_planning_decision_requires_explicit_material_question_status(status) -> None:
+    from forge.domain.plan import PlanOutput
+
+    plan = PlanOutput(
+        summary="Change",
+        assumptions=(),
+        affected_components=("src",),
+        steps=("Implement",),
+        required_checks=("unit",),
+        risks=("Regression",),
+        security_considerations=(),
+        dependency_changes=(),
+    )
+    request = replace(_request(purpose=SpecialistPurpose.PRIMARY), run_state=RunState.PLANNING)
+    payload = {**plan.model_dump(mode="json"), "owned_paths": ["src"], **status}
+    with pytest.raises(ProtocolError, match="invalid structured decision"):
+        decode_final({"kind": "plan", "plan": payload}, request)
+
+
 def test_request_rejects_untyped_phase() -> None:
     with pytest.raises(TypeError, match="RunState"):
         replace(_request(), run_state="PLANNING")
@@ -337,6 +368,7 @@ def test_phase_specific_schema_uses_trusted_request_state() -> None:
     choices = output_schema(request)["properties"]["decision"]["anyOf"]
     assert [choice["properties"]["kind"]["const"] for choice in choices] == ["plan"]
     assert "owned_paths" in choices[0]["properties"]["plan"]["required"]
+    assert "material_questions" in choices[0]["properties"]["plan"]["required"]
     request = replace(request, run_state=RunState.IMPLEMENTING)
     choices = output_schema(request)["properties"]["decision"]["anyOf"]
     kinds = {choice["properties"]["kind"]["const"] for choice in choices}
