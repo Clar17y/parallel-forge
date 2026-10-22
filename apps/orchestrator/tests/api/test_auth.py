@@ -216,7 +216,9 @@ async def test_postgres_auth_routes_return_safe_session_and_enforce_csrf(session
 
 @pytest.mark.asyncio
 async def test_local_session_route_absent_when_disabled() -> None:
-    settings = Settings(web_origin="http://127.0.0.1:3000")
+    settings = Settings(
+        web_origin="http://127.0.0.1:3000", local_operator_auto_session=False
+    )
     app = create_app(settings, auth_service=FakeAuthService())
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url=settings.web_origin

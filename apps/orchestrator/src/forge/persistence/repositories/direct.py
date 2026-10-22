@@ -335,8 +335,12 @@ class PostgresDirectRepository:
 
     async def cancel_requested(self, run_id: UUID) -> bool:
         async with self._factory() as session:
-            row = await session.get(DirectRun, run_id)
-            return bool(row and row.cancel_requested)
+            value = (
+                await session.execute(
+                    select(DirectRun.cancel_requested).where(DirectRun.id == run_id)
+                )
+            ).scalar_one_or_none()
+            return bool(value)
 
     async def reviews(self, run_id: UUID) -> tuple[DirectReviewRecord, ...]:
         async with self._factory() as session:
@@ -388,10 +392,6 @@ class PostgresDirectRepository:
             await session.commit()
             await session.refresh(row)
             return _session_record(row)
-
-    async def latest_session(self, run_id: UUID) -> DirectSessionRecord | None:
-        sessions = await self.sessions(run_id)
-        return sessions[-1] if sessions else None
 
     async def update_session(self, session_id: UUID, **fields: object) -> None:
         async with self._factory() as session:

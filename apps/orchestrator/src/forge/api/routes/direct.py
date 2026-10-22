@@ -74,10 +74,8 @@ def router_for() -> APIRouter:
         try:
             record = await service.get(run_id)
             sessions = await service.sessions(run_id)
-            checks_fn = getattr(service, "checks", None)
-            checks = await checks_fn(run_id) if checks_fn is not None else ()
-            reviews_fn = getattr(service, "reviews", None)
-            reviews = await reviews_fn(run_id) if reviews_fn is not None else ()
+            checks = await service.checks(run_id)
+            reviews = await service.reviews(run_id)
         except Exception as error:  # noqa: BLE001
             raise translate_error(error) from None
         return DirectRunResponse.from_record(record, sessions, checks, reviews)

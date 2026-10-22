@@ -352,14 +352,15 @@ class DirectRunWorker:
         data_root = Path(self._settings.data_root)
         worktree = data_root / "direct-worktrees" / str(run.id)
         branch = f"forge/direct-{str(run.id)[:8]}"
-        base_sha = await _git(canonical, "rev-parse", default_branch)
+        _base_code, _base_out = await _run_git(canonical, "rev-parse", default_branch)
+        base_sha = _base_out.strip() if _base_code == 0 else None
         if base_sha is None:
             await self._repo.update_run(
                 run.id, state="FAILED", failure_reason="base branch unavailable"
             )
             return
         worktree.parent.mkdir(parents=True, exist_ok=True)
-        created = await _git_raw(
+        created, _created_out = await _run_git(
             canonical, "worktree", "add", "-b", branch, str(worktree), default_branch
         )
         if created != 0:
@@ -423,20 +424,13 @@ class DirectRunWorker:
                 repair_prompt = build_direct_repair_prompt(
                     run.task_text, detail, has_agents_md=has_agents_md
                 )
-                repair = await self._launch_and_settle_session(
-                    run, installation, kind="repair", prompt=repair_prompt,
-                    worktree=worktree, transcript_dir=transcript_dir,
+                repaired = await self._execute_repair_step(
+                    run, installation, prompt=repair_prompt, worktree=worktree,
+                    transcript_dir=transcript_dir, head_sha=head_sha, summary=summary,
                 )
-                if repair is None:
+                if repaired is None:
                     return
-                previous_head = head_sha
-                head_sha = await self._commit_and_record(run, worktree, previous_head, repair)
-                summary = repair.summary or summary
-                if head_sha == previous_head:
-                    await self._repo.update_run(
-                        run.id, state="FAILED", failure_reason="repair made no changes"
-                    )
-                    return
+                head_sha, summary = repaired
             # Slice C: cross-provider review after every passed CHECKING.
             await self._repo.update_run(run.id, state="REVIEWING", head_sha=head_sha)
             reviewer = self._resolve_review_installation(run, installation)
@@ -477,20 +471,13 @@ class DirectRunWorker:
                 run.task_text, format_blocking_findings(review.findings),
                 has_agents_md=has_agents_md,
             )
-            repair = await self._launch_and_settle_session(
-                run, installation, kind="repair", prompt=review_repair_prompt,
-                worktree=worktree, transcript_dir=transcript_dir,
+            repaired = await self._execute_repair_step(
+                run, installation, prompt=review_repair_prompt, worktree=worktree,
+                transcript_dir=transcript_dir, head_sha=head_sha, summary=summary,
             )
-            if repair is None:
+            if repaired is None:
                 return
-            previous_head = head_sha
-            head_sha = await self._commit_and_record(run, worktree, previous_head, repair)
-            summary = repair.summary or summary
-            if head_sha == previous_head:
-                await self._repo.update_run(
-                    run.id, state="FAILED", failure_reason="repair made no changes"
-                )
-                return
+            head_sha, summary = repaired
 
     def _log_pr_watch(self, transcript_dir: Path, message: str) -> None:
         try:
@@ -615,15 +602,10 @@ class DirectRunWorker:
                 formatted = format_pr_feedback(feedback_tuple)
                 redacted_detail, _ = self._redactor.redact_text(formatted)
                 repair_prompt = build_direct_pr_repair_prompt(run.task_text, redacted_detail, has_agents_md=has_agents_md)
-                repair = await self._launch_and_settle_session(run, installation, kind="repair", prompt=repair_prompt, worktree=worktree, transcript_dir=transcript_dir)
-                if repair is None:
+                repaired = await self._execute_repair_step(run, installation, prompt=repair_prompt, worktree=worktree, transcript_dir=transcript_dir, head_sha=head_sha, summary=current_summary)
+                if repaired is None:
                     return
-                previous_head = head_sha
-                head_sha = await self._commit_and_record(run, worktree, previous_head, repair)
-                current_summary = repair.summary or current_summary
-                if head_sha == previous_head:
-                    await self._repo.update_run(run.id, state="FAILED", head_sha=head_sha, failure_reason="repair made no changes")
-                    return
+                head_sha, current_summary = repaired
                 await self._repo.update_run(run.id, state="CHECKING", head_sha=head_sha)
                 check_result = await self._run_checks(run, worktree, head_sha, round_no=check_round)
                 check_round += 1
@@ -681,15 +663,37 @@ class DirectRunWorker:
             await asyncio.sleep(float(self._settings.direct_pr_poll_seconds))
 
 
+    async def _execute_repair_step(
+        self, run: DirectRunRecord, installation: object, *, prompt: str,
+        worktree: Path, transcript_dir: Path, head_sha: str, summary: str,
+    ) -> tuple[str, str] | None:
+        repair = await self._launch_and_settle_session(
+            run, installation, kind="repair", prompt=prompt,
+            worktree=worktree, transcript_dir=transcript_dir,
+        )
+        if repair is None:
+            return None
+        previous_head = head_sha
+        new_head = await self._commit_and_record(run, worktree, previous_head, repair)
+        new_summary = repair.summary or summary
+        if new_head == previous_head:
+            await self._repo.update_run(
+                run.id, state="FAILED", head_sha=new_head,
+                failure_reason="repair made no changes",
+            )
+            return None
+        return new_head, new_summary
+
     async def _commit_and_record(
         self, run: DirectRunRecord, worktree: Path, previous_head: str, result: DirectResult
     ) -> str:
         await self._repo.update_run(
-            run.id, state="FINALIZING", summary=result.summary,
+            run.id, summary=result.summary,
             result_degraded=result.degraded,
         )
         await _commit_worktree(worktree, previous_head, result.summary, run.id)
-        head = await _git(str(worktree), "rev-parse", "HEAD")
+        _head_code, _head_out = await _run_git(worktree, "rev-parse", "HEAD")
+        head = _head_out.strip() if _head_code == 0 else None
         head_sha = head or previous_head
         await self._repo.update_run(run.id, head_sha=head_sha)
         return head_sha
@@ -706,6 +710,22 @@ class DirectRunWorker:
     ) -> DirectResult | None:
         """Run one session; settle the run and return None on terminal outcomes."""
 
+        session_id, outcome, final_file = await self._launch_raw_session(
+            run, installation, kind=kind, prompt=prompt, worktree=worktree,
+            transcript_dir=transcript_dir,
+        )
+        return await self._settle_session(run, session_id, outcome, final_file)
+
+    async def _launch_raw_session(
+        self,
+        run: DirectRunRecord,
+        installation: object,
+        *,
+        kind: str,
+        prompt: str,
+        worktree: Path,
+        transcript_dir: Path,
+    ) -> tuple[UUID, tuple[str, int | None, str], Path]:
         session = await self._repo.create_session(
             run_id=run.id, run=run, kind=kind,
             client=str(getattr(installation, "client", "")) or None,
@@ -732,43 +752,21 @@ class DirectRunWorker:
                 max_model_steps=self._settings.direct_max_model_steps,
             )
         outcome = await self._run_session(run, session.id, launch, worktree, transcript_path)
-        return await self._settle_session(run, session.id, outcome, final_file)
+        return session.id, outcome, final_file
 
     async def _launch_and_settle_review(
         self, run: DirectRunRecord, reviewer: object, *, prompt: str,
         worktree: Path, transcript_dir: Path, round_no: int,
     ) -> DirectReviewResult | None:
         before = await _porcelain(worktree)
-        session = await self._repo.create_session(
-            run_id=run.id, run=run, kind="review",
-            client=str(getattr(reviewer, "client", "")) or None,
-            model=str(getattr(reviewer, "model", "")) or None,
+        session_id, outcome, final_file = await self._launch_raw_session(
+            run, reviewer, kind="review", prompt=prompt, worktree=worktree,
+            transcript_dir=transcript_dir,
         )
-        transcript_path = transcript_dir / f"{session.id}.log"
-        await self._repo.update_session(session.id, transcript_path=str(transcript_path))
-        prompt_file = transcript_dir / f"{session.id}.prompt.txt"
-        prompt_file.write_text(prompt, encoding="utf-8")
-        schema_file = transcript_dir / f"{session.id}.schema.json"
-        schema_file.write_text(json.dumps(RESULT_SCHEMA), encoding="utf-8")
-        final_file = transcript_dir / f"{session.id}.final.txt"
-        ctx = DirectLaunchContext(
-            run=run, session_id=session.id, worktree=worktree, prompt=prompt,
-            prompt_file=prompt_file, schema_file=schema_file, final_file=final_file,
-            settings=self._settings,
-        )
-        if self._argv_factory is not None:
-            launch = self._argv_factory(reviewer, ctx)
-        else:
-            launch = build_direct_launch(
-                reviewer, worktree=worktree, prompt=prompt, prompt_file=prompt_file,
-                schema_file=schema_file, final_file=final_file,
-                max_model_steps=self._settings.direct_max_model_steps,
-            )
-        outcome = await self._run_session(run, session.id, launch, worktree, transcript_path)
         # Post-hoc read-only enforcement before any verdict is applied.
         modified = await _revert_reviewer_changes(worktree, before)
         return await self._settle_review(
-            run, session.id, outcome, final_file, reviewer=reviewer,
+            run, session_id, outcome, final_file, reviewer=reviewer,
             round_no=round_no, modified=modified,
         )
 
@@ -895,7 +893,8 @@ class DirectRunWorker:
     async def _run_checks(
         self, run: DirectRunRecord, worktree: Path, head_sha: str, *, round_no: int
     ) -> _CheckRound:
-        tree_sha = await _git(str(worktree), "rev-parse", "HEAD^{tree}") or head_sha
+        _tree_code, _tree_out = await _run_git(worktree, "rev-parse", "HEAD^{tree}")
+        tree_sha = (_tree_out.strip() if _tree_code == 0 else None) or head_sha
         policy_pair = await self._repo.policy_for(run.id)
         if policy_pair is None:
             return _CheckRound(outcome="passed", note="no checks: no project policy")
@@ -1100,7 +1099,8 @@ class DirectRunWorker:
         started = monotonic()
         last_output = started
         output_bytes = 0
-        last_db_update = 0.0
+        last_cancel_check = 0.0
+        last_progress_update = 0.0
         collected: list[str] = []
         kind = "exited"
         assert proc.stdout is not None
@@ -1124,8 +1124,8 @@ class DirectRunWorker:
                     kind = "timeout"
                     await _kill_tree(proc)
                     break
-                if now - last_db_update >= 0.5:
-                    last_db_update = now
+                if now - last_cancel_check >= 0.5:
+                    last_cancel_check = now
                     if await self._repo.cancel_requested(run.id):
                         kind = "cancelled"
                         await _kill_tree(proc)
@@ -1146,8 +1146,8 @@ class DirectRunWorker:
                 collected.append(redacted)
                 if len(collected) > 2000:
                     collected = collected[-2000:]
-                if monotonic() - last_db_update >= 2 or output_bytes % 65536 < len(line):
-                    last_db_update = monotonic()
+                if monotonic() - last_progress_update >= 2 or output_bytes % 65536 < len(line):
+                    last_progress_update = monotonic()
                     await self._repo.update_session(
                         session_id, last_output_at=datetime.now(UTC),
                         output_bytes=output_bytes,
@@ -1160,21 +1160,22 @@ class DirectRunWorker:
         )
         return kind, exit_code, "\n".join(collected)[-262144:]
 
-async def _git_text(cwd: Path, *args: str) -> str:
+async def _run_git(cwd: Path | str, *args: str) -> tuple[int | None, str]:
     proc = await asyncio.create_subprocess_exec(
         "git", "-C", str(cwd), *args,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
     )
     out, _ = await proc.communicate()
-    return out.decode("utf-8", errors="replace")
+    return proc.returncode, out.decode("utf-8", errors="replace")
 
 
 async def _git_diff(worktree: Path, base_sha: str, head_sha: str) -> str:
-    return await _git_text(worktree, "diff", f"{base_sha}..{head_sha}")
+    _code, text = await _run_git(worktree, "diff", f"{base_sha}..{head_sha}")
+    return text
 
 
 async def _porcelain(worktree: Path) -> dict[str, str]:
-    text = await _git_text(worktree, "status", "--porcelain")
+    _code, text = await _run_git(worktree, "status", "--porcelain")
     out: dict[str, str] = {}
     for line in text.splitlines():
         if len(line) >= 3:
@@ -1186,7 +1187,7 @@ async def _revert_reviewer_changes(worktree: Path, before: dict[str, str]) -> bo
     after = await _porcelain(worktree)
     if after == before:
         return False
-    await _git_raw(str(worktree), "restore", "--", ".")
+    await _run_git(worktree, "restore", "--", ".")
     for path, status in after.items():
         if path in before:
             continue
@@ -1254,41 +1255,22 @@ def _check_env(
     return env, None
 
 
-async def _git(cwd: str, *args: str) -> str | None:
-    proc = await asyncio.create_subprocess_exec(
-        "git", "-C", cwd, *args,
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
-    )
-    out, _ = await proc.communicate()
-    if proc.returncode != 0:
-        return None
-    return out.decode("utf-8", errors="replace").strip()
-
-
-async def _git_raw(cwd: str, *args: str) -> int:
-    proc = await asyncio.create_subprocess_exec(
-        "git", "-C", cwd, *args,
-        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
-    )
-    return await proc.wait()
-
-
 async def _commit_worktree(worktree: Path, base_sha: str, summary: str | None, run_id: UUID) -> str:
-    await _git_raw(str(worktree), "add", "-A")
-    status = await _git(str(worktree), "status", "--porcelain")
+    await _run_git(worktree, "add", "-A")
+    _status_code, _status_out = await _run_git(worktree, "status", "--porcelain")
+    status = _status_out.strip() if _status_code == 0 else None
     if not status:
         return base_sha
     subject = (summary or "").strip().splitlines()[0][:200] if summary else ""
     if not subject:
         subject = f"Direct run {str(run_id)[:8]}"
-    proc = await asyncio.create_subprocess_exec(
-        "git", "-C", str(worktree),
+    await _run_git(
+        worktree,
         "-c", "user.email=forge@localhost", "-c", "user.name=Forge",
         "commit", "-m", subject,
-        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
     )
-    await proc.wait()
-    head = await _git(str(worktree), "rev-parse", "HEAD")
+    _head_code, _head_out = await _run_git(worktree, "rev-parse", "HEAD")
+    head = _head_out.strip() if _head_code == 0 else None
     return head or base_sha
 
 

@@ -47,26 +47,8 @@ class DirectRunState(StrEnum):
     NEEDS_DECISION = "NEEDS_DECISION"
 
 
-TERMINAL_RUN_STATES = frozenset(
-    {DirectRunState.DONE, DirectRunState.FAILED, DirectRunState.CANCELLED,
-     DirectRunState.NEEDS_DECISION}
-)
-
-
-class DirectSessionState(StrEnum):
-    RUNNING = "RUNNING"
-    SUCCEEDED = "SUCCEEDED"
-    FAILED = "FAILED"
-    KILLED = "KILLED"
-    TIMED_OUT = "TIMED_OUT"
-
-
 class DirectRunNotFound(LookupError):
     """The requested direct run does not exist."""
-
-
-class DirectRunConflict(RuntimeError):
-    """The direct run cannot perform the requested transition."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -556,7 +538,6 @@ __all__ = [
     "RESULT_SCHEMA",
     "REVIEW_CLIENT_PREFERENCE",
     "SUPPORTED_DIRECT_CLIENTS",
-    "TERMINAL_RUN_STATES",
     "DirectCheckRecord",
     "DirectFinding",
     "DirectLaunch",
@@ -565,12 +546,10 @@ __all__ = [
     "DirectResult",
     "DirectReviewRecord",
     "DirectReviewResult",
-    "DirectRunConflict",
     "DirectRunNotFound",
     "DirectRunRecord",
     "DirectRunState",
     "DirectSessionRecord",
-    "DirectSessionState",
     "build_direct_launch",
     "build_direct_pr_repair_prompt",
     "build_direct_prompt",

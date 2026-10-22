@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import asyncio
+import os
 from collections.abc import Iterable
 from pathlib import Path
 from uuid import UUID
@@ -19,6 +19,7 @@ from forge.domain.direct import (
 from forge.domain.subscription_installations import load_subscription_installation_manifest
 from forge.persistence.repositories.direct import PostgresDirectRepository
 from forge.settings import Settings
+from forge.worker.direct import _run_git
 
 MAX_TAIL_BYTES = 65_536
 MAX_DIFF_BYTES = 65_536
@@ -107,7 +108,7 @@ class DirectRunService:
     async def transcript(
         self, run_id: UUID, session_id: UUID | None = None, tail_bytes: int = 32_768
     ) -> str:
-        run = await self._repo.get(run_id)
+        await self._repo.get(run_id)
         sessions = await self._repo.sessions(run_id)
         chosen = None
         if session_id is not None:
@@ -117,18 +118,7 @@ class DirectRunService:
         elif sessions:
             chosen = sessions[-1]
         if chosen is None or not chosen.transcript_path:
-            # Fall back to the conventional path for runs settled before a session row.
-            path = (
-                Path(self._settings.data_root)
-                / "direct-transcripts"
-                / str(run.id)
-            )
-            if not path.exists():
-                return ""
-            files = sorted(path.glob("*.log"))
-            if not files:
-                return ""
-            return _tail(files[-1], tail_bytes)
+            return ""
         return _tail(Path(chosen.transcript_path), tail_bytes)
 
     async def diff(self, run_id: UUID) -> str:
@@ -142,12 +132,7 @@ class DirectRunService:
             args = ["diff", run.base_sha, run.head_sha]
         else:
             args = ["diff", run.base_sha]
-        proc = await asyncio.create_subprocess_exec(
-            "git", "-C", str(worktree), *args,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
-        )
-        out, _ = await proc.communicate()
-        text = out.decode("utf-8", errors="replace")
+        _code, text = await _run_git(worktree, *args)
         encoded = text.encode("utf-8")
         if len(encoded) > MAX_DIFF_BYTES:
             text = encoded[:MAX_DIFF_BYTES].decode("utf-8", errors="ignore") + "\n[TRUNCATED]"
@@ -158,10 +143,11 @@ def _tail(path: Path, tail_bytes: int) -> str:
     bounded = min(max(tail_bytes, 0), MAX_TAIL_BYTES)
     if bounded == 0 or not path.exists():
         return ""
-    data = path.read_bytes()
-    if len(data) > bounded:
-        data = data[-bounded:]
-    return data.decode("utf-8", errors="replace")
+    with path.open("rb") as handle:
+        handle.seek(0, os.SEEK_END)
+        size = handle.tell()
+        handle.seek(max(0, size - bounded), os.SEEK_SET)
+        return handle.read(bounded).decode("utf-8", errors="replace")
 
 
 __all__ = ["MAX_DIFF_BYTES", "MAX_TAIL_BYTES", "DirectRunService"]
