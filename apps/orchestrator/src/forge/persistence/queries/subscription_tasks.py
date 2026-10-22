@@ -33,6 +33,7 @@ from forge.persistence.models.subscription import (
     SubscriptionTask,
 )
 from forge.persistence.models.subscription_feedback import SubscriptionTaskFeedback
+from forge.persistence.models.subscription_primary_feedback import SubscriptionPrimaryFeedback
 from forge.persistence.models.subscription_recovery import SubscriptionApplicationDiagnostic
 from forge.persistence.models.subscription_results import SubscriptionAttemptResult
 from forge.persistence.queries.subscription_capacity import capacity_observation
@@ -100,6 +101,7 @@ class SubscriptionTaskQuery:
             ids = [row[0].id for row in page]
             control_receipts = await latest_control_receipts(session, ids)
             feedback_receipts = await _feedback_receipts(session, run_id, ids)
+            primary_feedback_receipts = await _primary_feedback_receipts(session, run_id, ids)
             recovery_rows = (
                 (
                     await session.scalars(
@@ -208,6 +210,7 @@ class SubscriptionTaskQuery:
                             session, row, scheduled, control_receipts.get(row.id)
                         ),
                         "feedback_receipts": feedback_receipts.get(row.id, []),
+                        "primary_feedback_receipts": primary_feedback_receipts.get(row.id, []),
                         "quota_status": quota_by_key[key],
                         "requested_route": _route(contract.route.requested),
                         "effective_route": _route(contract.route.effective),
@@ -475,6 +478,69 @@ async def _feedback_receipts(
         )
         if len(receipts) > MAX_FEEDBACK_PER_TASK:
             raise ValueError("subscription feedback projection exceeds its bound")
+    return projected
+
+
+async def _primary_feedback_receipts(
+    session: AsyncSession, run_id: UUID, task_ids: list[UUID]
+) -> dict[UUID, list[dict[str, object]]]:
+    if not task_ids:
+        return {}
+    receipt_order = (
+        SubscriptionPrimaryFeedback.created_at,
+        SubscriptionPrimaryFeedback.id,
+    )
+    ranked = (
+        select(
+            SubscriptionPrimaryFeedback.id.label("receipt_id"),
+            SubscriptionPrimaryFeedback.primary_task_id,
+            SubscriptionPrimaryFeedback.state,
+            SubscriptionPrimaryFeedback.feedback_digest,
+            SubscriptionPrimaryFeedback.feedback_bytes,
+            SubscriptionPrimaryFeedback.created_at,
+            SubscriptionPrimaryFeedback.delivery_attempt_id,
+            SubscriptionPrimaryFeedback.delivered_at,
+            SubscriptionPrimaryFeedback.closed_reason,
+            func.row_number()
+            .over(
+                partition_by=SubscriptionPrimaryFeedback.primary_task_id,
+                order_by=receipt_order,
+            )
+            .label("receipt_rank"),
+        )
+        .where(
+            SubscriptionPrimaryFeedback.run_id == run_id,
+            SubscriptionPrimaryFeedback.primary_task_id.in_(task_ids),
+        )
+        .subquery()
+    )
+    rows = list(
+        (
+            await session.execute(
+                select(ranked)
+                .where(ranked.c.receipt_rank <= MAX_FEEDBACK_PER_TASK + 1)
+                .order_by(ranked.c.primary_task_id, ranked.c.receipt_rank)
+            )
+        ).mappings()
+    )
+    projected: dict[UUID, list[dict[str, object]]] = {}
+    for row in rows:
+        receipts = projected.setdefault(row["primary_task_id"], [])
+        receipts.append(
+            {
+                "receipt_id": row["receipt_id"],
+                "primary_task_id": row["primary_task_id"],
+                "status": row["state"],
+                "feedback_digest": row["feedback_digest"],
+                "feedback_bytes": row["feedback_bytes"],
+                "observed_at": row["created_at"],
+                "delivery_attempt_id": row["delivery_attempt_id"],
+                "delivered_at": row["delivered_at"],
+                "closed_reason": row["closed_reason"],
+            }
+        )
+        if len(receipts) > MAX_FEEDBACK_PER_TASK:
+            raise ValueError("subscription primary feedback projection exceeds its bound")
     return projected
 
 

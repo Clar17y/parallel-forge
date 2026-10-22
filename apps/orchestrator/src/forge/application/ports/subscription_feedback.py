@@ -6,7 +6,10 @@ from uuid import UUID
 
 from forge.application.ports.subscription_execution import SubscriptionAdmission
 from forge.domain.subscription_feedback import (
+    PrimaryFeedbackStatus,
+    StoredPrimaryFeedback,
     StoredTaskFeedback,
+    SubscriptionPrimaryFeedbackRequest,
     SubscriptionTaskFeedbackRequest,
     TaskFeedbackStatus,
 )
@@ -25,9 +28,21 @@ class FeedbackTransition:
 
 
 @dataclass(frozen=True, slots=True)
+class PrimaryFeedbackTransition:
+    primary_task_id: UUID
+    status: PrimaryFeedbackStatus
+    run_version: int
+    task_version: int
+    feedback_digest: str
+    binding_digest: str
+    feedback_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
 class FeedbackInvocationContext:
     pending_primary: dict[str, object] | None = None
     worker_feedback: tuple[dict[str, object], ...] = ()
+    primary_feedback: tuple[dict[str, object], ...] = ()
 
 
 class SubscriptionFeedbackRepository(Protocol):
@@ -50,9 +65,30 @@ class SubscriptionFeedbackRepository(Protocol):
         receipt_id: UUID,
     ) -> FeedbackTransition: ...
 
+    async def verify_primary_receipt(
+        self,
+        stored: StoredPrimaryFeedback,
+        *,
+        actor_id: UUID,
+        request_digest: str,
+    ) -> None: ...
+
+    async def submit_primary(
+        self,
+        run_id: UUID,
+        task_id: UUID,
+        request: SubscriptionPrimaryFeedbackRequest,
+        *,
+        actor_id: UUID,
+        request_digest: str,
+        receipt_id: UUID,
+    ) -> PrimaryFeedbackTransition: ...
+
     async def invocation_context(
         self, admission: SubscriptionAdmission
     ) -> FeedbackInvocationContext: ...
+
+    async def close_primary_terminal(self, run_id: UUID) -> int: ...
 
     async def close_cancelled(self, run_id: UUID, task_id: UUID) -> int: ...
 
@@ -64,5 +100,6 @@ class SubscriptionFeedbackRepository(Protocol):
 __all__ = [
     "FeedbackInvocationContext",
     "FeedbackTransition",
+    "PrimaryFeedbackTransition",
     "SubscriptionFeedbackRepository",
 ]

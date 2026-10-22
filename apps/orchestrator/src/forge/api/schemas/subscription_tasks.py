@@ -10,6 +10,9 @@ from forge.api.schemas.subscription_quota import QuotaStatusResponse
 from forge.domain.subscription_feedback import (
     MAX_FEEDBACK_BYTES,
     MAX_FEEDBACK_PER_TASK,
+    PrimaryFeedbackClosedReason,
+    PrimaryFeedbackStatus,
+    SubscriptionPrimaryFeedbackRequest,
     SubscriptionTaskFeedbackRequest,
     TaskFeedbackStatus,
 )
@@ -34,6 +37,14 @@ class TaskControlRequest(SubscriptionTaskControlRequest):
 
 
 class TaskFeedbackRequest(SubscriptionTaskFeedbackRequest):
+    """Parse a closed JSON body while keeping version integers strict."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=False)
+    expected_run_version: int = Field(ge=0, strict=True)
+    expected_task_version: int = Field(ge=0, strict=True)
+
+
+class PrimaryFeedbackRequest(SubscriptionPrimaryFeedbackRequest):
     """Parse a closed JSON body while keeping version integers strict."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=False)
@@ -69,6 +80,18 @@ class SubscriptionTaskFeedbackView(ProjectionModel):
     closed_reason: Literal["accepted", "cancelled", "budget_exhausted"] | None = None
 
 
+class SubscriptionPrimaryFeedbackView(ProjectionModel):
+    receipt_id: UUID
+    primary_task_id: UUID
+    status: PrimaryFeedbackStatus
+    feedback_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    feedback_bytes: int = Field(ge=1, le=MAX_FEEDBACK_BYTES)
+    observed_at: datetime
+    delivery_attempt_id: UUID | None = None
+    delivered_at: datetime | None = None
+    closed_reason: PrimaryFeedbackClosedReason | None = None
+
+
 class SubscriptionTaskView(ProjectionModel):
     task_id: UUID
     parent_task_id: UUID | None
@@ -85,6 +108,9 @@ class SubscriptionTaskView(ProjectionModel):
     recovery_reason_code: str | None = None
     control: SubscriptionTaskControlView | None = None
     feedback_receipts: list[SubscriptionTaskFeedbackView] = Field(
+        default_factory=list, max_length=MAX_FEEDBACK_PER_TASK
+    )
+    primary_feedback_receipts: list[SubscriptionPrimaryFeedbackView] = Field(
         default_factory=list, max_length=MAX_FEEDBACK_PER_TASK
     )
     quota_status: QuotaStatusResponse | None = None

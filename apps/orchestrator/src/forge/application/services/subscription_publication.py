@@ -28,6 +28,11 @@ from forge.application.services.validation import (
     _fence_command,
     validation_acceptance_attempt,
 )
+from forge.application.services.validation_failure_evidence import (
+    build_failure_detail,
+    extract_check_failure,
+    merge_check_failures,
+)
 from forge.domain.approval import (
     ApprovalGate,
     SubscriptionPrApprovalEvidence,
@@ -178,6 +183,7 @@ class SubscriptionPublicationController:
                 or await pending_current_control_stop(work, latest.run)
             ):
                 raise CommandRecoveryRequired("subscription validation failure authority differs")
+            failure_detail = await self._failure_detail(verified)
             await _fence_command(command, work, wait=False)
             repair = await work.subscription_decisions.reject_acceptance_validation(
                 source,
@@ -185,6 +191,7 @@ class SubscriptionPublicationController:
                 produced.manifest_digest,
                 _failed_checks(verified),
                 current.evidence.local_remediation_limit,
+                failure_detail,
             )
             payload = _failure_payload(
                 command,
@@ -272,6 +279,38 @@ class SubscriptionPublicationController:
         await work.commit()
         return self._decision(command.run_id, run.version, frozen, run.state)
 
+    async def _failure_detail(self, verified: VerifiedSubscriptionValidation) -> str:
+        """Bounded detail from the failed checks' persisted redacted output.
+
+        Reads only artifacts already bound to the verified validation
+        manifest. An unreadable artifact degrades that check to its name
+        rather than blocking the rejection.
+        """
+        evidences = []
+        failed = sorted(
+            (m for m in verified.manifest.members if m.status is EvidenceStatus.FAILED),
+            key=lambda m: m.command_name,
+        )
+        for member in failed:
+            try:
+                blob = await self._store.open_bytes(member.stdout_digest)
+            except Exception:  # noqa: BLE001 - detail never blocks rejection
+                blob = b""
+            evidence = extract_check_failure(member.command_name, blob)
+            if member.stderr_digest != member.stdout_digest:
+                try:
+                    fallback = extract_check_failure(
+                        member.command_name,
+                        await self._store.open_bytes(member.stderr_digest),
+                    )
+                except Exception:  # noqa: BLE001 - detail never blocks rejection
+                    fallback = evidence
+                # Always merge: stdout progress output must not suppress
+                # stderr diagnostics (see validation_failure_evidence).
+                evidence = merge_check_failures(evidence, fallback)
+            evidences.append(evidence)
+        return build_failure_detail(evidences)
+
     async def _rejected_replay(
         self,
         work: UnitOfWork,
@@ -307,6 +346,7 @@ class SubscriptionPublicationController:
             verified.validation.manifest_digest,
             _failed_checks(verified),
             receipt,
+            await self._failure_detail(verified),
         )
         await _fence_command(command, work, wait=False)
         await work.commit()

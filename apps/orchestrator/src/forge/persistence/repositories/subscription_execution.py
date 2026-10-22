@@ -801,6 +801,7 @@ class PostgresSubscriptionExecutionRepository:
             await feedback.requeue_failed_primary(
                 identity.run_id, identity.task_id, identity.attempt_id
             )
+            await feedback.requeue_primary_feedback_pending(identity.run_id, identity.task_id)
         await feedback.close_run_cancelled(identity.run_id)
         await feedback.close_exhausted(identity.run_id)
         return SubscriptionSettlement(accepted, disposition)

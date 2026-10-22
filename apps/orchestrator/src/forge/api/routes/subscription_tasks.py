@@ -13,6 +13,7 @@ from forge.api.dependencies import (
 )
 from forge.api.errors import translate_error
 from forge.api.schemas.subscription_tasks import (
+    PrimaryFeedbackRequest,
     RecoveryReceiptPage,
     SubscriptionAttemptPage,
     SubscriptionTaskPage,
@@ -24,6 +25,8 @@ from forge.application.services.subscription_feedback import SubscriptionTaskFee
 from forge.application.services.subscription_recovery import SubscriptionRecoveryService
 from forge.application.services.subscription_task_controls import SubscriptionTaskControlService
 from forge.domain.subscription_feedback import (
+    PrimaryFeedbackReceipt,
+    SubscriptionPrimaryFeedbackRequest,
     SubscriptionTaskFeedbackRequest,
     TaskFeedbackReceipt,
 )
@@ -148,6 +151,35 @@ def router_for() -> APIRouter:
                 actor=actor,
                 idempotency_key=idempotency_key,
                 request=SubscriptionTaskFeedbackRequest.model_validate(body.model_dump()),
+            )
+        except Exception as error:
+            raise translate_error(error) from None
+
+    @router.post(
+        "/runs/{run_id}/subscription-tasks/{task_id}/primary-feedback",
+        response_model=PrimaryFeedbackReceipt,
+    )
+    async def submit_primary_feedback(
+        run_id: UUID,
+        task_id: UUID,
+        body: PrimaryFeedbackRequest,
+        request: Request,
+        idempotency_key: str = Depends(require_idempotency_key),
+        actor: AuthenticatedActor = Depends(require_operator_mutation),
+    ) -> PrimaryFeedbackReceipt:
+        service = cast(
+            SubscriptionTaskFeedbackService | None,
+            getattr(request.app.state, "subscription_task_feedback_service", None),
+        )
+        if service is None:
+            raise HTTPException(503, "primary feedback unavailable")
+        try:
+            return await service.submit_primary(
+                run_id=run_id,
+                task_id=task_id,
+                actor=actor,
+                idempotency_key=idempotency_key,
+                request=SubscriptionPrimaryFeedbackRequest.model_validate(body.model_dump()),
             )
         except Exception as error:
             raise translate_error(error) from None
