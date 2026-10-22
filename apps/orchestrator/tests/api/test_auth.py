@@ -66,6 +66,9 @@ class FakeAuthService:
         del actor
         self.logout_calls += 1
 
+    async def create_local_session(self) -> AuthenticatedSession:
+        return self.session
+
 
 @pytest.mark.asyncio
 async def test_bootstrap_sets_http_only_strict_cookie_and_returns_csrf_once() -> None:
@@ -209,3 +212,42 @@ async def test_postgres_auth_routes_return_safe_session_and_enforce_csrf(session
     assert "httponly" in clear_cookie
     assert "samesite=strict" in clear_cookie
     assert "secure" not in clear_cookie
+
+
+@pytest.mark.asyncio
+async def test_local_session_route_absent_when_disabled() -> None:
+    settings = Settings(web_origin="http://127.0.0.1:3000")
+    app = create_app(settings, auth_service=FakeAuthService())
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url=settings.web_origin
+    ) as client:
+        response = await client.post(
+            "/api/auth/local-session",
+            headers={"Origin": settings.web_origin, "Host": "127.0.0.1:3000"},
+        )
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_local_session_creates_operator_session_when_enabled() -> None:
+    settings = Settings(
+        web_origin="http://127.0.0.1:3000", local_operator_auto_session=True
+    )
+    app = create_app(settings, auth_service=FakeAuthService())
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url=settings.web_origin
+    ) as client:
+        response = await client.post(
+            "/api/auth/local-session",
+            headers={"Origin": settings.web_origin, "Host": "127.0.0.1:3000"},
+        )
+    assert response.status_code == 200
+    assert response.json()["csrf_token"] == "csrf-raw"
+    cookie = response.headers["set-cookie"].lower()
+    assert "forge_session=session-raw" in cookie
+    assert "httponly" in cookie
+
+
+def test_local_auto_session_rejected_for_remote_bind() -> None:
+    with pytest.raises(ValueError, match="local operator auto-session"):
+        Settings(bind_host="0.0.0.0", allow_remote=True, local_operator_auto_session=True)

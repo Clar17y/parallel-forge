@@ -106,7 +106,13 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T | 
   }
   const response = await fetch(url, { ...init, method, headers, credentials: 'same-origin' });
   if (!response.ok) {
-    if (response.status === 401) { csrf.clear(); throw new ApiError(401, 'bootstrap-required'); }
+    if (response.status === 401) {
+      // Auth-establishing probes (/auth/session, /auth/local-session,
+      // /auth/bootstrap) 401 as normal control flow; clearing CSRF there
+      // would abort the gate before its local-session fallback can run.
+      if (!path.startsWith('/auth/')) csrf.clear();
+      throw new ApiError(401, 'bootstrap-required');
+    }
     if (response.status === 409) throw await conflictError(response);
     if (response.status === 422) throw await unprocessableError(response);
     throw new ApiError(response.status, 'request-failed');

@@ -47,6 +47,10 @@ class Settings(BaseSettings):
     web_origin: str = "http://127.0.0.1:3000"
     runner_image: str = ""
     allow_remote: bool = False
+    # Single-user local deployments may skip the one-time bootstrap link:
+    # the web app then mints an ordinary operator session on first load.
+    # Loopback binds only (enforced below); sessions/CSRF are unchanged.
+    local_operator_auto_session: bool = False
     provider_secret_reference: str = Field(default="", repr=False)
     google_api_key_reference: str = Field(default="", repr=False)
     github_token_reference: str = Field(default="", repr=False)
@@ -170,6 +174,12 @@ class Settings(BaseSettings):
 
         if self.bind_host not in {"127.0.0.1", "::1", "localhost"} and not self.allow_remote:
             raise ValueError("remote exposure requires a later authentication design")
+        if self.local_operator_auto_session and self.bind_host not in {
+            "127.0.0.1",
+            "::1",
+            "localhost",
+        }:
+            raise ValueError("local operator auto-session requires a loopback bind")
         if (
             self.provider_secret_reference
             and self.google_api_key_reference
