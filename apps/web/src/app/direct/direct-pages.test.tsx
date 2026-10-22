@@ -16,7 +16,7 @@ const run = {
   base_sha: 'a'.repeat(40), head_sha: null, summary: null, question: null,
   options: [], failure_reason: null, result_degraded: false,
   cancel_requested: false, created_at: '2026-10-22T10:00:00Z',
-  updated_at: '2026-10-22T10:01:00Z', sessions: [], checks: [],
+  updated_at: '2026-10-22T10:01:00Z', sessions: [], checks: [], reviews: [],
 };
 
 afterEach(() => {
@@ -87,6 +87,26 @@ test('detail shows checks with excerpt and checking state', async () => {
   await screen.findByText(/State: CHECKING/);
   await screen.findByText(/Round 0: smoke \(test\) — FAILED/);
   await screen.findByText(/FAILED tests\/test_smoke\.py::test_it/);
+});
+
+test('detail shows reviews section', async () => {
+  mockApi({
+    '/direct-runs/run-1': {
+      ...run, state: 'REVIEWING',
+      reviews: [{
+        id: 'rev-1', run_id: 'run-1', session_id: 's-1', round: 0,
+        client: 'codex_app_server', model: 'review-model', verdict: 'blocking',
+        findings: [{ severity: 'blocking', file: 'a.py', detail: 'fix this bug' }],
+        summary: 'needs work', degraded: false, reviewer_modified_worktree: false,
+        created_at: '2026-10-22T10:03:00Z',
+      }],
+    },
+  });
+  render(<DirectDetailPage />);
+  await screen.findByText(/State: REVIEWING/);
+  await screen.findByText(/Round 0: codex_app_server\/review-model — blocking/);
+  await screen.findByText(/fix this bug/);
+  await screen.findByText('needs work');
 });
 
 test('detail shows diff and hides cancel when done', async () => {

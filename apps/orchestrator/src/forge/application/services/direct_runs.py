@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from forge.domain.direct import (
     SUPPORTED_DIRECT_CLIENTS,
     DirectCheckRecord,
+    DirectReviewRecord,
     DirectRunRecord,
     DirectSessionRecord,
 )
@@ -93,6 +94,9 @@ class DirectRunService:
 
     async def sessions(self, run_id: UUID) -> tuple[DirectSessionRecord, ...]:
         return await self._repo.sessions(run_id)
+
+    async def reviews(self, run_id: UUID) -> tuple[DirectReviewRecord, ...]:
+        return await self._repo.reviews(run_id)
 
     async def checks(self, run_id: UUID) -> tuple[DirectCheckRecord, ...]:
         return await self._repo.checks(run_id)

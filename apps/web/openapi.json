@@ -4019,6 +4019,126 @@
         "title": "DirectDiffResponse",
         "type": "object"
       },
+      "DirectFindingResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          },
+          "file": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File"
+          },
+          "severity": {
+            "title": "Severity",
+            "type": "string"
+          }
+        },
+        "required": [
+          "severity",
+          "detail"
+        ],
+        "title": "DirectFindingResponse",
+        "type": "object"
+      },
+      "DirectReviewResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "client": {
+            "title": "Client",
+            "type": "string"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "degraded": {
+            "title": "Degraded",
+            "type": "boolean"
+          },
+          "findings": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/DirectFindingResponse"
+            },
+            "title": "Findings",
+            "type": "array"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "reviewer_modified_worktree": {
+            "title": "Reviewer Modified Worktree",
+            "type": "boolean"
+          },
+          "round": {
+            "title": "Round",
+            "type": "integer"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "session_id": {
+            "format": "uuid",
+            "title": "Session Id",
+            "type": "string"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary"
+          },
+          "verdict": {
+            "title": "Verdict",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "run_id",
+          "session_id",
+          "round",
+          "client",
+          "model",
+          "verdict",
+          "summary",
+          "degraded",
+          "reviewer_modified_worktree",
+          "created_at"
+        ],
+        "title": "DirectReviewResponse",
+        "type": "object"
+      },
       "DirectRouteResponse": {
         "additionalProperties": false,
         "properties": {
@@ -4219,6 +4339,14 @@
           "result_degraded": {
             "title": "Result Degraded",
             "type": "boolean"
+          },
+          "reviews": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/DirectReviewResponse"
+            },
+            "title": "Reviews",
+            "type": "array"
           },
           "sessions": {
             "default": [],

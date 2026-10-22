@@ -44,7 +44,12 @@ import subprocess, sys
 from pathlib import Path
 wt = Path.cwd()
 prompt = Path(sys.argv[1]).read_text() if len(sys.argv) > 1 else ""
-is_repair = "fix only these failures" in prompt.lower()
+if "REVIEW" in prompt:
+    print('```json')
+    print('{"verdict":"clean","summary":"ok","findings":[]}')
+    print('```', flush=True)
+    sys.exit(0)
+is_repair = "fix only these failures" in prompt.lower() or "repair session" in prompt.lower()
 mode = sys.argv[2]
 if is_repair:
     if mode == "repair_fixes":
@@ -204,6 +209,9 @@ async def _setup(session_factory, tmp_path, *, mode, settings_extra=None, env_ke
         installation_resolver=lambda run: SimpleNamespace(
             client=run.client, executable=sys.executable, model=run.model, effort=run.effort
         ),
+        review_resolver=lambda run, impl: SimpleNamespace(
+            client="codex_app_server", executable=sys.executable, model="review-model", effort=None
+        ),
     )
     # Check subprocesses inherit the worker env; tests point the counter via env.
     old = os.environ.get("CHECK_COUNTER"), os.environ.get("CHECK_MODE")
@@ -235,7 +243,7 @@ async def test_fail_repair_pass_done(session_factory, tmp_path):
     assert [(c.round, c.status) for c in checks] == [(0, "FAILED"), (1, "PASSED")]
     assert "tests/test_smoke.py::test_it" in (checks[0].failure_excerpt or "")
     sessions = await service.sessions(run.id)
-    assert [s.kind for s in sessions] == ["implement", "repair"]
+    assert [s.kind for s in sessions] == ["implement", "repair", "review"]
     assert counter.read_text() == "2"
 
 
@@ -323,7 +331,7 @@ async def test_first_pass_all_green_done(session_factory, tmp_path):
     assert done.state == "DONE"
     checks = await PostgresDirectRepository(session_factory).checks(run.id)
     assert [(c.round, c.status) for c in checks] == [(0, "PASSED")]
-    assert len(await service.sessions(run.id)) == 1
+    assert [s.kind for s in await service.sessions(run.id)] == ["implement", "review"]
 
 
 @pytest.mark.integration

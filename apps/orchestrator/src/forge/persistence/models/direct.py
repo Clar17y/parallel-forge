@@ -21,12 +21,13 @@ from sqlalchemy.orm import Mapped, mapped_column
 from forge.persistence.models.base import Base, TimestampMixin
 
 _RUN_STATES = (
-    "('QUEUED','RUNNING','FINALIZING','CHECKING','REPAIRING',"
+    "('QUEUED','RUNNING','FINALIZING','CHECKING','REVIEWING','REPAIRING',"
     "'DONE','FAILED','CANCELLED','NEEDS_DECISION')"
 )
 _SESSION_STATES = "('RUNNING','SUCCEEDED','FAILED','KILLED','TIMED_OUT')"
 _CHECK_STATUSES = "('PASSED','FAILED','ERROR','CACHED')"
-_SESSION_KINDS = "('implement','repair')"
+_SESSION_KINDS = "('implement','repair','review')"
+_REVIEW_VERDICTS = "('clean','blocking')"
 
 
 class DirectRun(Base, TimestampMixin):
@@ -83,6 +84,35 @@ class DirectSession(Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     failure_reason: Mapped[str | None] = mapped_column(String(512))
+
+
+class DirectReview(Base):
+    __tablename__ = "direct_reviews"
+    __table_args__ = (
+        CheckConstraint(f"verdict IN {_REVIEW_VERDICTS}", name="direct_reviews_verdict"),
+        Index("ix_direct_reviews_run_round", "run_id", "round", "created_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    run_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("direct_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    session_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("direct_sessions.id", ondelete="CASCADE"), nullable=False
+    )
+    round: Mapped[int] = mapped_column(Integer, nullable=False)
+    client: Mapped[str] = mapped_column(String(64), nullable=False)
+    model: Mapped[str] = mapped_column(String(255), nullable=False)
+    verdict: Mapped[str] = mapped_column(String(16), nullable=False)
+    findings: Mapped[list[object]] = mapped_column(JSONB, nullable=False, default=list)
+    summary: Mapped[str | None] = mapped_column(Text)
+    degraded: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    reviewer_modified_worktree: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
 
 
 class DirectCheck(Base):

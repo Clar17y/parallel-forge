@@ -10,12 +10,13 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from forge.domain.direct import (
     DirectCheckRecord,
+    DirectReviewRecord,
     DirectRunNotFound,
     DirectRunRecord,
     DirectSessionRecord,
 )
 from forge.domain.policy import ProjectPolicy
-from forge.persistence.models import DirectCheck, DirectRun, DirectSession, Project
+from forge.persistence.models import DirectCheck, DirectReview, DirectRun, DirectSession, Project
 
 
 def _run_record(row: DirectRun) -> DirectRunRecord:
@@ -57,6 +58,20 @@ def _check_record(row: DirectCheck) -> DirectCheckRecord:
         exit_code=row.exit_code,
         duration_ms=row.duration_ms,
         failure_excerpt=row.failure_excerpt,
+        created_at=row.created_at,
+    )
+
+
+def _review_record(row: DirectReview) -> DirectReviewRecord:
+    raw = row.findings if isinstance(row.findings, list) else []
+    findings = tuple(
+        {str(k): v for k, v in item.items()} for item in raw if isinstance(item, dict)
+    )
+    return DirectReviewRecord(
+        id=row.id, run_id=row.run_id, session_id=row.session_id, round=row.round,
+        client=row.client, model=row.model, verdict=row.verdict, findings=findings,
+        summary=row.summary, degraded=bool(row.degraded),
+        reviewer_modified_worktree=bool(row.reviewer_modified_worktree),
         created_at=row.created_at,
     )
 
@@ -177,7 +192,7 @@ class PostgresDirectRepository:
             rows = (
                 await session.execute(
                     select(DirectRun).where(
-                        DirectRun.state.in_(("RUNNING", "CHECKING", "REPAIRING"))
+                        DirectRun.state.in_(("RUNNING", "CHECKING", "REVIEWING", "REPAIRING"))
                     )
                 )
             ).scalars().all()
@@ -289,7 +304,7 @@ class PostgresDirectRepository:
             if row.state == "QUEUED":
                 row.state = "CANCELLED"
                 row.cancel_requested = True
-            elif row.state in {"RUNNING", "FINALIZING", "CHECKING", "REPAIRING"}:
+            elif row.state in {"RUNNING", "FINALIZING", "CHECKING", "REVIEWING", "REPAIRING"}:
                 row.cancel_requested = True
             await session.commit()
             await session.refresh(row)
@@ -300,8 +315,39 @@ class PostgresDirectRepository:
             row = await session.get(DirectRun, run_id)
             return bool(row and row.cancel_requested)
 
+    async def reviews(self, run_id: UUID) -> tuple[DirectReviewRecord, ...]:
+        async with self._factory() as session:
+            if await session.get(DirectRun, run_id) is None:
+                raise DirectRunNotFound("direct run was not found")
+            rows = (
+                await session.execute(
+                    select(DirectReview)
+                    .where(DirectReview.run_id == run_id)
+                    .order_by(DirectReview.round, DirectReview.created_at)
+                )
+            ).scalars().all()
+            return tuple(_review_record(row) for row in rows)
+
+    async def create_review(
+        self, *, run_id: UUID, session_id: UUID, round: int, client: str, model: str,
+        verdict: str, findings: tuple[dict[str, object], ...], summary: str | None,
+        degraded: bool, reviewer_modified_worktree: bool,
+    ) -> DirectReviewRecord:
+        async with self._factory() as session:
+            row = DirectReview(
+                id=uuid4(), run_id=run_id, session_id=session_id, round=round,
+                client=client, model=model, verdict=verdict, findings=list(findings),
+                summary=summary, degraded=degraded,
+                reviewer_modified_worktree=reviewer_modified_worktree,
+            )
+            session.add(row)
+            await session.commit()
+            await session.refresh(row)
+            return _review_record(row)
+
     async def create_session(
-        self, *, run_id: UUID, run: DirectRunRecord | None = None, kind: str = "implement"
+        self, *, run_id: UUID, run: DirectRunRecord | None = None, kind: str = "implement",
+        client: str | None = None, model: str | None = None, effort: str | None = None,
     ) -> DirectSessionRecord:
         async with self._factory() as session:
             source = run or _run_record(await self._require(session, run_id))
@@ -310,9 +356,9 @@ class PostgresDirectRepository:
                 run_id=run_id,
                 kind=kind,
                 state="RUNNING",
-                client=source.client,
-                model=source.model,
-                effort=source.effort,
+                client=client if client is not None else source.client,
+                model=model if model is not None else source.model,
+                effort=effort if effort is not None else source.effort,
                 started_at=datetime.now(UTC),
             )
             session.add(row)

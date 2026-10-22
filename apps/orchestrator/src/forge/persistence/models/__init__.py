@@ -7,7 +7,7 @@ from forge.persistence.models.auth import ApprovalChallenge, OperatorSession
 from forge.persistence.models.base import Base
 from forge.persistence.models.capability_evidence import CapabilityEvidence
 from forge.persistence.models.capability_probe_diagnostics import CapabilityProbeDiagnosticRecord
-from forge.persistence.models.direct import DirectCheck, DirectRun, DirectSession
+from forge.persistence.models.direct import DirectCheck, DirectReview, DirectRun, DirectSession
 from forge.persistence.models.epic_brainstorm import (
     BrainstormAttemptRow as BrainstormAttemptRow,
 )
@@ -154,6 +154,7 @@ __all__ = [
     "CapabilityEvidence",
     "CapabilityProbeDiagnosticRecord",
     "DirectCheck",
+    "DirectReview",
     "DirectRun",
     "DirectSession",
     "Epic",

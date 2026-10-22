@@ -7,7 +7,12 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from forge.domain.direct import DirectCheckRecord, DirectRunRecord, DirectSessionRecord
+from forge.domain.direct import (
+    DirectCheckRecord,
+    DirectReviewRecord,
+    DirectRunRecord,
+    DirectSessionRecord,
+)
 
 
 class DirectRunCreateRequest(BaseModel):
@@ -46,6 +51,49 @@ class DirectCheckResponse(BaseModel):
             policy_version=record.policy_version, status=record.status,
             exit_code=record.exit_code, duration_ms=record.duration_ms,
             failure_excerpt=record.failure_excerpt, created_at=record.created_at,
+        )
+
+
+class DirectFindingResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    severity: str
+    file: str | None = None
+    detail: str
+
+
+class DirectReviewResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: UUID
+    run_id: UUID
+    session_id: UUID
+    round: int
+    client: str
+    model: str
+    verdict: str
+    findings: tuple[DirectFindingResponse, ...] = ()
+    summary: str | None
+    degraded: bool
+    reviewer_modified_worktree: bool
+    created_at: datetime | None
+
+    @classmethod
+    def from_record(cls, record: DirectReviewRecord) -> DirectReviewResponse:
+        return cls(
+            id=record.id, run_id=record.run_id, session_id=record.session_id,
+            round=record.round, client=record.client, model=record.model,
+            verdict=record.verdict,
+            findings=tuple(
+                DirectFindingResponse(
+                    severity=str(f.get("severity", "")), file=f.get("file"),  # type: ignore[arg-type]
+                    detail=str(f.get("detail", "")),
+                )
+                for f in record.findings
+            ),
+            summary=record.summary, degraded=record.degraded,
+            reviewer_modified_worktree=record.reviewer_modified_worktree,
+            created_at=record.created_at,
         )
 
 
@@ -103,6 +151,7 @@ class DirectRunResponse(BaseModel):
     updated_at: datetime | None
     sessions: tuple[DirectSessionResponse, ...] = ()
     checks: tuple[DirectCheckResponse, ...] = ()
+    reviews: tuple[DirectReviewResponse, ...] = ()
 
     @classmethod
     def from_record(
@@ -110,6 +159,7 @@ class DirectRunResponse(BaseModel):
         record: DirectRunRecord,
         sessions: tuple[DirectSessionRecord, ...] = (),
         checks: tuple[DirectCheckRecord, ...] = (),
+        reviews: tuple[DirectReviewRecord, ...] = (),
     ) -> DirectRunResponse:
         return cls(
             id=record.id, project_id=record.project_id, task=record.task_text,
@@ -122,6 +172,7 @@ class DirectRunResponse(BaseModel):
             updated_at=record.updated_at,
             sessions=tuple(DirectSessionResponse.from_record(s) for s in sessions),
             checks=tuple(DirectCheckResponse.from_record(c) for c in checks),
+            reviews=tuple(DirectReviewResponse.from_record(r) for r in reviews),
         )
 
 
@@ -148,6 +199,8 @@ class DirectDiffResponse(BaseModel):
 __all__ = [
     "DirectCheckResponse",
     "DirectDiffResponse",
+    "DirectFindingResponse",
+    "DirectReviewResponse",
     "DirectRouteResponse",
     "DirectRunCreateRequest",
     "DirectRunResponse",

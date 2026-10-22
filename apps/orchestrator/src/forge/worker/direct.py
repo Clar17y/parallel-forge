@@ -24,13 +24,20 @@ from forge.application.services.validation_failure_evidence import (
 )
 from forge.domain.direct import (
     RESULT_SCHEMA,
+    REVIEW_CLIENT_PREFERENCE,
+    DirectFinding,
     DirectLaunch,
     DirectResult,
+    DirectReviewResult,
     DirectRunRecord,
     build_direct_launch,
     build_direct_prompt,
     build_direct_repair_prompt,
+    build_direct_review_prompt,
+    build_direct_review_repair_prompt,
+    format_blocking_findings,
     parse_direct_result,
+    parse_review_result,
 )
 from forge.domain.policy import CommandSpec, ProjectPolicy
 from forge.domain.subscription_installations import load_subscription_installation_manifest
@@ -66,6 +73,7 @@ class DirectLaunchContext:
 
 ArgvFactory = Callable[[object, DirectLaunchContext], DirectLaunch]
 InstallationResolver = Callable[[DirectRunRecord], object | None]
+ReviewResolver = Callable[[DirectRunRecord, object], object | None]
 
 
 class DirectRunWorker:
@@ -78,12 +86,14 @@ class DirectRunWorker:
         *,
         argv_factory: ArgvFactory | None = None,
         installation_resolver: InstallationResolver | None = None,
+        review_resolver: ReviewResolver | None = None,
     ) -> None:
         self._factory = factory
         self._settings = settings
         self._repo = PostgresDirectRepository(factory)
         self._argv_factory = argv_factory
         self._installation_resolver = installation_resolver
+        self._review_resolver = review_resolver
         self._redactor = Redactor(policy=RedactionPolicy(max_string_bytes=8192))
         self._active_run_id: UUID | None = None
 
@@ -99,7 +109,7 @@ class DirectRunWorker:
             logger.exception("direct run %s failed in worker", run.id)
             try:
                 current = await self._repo.get(run.id)
-                if current.state in {"RUNNING", "FINALIZING", "CHECKING", "REPAIRING"}:
+                if current.state in {"RUNNING", "FINALIZING", "CHECKING", "REVIEWING", "REPAIRING"}:
                     await self._repo.update_run(
                         run.id, state="FAILED", failure_reason="worker error"
                     )
@@ -150,6 +160,25 @@ class DirectRunWorker:
                     return entry
         raise ValueError("unknown direct route")
 
+    def _resolve_review_installation(self, run: DirectRunRecord, implement: object) -> object | None:
+        if self._review_resolver is not None:
+            return self._review_resolver(run, implement)
+        manifest = load_subscription_installation_manifest(
+            self._settings.subscription_installations_path
+        )
+        if manifest is None:
+            return None
+        implement_client = str(getattr(implement, "client", run.client))
+        order = {name: i for i, name in enumerate(REVIEW_CLIENT_PREFERENCE)}
+        entries = sorted(
+            manifest.installations,
+            key=lambda e: order.get(str(getattr(e, "client", "")), len(order)),
+        )
+        for entry in entries:
+            if str(getattr(entry, "client", "")) != implement_client:
+                return entry
+        return None
+
     async def _execute(self, run: DirectRunRecord) -> None:
         canonical, default_branch = await self._repo.project_for(run.id)
         data_root = Path(self._settings.data_root)
@@ -187,44 +216,104 @@ class DirectRunWorker:
         head_sha = await self._commit_and_record(run, worktree, base_sha, result)
         summary = result.summary
         repairs_used = 0
+        check_round = 0
+        review_rounds = 0
         while True:
-            await self._repo.update_run(run.id, state="CHECKING", head_sha=head_sha)
-            round_result = await self._run_checks(
-                run, worktree, head_sha, round_no=repairs_used
+            # Inner Slice B check loop (separate counter from review rounds).
+            check_note = ""
+            while True:
+                await self._repo.update_run(run.id, state="CHECKING", head_sha=head_sha)
+                round_result = await self._run_checks(
+                    run, worktree, head_sha, round_no=check_round
+                )
+                check_round += 1
+                if round_result.outcome == "cancelled":
+                    await self._repo.update_run(run.id, state="CANCELLED")
+                    return
+                if round_result.outcome == "passed":
+                    check_note = f" ({round_result.note})" if round_result.note else ""
+                    break
+                if round_result.outcome == "error":
+                    await self._repo.update_run(
+                        run.id, state="FAILED", head_sha=head_sha,
+                        failure_reason=(round_result.error_reason or "check error")[:512],
+                    )
+                    return
+                detail = round_result.detail
+                if repairs_used >= self._settings.direct_max_repair_rounds:
+                    await self._repo.update_run(
+                        run.id, state="FAILED", head_sha=head_sha,
+                        summary=f"{summary}\n{detail}"[:8000],
+                        failure_reason=(
+                            f"checks still failing after "
+                            f"{self._settings.direct_max_repair_rounds} repair rounds"
+                        ),
+                    )
+                    return
+                repairs_used += 1
+                await self._repo.update_run(run.id, state="REPAIRING")
+                repair_prompt = build_direct_repair_prompt(
+                    run.task_text, detail, has_agents_md=has_agents_md
+                )
+                repair = await self._launch_and_settle_session(
+                    run, installation, kind="repair", prompt=repair_prompt,
+                    worktree=worktree, transcript_dir=transcript_dir,
+                )
+                if repair is None:
+                    return
+                previous_head = head_sha
+                head_sha = await self._commit_and_record(run, worktree, previous_head, repair)
+                summary = repair.summary or summary
+                if head_sha == previous_head:
+                    await self._repo.update_run(
+                        run.id, state="FAILED", failure_reason="repair made no changes"
+                    )
+                    return
+            # Slice C: cross-provider review after every passed CHECKING.
+            await self._repo.update_run(run.id, state="REVIEWING", head_sha=head_sha)
+            reviewer = self._resolve_review_installation(run, installation)
+            if reviewer is None:
+                await self._repo.update_run(
+                    run.id, state="FAILED", head_sha=head_sha,
+                    failure_reason="no distinct reviewer route",
+                )
+                return
+            diff_text = await _git_diff(worktree, base_sha, head_sha)
+            review_prompt = build_direct_review_prompt(
+                run.task_text, diff_text, base_sha=base_sha, head_sha=head_sha,
+                has_agents_md=has_agents_md,
             )
-            if round_result.outcome == "cancelled":
-                await self._repo.update_run(run.id, state="CANCELLED")
+            review_round = review_rounds
+            review_rounds += 1
+            review = await self._launch_and_settle_review(
+                run, reviewer, prompt=review_prompt, worktree=worktree,
+                transcript_dir=transcript_dir, round_no=review_round,
+            )
+            if review is None:
                 return
-            if round_result.outcome == "passed":
-                note = f" ({round_result.note})" if round_result.note else ""
+            blocking = tuple(f for f in review.findings if f.severity == "blocking")
+            if not blocking:
                 await self._repo.update_run(
-                    run.id, state="DONE", head_sha=head_sha, summary=f"{summary}{note}"
+                    run.id, state="DONE", head_sha=head_sha,
+                    summary=f"{summary}{check_note}",
                 )
                 return
-            if round_result.outcome == "error":
+            if review_rounds >= self._settings.direct_max_review_rounds:
                 await self._repo.update_run(
                     run.id, state="FAILED", head_sha=head_sha,
-                    failure_reason=(round_result.error_reason or "check error")[:512],
-                )
-                return
-            detail = round_result.detail
-            if repairs_used >= self._settings.direct_max_repair_rounds:
-                await self._repo.update_run(
-                    run.id, state="FAILED", head_sha=head_sha,
-                    summary=f"{summary}\n{detail}"[:8000],
                     failure_reason=(
-                        f"checks still failing after "
-                        f"{self._settings.direct_max_repair_rounds} repair rounds"
+                        f"review still blocking after "
+                        f"{self._settings.direct_max_review_rounds} rounds"
                     ),
                 )
                 return
-            repairs_used += 1
             await self._repo.update_run(run.id, state="REPAIRING")
-            repair_prompt = build_direct_repair_prompt(
-                run.task_text, detail, has_agents_md=has_agents_md
+            review_repair_prompt = build_direct_review_repair_prompt(
+                run.task_text, format_blocking_findings(review.findings),
+                has_agents_md=has_agents_md,
             )
             repair = await self._launch_and_settle_session(
-                run, installation, kind="repair", prompt=repair_prompt,
+                run, installation, kind="repair", prompt=review_repair_prompt,
                 worktree=worktree, transcript_dir=transcript_dir,
             )
             if repair is None:
@@ -263,7 +352,11 @@ class DirectRunWorker:
     ) -> DirectResult | None:
         """Run one session; settle the run and return None on terminal outcomes."""
 
-        session = await self._repo.create_session(run_id=run.id, run=run, kind=kind)
+        session = await self._repo.create_session(
+            run_id=run.id, run=run, kind=kind,
+            client=str(getattr(installation, "client", "")) or None,
+            model=str(getattr(installation, "model", "")) or None,
+        )
         transcript_path = transcript_dir / f"{session.id}.log"
         await self._repo.update_session(session.id, transcript_path=str(transcript_path))
         prompt_file = transcript_dir / f"{session.id}.prompt.txt"
@@ -286,6 +379,109 @@ class DirectRunWorker:
             )
         outcome = await self._run_session(run, session.id, launch, worktree, transcript_path)
         return await self._settle_session(run, session.id, outcome, final_file)
+
+    async def _launch_and_settle_review(
+        self, run: DirectRunRecord, reviewer: object, *, prompt: str,
+        worktree: Path, transcript_dir: Path, round_no: int,
+    ) -> DirectReviewResult | None:
+        before = await _porcelain(worktree)
+        session = await self._repo.create_session(
+            run_id=run.id, run=run, kind="review",
+            client=str(getattr(reviewer, "client", "")) or None,
+            model=str(getattr(reviewer, "model", "")) or None,
+        )
+        transcript_path = transcript_dir / f"{session.id}.log"
+        await self._repo.update_session(session.id, transcript_path=str(transcript_path))
+        prompt_file = transcript_dir / f"{session.id}.prompt.txt"
+        prompt_file.write_text(prompt, encoding="utf-8")
+        schema_file = transcript_dir / f"{session.id}.schema.json"
+        schema_file.write_text(json.dumps(RESULT_SCHEMA), encoding="utf-8")
+        final_file = transcript_dir / f"{session.id}.final.txt"
+        ctx = DirectLaunchContext(
+            run=run, session_id=session.id, worktree=worktree, prompt=prompt,
+            prompt_file=prompt_file, schema_file=schema_file, final_file=final_file,
+            settings=self._settings,
+        )
+        if self._argv_factory is not None:
+            launch = self._argv_factory(reviewer, ctx)
+        else:
+            launch = build_direct_launch(
+                reviewer, worktree=worktree, prompt=prompt, prompt_file=prompt_file,
+                schema_file=schema_file, final_file=final_file,
+                max_model_steps=self._settings.direct_max_model_steps,
+            )
+        outcome = await self._run_session(run, session.id, launch, worktree, transcript_path)
+        # Post-hoc read-only enforcement before any verdict is applied.
+        modified = await _revert_reviewer_changes(worktree, before)
+        return await self._settle_review(
+            run, session.id, outcome, final_file, reviewer=reviewer,
+            round_no=round_no, modified=modified,
+        )
+
+    async def _settle_review(
+        self, run: DirectRunRecord, session_id: UUID, outcome: tuple[str, int | None, str], final_file: Path,
+        *, reviewer: object, round_no: int, modified: bool,
+    ) -> DirectReviewResult | None:
+        # Precedence (locked): DirectResult parse first ONLY for
+        # needs_decision/blocked detection; otherwise review parse.
+        # exit 0 + unparseable review JSON => FAILED, never clean.
+        kind, exit_code, collected_text = outcome
+        now = datetime.now(UTC)
+        if kind == "cancelled":
+            await self._repo.update_session(session_id, state="KILLED", ended_at=now, failure_reason="cancelled")
+            await self._repo.update_run(run.id, state="CANCELLED")
+            return None
+        if kind == "timeout":
+            await self._repo.update_session(session_id, state="TIMED_OUT", ended_at=now, failure_reason="watchdog timeout")
+            await self._repo.update_run(run.id, state="FAILED", failure_reason="session timed out")
+            return None
+        if exit_code not in (0, None):
+            await self._repo.update_session(session_id, state="FAILED", ended_at=now, failure_reason=f"exit code {exit_code}")
+            await self._repo.update_run(run.id, state="FAILED", failure_reason=f"session exited with code {exit_code}")
+            return None
+        final_text = collected_text
+        if final_file.exists():
+            raw_final = final_file.read_text(encoding="utf-8", errors="replace")
+            redacted_final, _ = self._redactor.redact_text(raw_final)
+            final_text = (redacted_final + "\n" + collected_text)[-262144:]
+        await self._repo.update_session(session_id, state="SUCCEEDED", ended_at=now)
+        direct = parse_direct_result(final_text)
+        if not direct.degraded and direct.status == "needs_decision":
+            await self._repo.update_run(run.id, state="NEEDS_DECISION", summary=direct.summary, question=direct.question, options=direct.options, result_degraded=direct.degraded)
+            return None
+        if not direct.degraded and direct.status == "blocked":
+            await self._repo.update_run(run.id, state="FAILED", summary=direct.summary, failure_reason=(direct.summary or "session blocked")[:512], result_degraded=direct.degraded)
+            return None
+        review = parse_review_result(final_text)
+        if review is None:
+            await self._repo.update_run(run.id, state="FAILED", failure_reason="review result unparseable")
+            return None
+        summary_r, _ = self._redactor.redact_text(review.summary)
+        findings_payload_items: list[dict[str, object]] = []
+        redacted_findings: list[DirectFinding] = []
+        for finding in review.findings:
+            detail_r, _ = self._redactor.redact_text(finding.detail)
+            file_r: str | None = None
+            if finding.file is not None:
+                file_r, _ = self._redactor.redact_text(finding.file)
+            redacted_findings.append(
+                DirectFinding(severity=finding.severity, file=file_r, detail=detail_r[:1000])
+            )
+            findings_payload_items.append(
+                {"severity": finding.severity, "file": file_r, "detail": detail_r[:1000]}
+            )
+        findings_payload = tuple(findings_payload_items)
+        redacted_review = DirectReviewResult(
+            verdict=review.verdict, summary=summary_r,
+            findings=tuple(redacted_findings), degraded=review.degraded,
+        )
+        await self._repo.create_review(
+            run_id=run.id, session_id=session_id, round=round_no,
+            client=str(getattr(reviewer, "client", "")), model=str(getattr(reviewer, "model", "")),
+            verdict=review.verdict, findings=findings_payload, summary=summary_r,
+            degraded=review.degraded, reviewer_modified_worktree=modified,
+        )
+        return redacted_review
 
     async def _settle_session(
         self,
@@ -609,6 +805,50 @@ class DirectRunWorker:
             exit_code=exit_code,
         )
         return kind, exit_code, "\n".join(collected)[-262144:]
+
+async def _git_text(cwd: Path, *args: str) -> str:
+    proc = await asyncio.create_subprocess_exec(
+        "git", "-C", str(cwd), *args,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+    )
+    out, _ = await proc.communicate()
+    return out.decode("utf-8", errors="replace")
+
+
+async def _git_diff(worktree: Path, base_sha: str, head_sha: str) -> str:
+    return await _git_text(worktree, "diff", f"{base_sha}..{head_sha}")
+
+
+async def _porcelain(worktree: Path) -> dict[str, str]:
+    text = await _git_text(worktree, "status", "--porcelain")
+    out: dict[str, str] = {}
+    for line in text.splitlines():
+        if len(line) >= 3:
+            out[line[3:].strip().strip('"')] = line[:2]
+    return out
+
+
+async def _revert_reviewer_changes(worktree: Path, before: dict[str, str]) -> bool:
+    after = await _porcelain(worktree)
+    if after == before:
+        return False
+    await _git_raw(str(worktree), "restore", "--", ".")
+    for path, status in after.items():
+        if path in before:
+            continue
+        if not status.startswith("??"):
+            continue
+        target = worktree / path.rstrip("/")
+        try:
+            if target.is_dir() and not target.is_symlink():
+                import shutil
+                shutil.rmtree(target, ignore_errors=True)
+            elif target.exists() or target.is_symlink():
+                target.unlink()
+        except OSError:
+            pass
+    return True
+
 
 def _spawn_argv(argv: tuple[str, ...]) -> tuple[str, ...]:
     """Route Windows batch shims (e.g. muse.cmd) through cmd.exe.

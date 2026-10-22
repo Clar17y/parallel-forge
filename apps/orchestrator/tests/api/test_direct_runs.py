@@ -68,6 +68,17 @@ class FakeDirectService:
             ),
         )
 
+    async def reviews(self, run_id):
+        return (
+            SimpleNamespace(
+                id=uuid4(), run_id=run_id, session_id=uuid4(), round=0,
+                client="codex_app_server", model="review-model", verdict="blocking",
+                findings=({"severity": "blocking", "file": "a.py", "detail": "fix it"},),
+                summary="bad", degraded=False, reviewer_modified_worktree=True,
+                created_at=None,
+            ),
+        )
+
     async def cancel(self, run_id):
         self.run.state = "CANCELLED"
         return self.run
@@ -150,6 +161,10 @@ async def test_direct_routes_and_create(direct_client, direct_context):
     assert detail.json()["checks"][0]["status"] == "FAILED"
     assert detail.json()["checks"][0]["command_name"] == "smoke"
     assert "test_it" in detail.json()["checks"][0]["failure_excerpt"]
+    assert detail.json()["reviews"][0]["verdict"] == "blocking"
+    assert detail.json()["reviews"][0]["client"] == "codex_app_server"
+    assert detail.json()["reviews"][0]["findings"][0]["detail"] == "fix it"
+    assert detail.json()["reviews"][0]["reviewer_modified_worktree"] is True
 
     transcript = await direct_client.get(
         f"/api/direct-runs/{direct_context.service.run.id}/transcript", headers=HEADERS

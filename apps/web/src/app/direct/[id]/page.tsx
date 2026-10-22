@@ -47,6 +47,18 @@ export default function DirectDetailPage() {
         {check.failure_excerpt && <pre>{check.failure_excerpt}</pre>}
       </li>
     ))}</ul>
+    <h2>Reviews</h2>
+    {(value.reviews ?? []).length === 0 && <p>No reviews recorded yet.</p>}
+    <ul>{(value.reviews ?? []).map(review => (
+      <li key={review.id}>
+        <span>Round {review.round}: {review.client}/{review.model} — {review.verdict}</span>
+        {review.summary && <p>{review.summary}</p>}
+        {review.reviewer_modified_worktree && <p>Reviewer modified worktree (reverted)</p>}
+        <ul>{(review.findings ?? []).map((finding, i) => (
+          <li key={i}>[{finding.severity}]{finding.file ? ` ${finding.file}:` : ''} {finding.detail}</li>
+        ))}</ul>
+      </li>
+    ))}</ul>
     <h2>Transcript</h2>
     <pre>{transcript.value?.text ?? ''}</pre>
     {terminal && <><h2>Diff</h2><pre>{diff.value?.diff ?? ''}</pre></>}

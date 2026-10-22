@@ -22,6 +22,12 @@ import sys, time
 from pathlib import Path
 mode = sys.argv[1]
 wt = Path.cwd()
+prompt_text = Path(sys.argv[2]).read_text() if len(sys.argv) > 2 else ""
+if "REVIEW" in prompt_text:
+    print('```json')
+    print('{"verdict":"clean","summary":"ok","findings":[]}')
+    print('```', flush=True)
+    sys.exit(0)
 if mode == "sleep":
     print("starting", flush=True)
     time.sleep(120)
@@ -100,8 +106,10 @@ async def _seed_project(session_factory, repo: Path):
 
 def _worker(session_factory, settings, fake_cli: Path, mode: str) -> DirectRunWorker:
     def factory(installation, ctx):
+        prompt_file = fake_cli.parent / f"prompt-{ctx.session_id}.txt"
+        prompt_file.write_text(ctx.prompt, encoding="utf-8")
         return DirectLaunch(
-            argv=(sys.executable, str(fake_cli), mode), stdin_data=b""
+            argv=(sys.executable, str(fake_cli), mode, str(prompt_file)), stdin_data=b""
         )
 
     return DirectRunWorker(
@@ -110,6 +118,9 @@ def _worker(session_factory, settings, fake_cli: Path, mode: str) -> DirectRunWo
         argv_factory=factory,
         installation_resolver=lambda run: SimpleNamespace(
             client=run.client, executable=sys.executable, model=run.model, effort=run.effort
+        ),
+        review_resolver=lambda run, impl: SimpleNamespace(
+            client="codex_app_server", executable=sys.executable, model="review-model", effort=None
         ),
     )
 
@@ -153,7 +164,9 @@ async def test_happy_path_commits_and_done(session_factory, tmp_path, fake_cli):
     assert (wt / "changed.txt").exists()
     assert _git(wt, "log", "--oneline", "-1")
     assert _git(wt, "status", "--porcelain") == ""
-    transcript = await service.transcript(run.id)
+    sessions = await service.sessions(run.id)
+    implement = next(s for s in sessions if s.kind == "implement")
+    transcript = await service.transcript(run.id, implement.id)
     assert "direct-fake-secret-123" not in transcript
     assert "[REDACTED]" in transcript
     # Canonical checkout untouched.

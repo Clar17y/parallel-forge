@@ -26,11 +26,18 @@ RESULT_SCHEMA: dict[str, object] = {
 }
 
 
+REVIEW_CLIENT_PREFERENCE = ("codex_app_server", "claude_code", "muse_code", "antigravity_cli")
+_REVIEW_DIFF_CAP = 32768
+_MAX_REVIEW_FINDINGS = 32
+_MAX_FINDING_DETAIL = 1000
+
+
 class DirectRunState(StrEnum):
     QUEUED = "QUEUED"
     RUNNING = "RUNNING"
     FINALIZING = "FINALIZING"
     CHECKING = "CHECKING"
+    REVIEWING = "REVIEWING"
     REPAIRING = "REPAIRING"
     DONE = "DONE"
     FAILED = "FAILED"
@@ -101,6 +108,37 @@ class DirectCheckRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class DirectFinding:
+    severity: str
+    file: str | None
+    detail: str
+
+
+@dataclass(frozen=True, slots=True)
+class DirectReviewResult:
+    verdict: str
+    summary: str
+    findings: tuple[DirectFinding, ...] = ()
+    degraded: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class DirectReviewRecord:
+    id: UUID
+    run_id: UUID
+    session_id: UUID
+    round: int
+    client: str
+    model: str
+    verdict: str
+    findings: tuple[dict[str, object], ...] = ()
+    summary: str | None = None
+    degraded: bool = False
+    reviewer_modified_worktree: bool = False
+    created_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class DirectSessionRecord:
     id: UUID
     run_id: UUID
@@ -163,6 +201,88 @@ def parse_direct_result(text: str) -> DirectResult:
     )
 
 
+def _extract_review(text: str) -> tuple[dict[str, object], bool] | None:
+    """Return (candidate, from_fenced). Reuses JSONL unfolding via decoded texts."""
+
+    candidates: list[tuple[dict[str, object], bool]] = []
+    for decoded in _decoded_event_texts(text):
+        parsed = _loads_object(decoded.strip())
+        if parsed is not None and "verdict" in parsed:
+            candidates.append((parsed, False))
+        for raw in re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", decoded, flags=re.DOTALL):
+            parsed = _loads_object(raw)
+            if parsed is not None and "verdict" in parsed:
+                candidates.append((parsed, True))
+    for raw in re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=re.DOTALL):
+        parsed = _loads_object(raw)
+        if parsed is not None:
+            candidates.append((parsed, True))
+    for line in reversed(text.splitlines()):
+        parsed = _loads_object(line.strip())
+        if parsed is not None and "verdict" in parsed:
+            candidates.append((parsed, False))
+    start = text.rfind('{"verdict"')
+    if start >= 0:
+        end = text.find("\n", start)
+        parsed = _loads_object(text[start : end if end >= 0 else len(text)])
+        if parsed is not None:
+            candidates.append((parsed, False))
+    # Fenced candidates are authoritative; otherwise last candidate wins.
+    fenced = [c for c in candidates if c[1]]
+    if fenced:
+        return fenced[-1]
+    return candidates[-1] if candidates else None
+
+
+def parse_review_result(text: str) -> DirectReviewResult | None:
+    """Parse review contract; None means unparseable (never degraded-clean)."""
+
+    extracted = _extract_review(text)
+    if extracted is None:
+        return None
+    candidate, from_fenced = extracted
+    verdict = candidate.get("verdict")
+    if verdict not in {"clean", "blocking"}:
+        return None
+    summary = candidate.get("summary")
+    if not isinstance(summary, str):
+        summary = ""
+    raw_findings = candidate.get("findings")
+    findings: list[DirectFinding] = []
+    if isinstance(raw_findings, list):
+        for item in raw_findings[:_MAX_REVIEW_FINDINGS]:
+            if not isinstance(item, dict):
+                continue
+            severity = item.get("severity")
+            if severity not in {"blocking", "note"}:
+                continue
+            detail = item.get("detail")
+            if not isinstance(detail, str):
+                continue
+            file_value = item.get("file")
+            findings.append(
+                DirectFinding(
+                    severity=severity,
+                    file=file_value[:512] if isinstance(file_value, str) else None,
+                    detail=detail[:_MAX_FINDING_DETAIL],
+                )
+            )
+    return DirectReviewResult(
+        verdict=str(verdict), summary=summary[:4000],
+        findings=tuple(findings), degraded=not from_fenced,
+    )
+
+
+def format_blocking_findings(findings: tuple[DirectFinding, ...]) -> str:
+    lines = []
+    for finding in findings:
+        if finding.severity != "blocking":
+            continue
+        location = f" ({finding.file})" if finding.file else ""
+        lines.append(f"- [blocking]{location} {finding.detail}")
+    return "\n".join(lines)
+
+
 def _decoded_event_texts(text: str) -> list[str]:
     """Pull assistant text out of JSONL event lines (agy/muse/claude/codex).
 
@@ -184,9 +304,9 @@ def _decoded_event_texts(text: str) -> list[str]:
                     inner_value = value.get(inner)
                     if isinstance(inner_value, str):
                         out.append(inner_value)
-                if "status" in value and "summary" in value:
+                if ("status" in value and "summary" in value) or "verdict" in value:
                     out.append(json.dumps(value, allow_nan=False))
-        if "status" in obj and "summary" in obj:
+        if ("status" in obj and "summary" in obj) or "verdict" in obj:
             out.append(json.dumps(obj, allow_nan=False))
     return out
 
@@ -248,6 +368,52 @@ def build_direct_prompt(task: str, *, has_agents_md: bool) -> str:
         '"question": null or "...", "options": ["..."]}\n'
         'Use "needs_decision" only when a genuine owner decision is required; '
         'put the question in "question" and the choices in "options".\n'
+    )
+
+
+def build_direct_review_prompt(
+    task: str, diff: str, *, base_sha: str, head_sha: str, has_agents_md: bool = False
+) -> str:
+    if len(task.encode("utf-8")) > _MAX_TASK_BYTES:
+        raise ValueError("direct task text is too large")
+    bounded = diff
+    truncated = ""
+    if len(bounded) > _REVIEW_DIFF_CAP:
+        bounded = bounded[:_REVIEW_DIFF_CAP]
+        truncated = "\n[TRUNCATED]"
+    agents = (
+        "Read and follow the repository's AGENTS.md before starting.\n" if has_agents_md else ""
+    )
+    return (
+        "REVIEW: You are a read-only reviewer for a direct run.\n"
+        "Inspect files freely in this worktree, but change nothing: this is a "
+        "read-only review and any modification will be reverted.\n"
+        f"{agents}"
+        "\nOriginal task:\n"
+        f"{task}\n"
+        f"\nDiff {base_sha}..{head_sha}:\n"
+        f"{bounded}{truncated}\n"
+        "\nWhen finished, end your reply with exactly one JSON object in a fenced "
+        "json block:\n"
+        '{"verdict": "clean"|"blocking", "summary": "...", "findings": '
+        '[{"severity": "blocking"|"note", "file": "..." or null, "detail": "..."}]}\n'
+        'Use "blocking" only for findings that must be fixed before done; '
+        '"note" findings never block.\n'
+    )
+
+
+def build_direct_review_repair_prompt(
+    task: str, findings_detail: str, *, has_agents_md: bool
+) -> str:
+    if len(task.encode("utf-8")) > _MAX_TASK_BYTES:
+        raise ValueError("direct task text is too large")
+    base = build_direct_prompt(task, has_agents_md=has_agents_md)
+    return (
+        f"{base}\n"
+        "This is a repair session. A cross-provider review found blocking issues.\n"
+        "Review findings to fix:\n"
+        f"{findings_detail}\n"
+        "Fix only these blocking findings; run the relevant checks yourself.\n"
     )
 
 
@@ -325,11 +491,15 @@ def build_direct_launch(
 
 __all__ = [
     "RESULT_SCHEMA",
+    "REVIEW_CLIENT_PREFERENCE",
     "SUPPORTED_DIRECT_CLIENTS",
     "TERMINAL_RUN_STATES",
     "DirectCheckRecord",
+    "DirectFinding",
     "DirectLaunch",
     "DirectResult",
+    "DirectReviewRecord",
+    "DirectReviewResult",
     "DirectRunConflict",
     "DirectRunNotFound",
     "DirectRunRecord",
@@ -339,5 +509,9 @@ __all__ = [
     "build_direct_launch",
     "build_direct_prompt",
     "build_direct_repair_prompt",
+    "build_direct_review_prompt",
+    "build_direct_review_repair_prompt",
+    "format_blocking_findings",
     "parse_direct_result",
+    "parse_review_result",
 ]

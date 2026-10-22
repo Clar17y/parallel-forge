@@ -3438,6 +3438,54 @@ export interface components {
             /** Diff */
             diff: string;
         };
+        /** DirectFindingResponse */
+        DirectFindingResponse: {
+            /** Detail */
+            detail: string;
+            /** File */
+            file?: string | null;
+            /** Severity */
+            severity: string;
+        };
+        /** DirectReviewResponse */
+        DirectReviewResponse: {
+            /** Client */
+            client: string;
+            /** Created At */
+            created_at: string | null;
+            /** Degraded */
+            degraded: boolean;
+            /**
+             * Findings
+             * @default []
+             */
+            findings: components["schemas"]["DirectFindingResponse"][];
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Model */
+            model: string;
+            /** Reviewer Modified Worktree */
+            reviewer_modified_worktree: boolean;
+            /** Round */
+            round: number;
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            /**
+             * Session Id
+             * Format: uuid
+             */
+            session_id: string;
+            /** Summary */
+            summary: string | null;
+            /** Verdict */
+            verdict: string;
+        };
         /** DirectRouteResponse */
         DirectRouteResponse: {
             /** Client */
@@ -3504,6 +3552,11 @@ export interface components {
             question: string | null;
             /** Result Degraded */
             result_degraded: boolean;
+            /**
+             * Reviews
+             * @default []
+             */
+            reviews: components["schemas"]["DirectReviewResponse"][];
             /**
              * Sessions
              * @default []
