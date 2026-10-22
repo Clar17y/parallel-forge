@@ -14,6 +14,7 @@ from forge.application.services.runs import (
     StaleProjectPolicyConflict,
 )
 from forge.application.services.tasks import TaskServiceError
+from forge.domain.direct import DirectRunNotFound
 from forge.domain.epic_brief import (
     BriefBindingConflict,
     BriefNotAccepted,
@@ -49,6 +50,7 @@ from forge.persistence.repositories.tasks import (
 )
 
 _NOT_FOUND = (
+    DirectRunNotFound,
     EpicNotFound,
     BriefRevisionNotFound,
     GraphRevisionNotFound,
