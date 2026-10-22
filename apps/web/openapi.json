@@ -3900,6 +3900,111 @@
         "title": "DependencyEvidence",
         "type": "object"
       },
+      "DirectCheckResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "command_digest": {
+            "title": "Command Digest",
+            "type": "string"
+          },
+          "command_name": {
+            "title": "Command Name",
+            "type": "string"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "duration_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Ms"
+          },
+          "exit_code": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exit Code"
+          },
+          "failure_excerpt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Excerpt"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "policy_version": {
+            "title": "Policy Version",
+            "type": "integer"
+          },
+          "round": {
+            "title": "Round",
+            "type": "integer"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "tree_sha": {
+            "title": "Tree Sha",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "run_id",
+          "round",
+          "command_name",
+          "kind",
+          "tree_sha",
+          "command_digest",
+          "policy_version",
+          "status",
+          "exit_code",
+          "duration_ms",
+          "failure_excerpt",
+          "created_at"
+        ],
+        "title": "DirectCheckResponse",
+        "type": "object"
+      },
       "DirectDiffResponse": {
         "additionalProperties": false,
         "properties": {
@@ -4021,6 +4126,14 @@
           "cancel_requested": {
             "title": "Cancel Requested",
             "type": "boolean"
+          },
+          "checks": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/DirectCheckResponse"
+            },
+            "title": "Checks",
+            "type": "array"
           },
           "client": {
             "title": "Client",
@@ -4239,6 +4352,10 @@
             "title": "Id",
             "type": "string"
           },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
           "last_output_at": {
             "anyOf": [
               {
@@ -4296,6 +4413,7 @@
           "id",
           "run_id",
           "state",
+          "kind",
           "client",
           "model",
           "effort",

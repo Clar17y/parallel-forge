@@ -39,6 +39,14 @@ export default function DirectDetailPage() {
     {value.failure_reason && <p role="alert">{value.failure_reason}</p>}
     {!terminal && <button onClick={cancel}>Cancel run</button>}
     {error && <p role="alert">{error}</p>}
+    <h2>Checks</h2>
+    {(value.checks ?? []).length === 0 && <p>No checks recorded yet.</p>}
+    <ul>{(value.checks ?? []).map(check => (
+      <li key={check.id}>
+        <span>Round {check.round}: {check.command_name} ({check.kind}) — {check.status}</span>
+        {check.failure_excerpt && <pre>{check.failure_excerpt}</pre>}
+      </li>
+    ))}</ul>
     <h2>Transcript</h2>
     <pre>{transcript.value?.text ?? ''}</pre>
     {terminal && <><h2>Diff</h2><pre>{diff.value?.diff ?? ''}</pre></>}

@@ -9,11 +9,13 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from forge.domain.direct import (
+    DirectCheckRecord,
     DirectRunNotFound,
     DirectRunRecord,
     DirectSessionRecord,
 )
-from forge.persistence.models import DirectRun, DirectSession, Project
+from forge.domain.policy import ProjectPolicy
+from forge.persistence.models import DirectCheck, DirectRun, DirectSession, Project
 
 
 def _run_record(row: DirectRun) -> DirectRunRecord:
@@ -41,11 +43,30 @@ def _run_record(row: DirectRun) -> DirectRunRecord:
     )
 
 
+def _check_record(row: DirectCheck) -> DirectCheckRecord:
+    return DirectCheckRecord(
+        id=row.id,
+        run_id=row.run_id,
+        round=row.round,
+        command_name=row.command_name,
+        kind=row.kind,
+        tree_sha=row.tree_sha,
+        command_digest=row.command_digest,
+        policy_version=row.policy_version,
+        status=row.status,
+        exit_code=row.exit_code,
+        duration_ms=row.duration_ms,
+        failure_excerpt=row.failure_excerpt,
+        created_at=row.created_at,
+    )
+
+
 def _session_record(row: DirectSession) -> DirectSessionRecord:
     return DirectSessionRecord(
         id=row.id,
         run_id=row.run_id,
         state=row.state,
+        kind=row.kind or "implement",
         client=row.client,
         model=row.model,
         effort=row.effort,
@@ -154,9 +175,98 @@ class PostgresDirectRepository:
     async def running_runs(self) -> tuple[DirectRunRecord, ...]:
         async with self._factory() as session:
             rows = (
-                await session.execute(select(DirectRun).where(DirectRun.state == "RUNNING"))
+                await session.execute(
+                    select(DirectRun).where(
+                        DirectRun.state.in_(("RUNNING", "CHECKING", "REPAIRING"))
+                    )
+                )
             ).scalars().all()
             return tuple(_run_record(row) for row in rows)
+
+    async def policy_for(self, run_id: UUID) -> tuple[ProjectPolicy, int] | None:
+        """Return (policy, version) for the run's project, or None if unset."""
+
+        from forge.persistence.repositories.projects import PostgresProjectRepository
+
+        async with self._factory() as session:
+            row = await session.get(DirectRun, run_id)
+            if row is None:
+                raise DirectRunNotFound("direct run was not found")
+            project = await session.get(Project, row.project_id)
+            if project is None or project.current_policy_version is None:
+                return None
+            record = await PostgresProjectRepository(session).get_policy(
+                row.project_id, project.current_policy_version
+            )
+            return ProjectPolicy.model_validate(record.document), record.version
+
+    async def checks(self, run_id: UUID) -> tuple[DirectCheckRecord, ...]:
+        async with self._factory() as session:
+            if await session.get(DirectRun, run_id) is None:
+                raise DirectRunNotFound("direct run was not found")
+            rows = (
+                await session.execute(
+                    select(DirectCheck)
+                    .where(DirectCheck.run_id == run_id)
+                    .order_by(DirectCheck.round, DirectCheck.created_at)
+                )
+            ).scalars().all()
+            return tuple(_check_record(row) for row in rows)
+
+    async def create_check(
+        self,
+        *,
+        run_id: UUID,
+        round: int,
+        command_name: str,
+        kind: str,
+        tree_sha: str,
+        command_digest: str,
+        policy_version: int,
+        status: str,
+        exit_code: int | None = None,
+        duration_ms: int | None = None,
+        failure_excerpt: str | None = None,
+    ) -> DirectCheckRecord:
+        async with self._factory() as session:
+            row = DirectCheck(
+                id=uuid4(),
+                run_id=run_id,
+                round=round,
+                command_name=command_name,
+                kind=kind,
+                tree_sha=tree_sha,
+                command_digest=command_digest,
+                policy_version=policy_version,
+                status=status,
+                exit_code=exit_code,
+                duration_ms=duration_ms,
+                failure_excerpt=failure_excerpt,
+            )
+            session.add(row)
+            await session.commit()
+            await session.refresh(row)
+            return _check_record(row)
+
+    async def cached_check(
+        self, *, run_id: UUID, tree_sha: str, command_digest: str, policy_version: int
+    ) -> DirectCheckRecord | None:
+        async with self._factory() as session:
+            row = (
+                await session.execute(
+                    select(DirectCheck)
+                    .where(
+                        DirectCheck.run_id == run_id,
+                        DirectCheck.tree_sha == tree_sha,
+                        DirectCheck.command_digest == command_digest,
+                        DirectCheck.policy_version == policy_version,
+                        DirectCheck.status != "CACHED",
+                    )
+                    .order_by(DirectCheck.created_at.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            return None if row is None else _check_record(row)
 
     async def update_run(self, run_id: UUID, **fields: object) -> DirectRunRecord:
         async with self._factory() as session:
@@ -179,7 +289,7 @@ class PostgresDirectRepository:
             if row.state == "QUEUED":
                 row.state = "CANCELLED"
                 row.cancel_requested = True
-            elif row.state in {"RUNNING", "FINALIZING"}:
+            elif row.state in {"RUNNING", "FINALIZING", "CHECKING", "REPAIRING"}:
                 row.cancel_requested = True
             await session.commit()
             await session.refresh(row)
@@ -191,13 +301,14 @@ class PostgresDirectRepository:
             return bool(row and row.cancel_requested)
 
     async def create_session(
-        self, *, run_id: UUID, run: DirectRunRecord | None = None
+        self, *, run_id: UUID, run: DirectRunRecord | None = None, kind: str = "implement"
     ) -> DirectSessionRecord:
         async with self._factory() as session:
             source = run or _run_record(await self._require(session, run_id))
             row = DirectSession(
                 id=uuid4(),
                 run_id=run_id,
+                kind=kind,
                 state="RUNNING",
                 client=source.client,
                 model=source.model,

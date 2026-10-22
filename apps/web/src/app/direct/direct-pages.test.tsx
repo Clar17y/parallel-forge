@@ -16,7 +16,7 @@ const run = {
   base_sha: 'a'.repeat(40), head_sha: null, summary: null, question: null,
   options: [], failure_reason: null, result_degraded: false,
   cancel_requested: false, created_at: '2026-10-22T10:00:00Z',
-  updated_at: '2026-10-22T10:01:00Z', sessions: [],
+  updated_at: '2026-10-22T10:01:00Z', sessions: [], checks: [],
 };
 
 afterEach(() => {
@@ -69,6 +69,24 @@ test('detail shows live transcript and cancels a running run', async () => {
   expect(vi.mocked(mutate)).toHaveBeenCalledWith(
     '/direct-runs/run-1/cancel', {}, expect.objectContaining({ idempotencyKey: expect.any(String) }),
   );
+});
+
+test('detail shows checks with excerpt and checking state', async () => {
+  mockApi({
+    '/direct-runs/run-1': {
+      ...run, state: 'CHECKING',
+      checks: [{
+        id: 'check-1', run_id: 'run-1', round: 0, command_name: 'smoke', kind: 'test',
+        tree_sha: 'a'.repeat(40), command_digest: 'b'.repeat(64), policy_version: 1,
+        status: 'FAILED', exit_code: 1, duration_ms: 12,
+        failure_excerpt: 'FAILED tests/test_smoke.py::test_it', created_at: '2026-10-22T10:02:00Z',
+      }],
+    },
+  });
+  render(<DirectDetailPage />);
+  await screen.findByText(/State: CHECKING/);
+  await screen.findByText(/Round 0: smoke \(test\) — FAILED/);
+  await screen.findByText(/FAILED tests\/test_smoke\.py::test_it/);
 });
 
 test('detail shows diff and hides cancel when done', async () => {

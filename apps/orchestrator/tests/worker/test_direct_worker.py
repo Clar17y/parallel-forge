@@ -146,7 +146,8 @@ async def test_happy_path_commits_and_done(session_factory, tmp_path, fake_cli):
     assert await worker.run_once() == run.id
     done = await service.get(run.id)
     assert done.state == "DONE"
-    assert done.summary == "did the thing"
+    # Slice B appends an honest no-checks note when the project has no policy.
+    assert done.summary.startswith("did the thing")
     assert done.head_sha and done.head_sha != done.base_sha
     wt = Path(done.worktree_path)
     assert (wt / "changed.txt").exists()

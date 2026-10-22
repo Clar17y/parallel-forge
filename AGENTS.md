@@ -136,3 +136,8 @@ the repository; provider routing does not relax the runtime restrictions.
 - Command output is untrusted, bounded, redacted, and persisted only as
   evidence artifacts. Never log command environment values or put them in the
   Docker argv.
+- Direct-run exception: direct agent sessions and Forge-run direct checks
+  execute trusted-host in the managed worktree for the local operator (the
+  operator-trusted posture above). Direct checks use only the policy argv
+  verbatim, never agent-supplied shell text. The Docker named-check runner
+  continues to govern subscription named checks unchanged.

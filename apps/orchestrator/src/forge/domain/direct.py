@@ -30,6 +30,8 @@ class DirectRunState(StrEnum):
     QUEUED = "QUEUED"
     RUNNING = "RUNNING"
     FINALIZING = "FINALIZING"
+    CHECKING = "CHECKING"
+    REPAIRING = "REPAIRING"
     DONE = "DONE"
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
@@ -82,10 +84,28 @@ class DirectRunRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class DirectCheckRecord:
+    id: UUID
+    run_id: UUID
+    round: int
+    command_name: str
+    kind: str
+    tree_sha: str
+    command_digest: str
+    policy_version: int
+    status: str
+    exit_code: int | None = None
+    duration_ms: int | None = None
+    failure_excerpt: str | None = None
+    created_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class DirectSessionRecord:
     id: UUID
     run_id: UUID
     state: str = "RUNNING"
+    kind: str = "implement"
     client: str = ""
     model: str = ""
     effort: str | None = None
@@ -231,6 +251,18 @@ def build_direct_prompt(task: str, *, has_agents_md: bool) -> str:
     )
 
 
+def build_direct_repair_prompt(task: str, failure_detail: str, *, has_agents_md: bool) -> str:
+    if len(task.encode("utf-8")) > _MAX_TASK_BYTES:
+        raise ValueError("direct task text is too large")
+    base = build_direct_prompt(task, has_agents_md=has_agents_md)
+    return (
+        f"{base}\n"
+        "This is a repair session. Forge-run checks failed on your previous work.\n"
+        f"{failure_detail}\n"
+        "Fix only these failures; run the failing checks yourself before finishing.\n"
+    )
+
+
 def build_direct_launch(
     installation: object,
     *,
@@ -295,6 +327,7 @@ __all__ = [
     "RESULT_SCHEMA",
     "SUPPORTED_DIRECT_CLIENTS",
     "TERMINAL_RUN_STATES",
+    "DirectCheckRecord",
     "DirectLaunch",
     "DirectResult",
     "DirectRunConflict",
@@ -305,5 +338,6 @@ __all__ = [
     "DirectSessionState",
     "build_direct_launch",
     "build_direct_prompt",
+    "build_direct_repair_prompt",
     "parse_direct_result",
 ]

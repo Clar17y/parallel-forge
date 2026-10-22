@@ -74,9 +74,11 @@ def router_for() -> APIRouter:
         try:
             record = await service.get(run_id)
             sessions = await service.sessions(run_id)
+            checks_fn = getattr(service, "checks", None)
+            checks = await checks_fn(run_id) if checks_fn is not None else ()
         except Exception as error:  # noqa: BLE001
             raise translate_error(error) from None
-        return DirectRunResponse.from_record(record, sessions)
+        return DirectRunResponse.from_record(record, sessions, checks)
 
     @router.get("/direct-runs/{run_id}/transcript", response_model=DirectTranscriptResponse)
     async def get_transcript(

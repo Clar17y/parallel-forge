@@ -57,6 +57,17 @@ class FakeDirectService:
     async def sessions(self, run_id):
         return ()
 
+    async def checks(self, run_id):
+        return (
+            SimpleNamespace(
+                id=uuid4(), run_id=run_id, round=0, command_name="smoke",
+                kind="test", tree_sha="a" * 40, command_digest="b" * 64,
+                policy_version=1, status="FAILED", exit_code=1, duration_ms=12,
+                failure_excerpt="FAILED tests/test_smoke.py::test_it",
+                created_at=None,
+            ),
+        )
+
     async def cancel(self, run_id):
         self.run.state = "CANCELLED"
         return self.run
@@ -136,6 +147,9 @@ async def test_direct_routes_and_create(direct_client, direct_context):
     )
     assert detail.status_code == 200
     assert detail.json()["sessions"] == []
+    assert detail.json()["checks"][0]["status"] == "FAILED"
+    assert detail.json()["checks"][0]["command_name"] == "smoke"
+    assert "test_it" in detail.json()["checks"][0]["failure_excerpt"]
 
     transcript = await direct_client.get(
         f"/api/direct-runs/{direct_context.service.run.id}/transcript", headers=HEADERS

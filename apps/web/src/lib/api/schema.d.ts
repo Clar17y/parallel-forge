@@ -3398,6 +3398,41 @@ export interface components {
              */
             status: "verified" | "unknown" | "unverified";
         };
+        /** DirectCheckResponse */
+        DirectCheckResponse: {
+            /** Command Digest */
+            command_digest: string;
+            /** Command Name */
+            command_name: string;
+            /** Created At */
+            created_at: string | null;
+            /** Duration Ms */
+            duration_ms: number | null;
+            /** Exit Code */
+            exit_code: number | null;
+            /** Failure Excerpt */
+            failure_excerpt: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Kind */
+            kind: string;
+            /** Policy Version */
+            policy_version: number;
+            /** Round */
+            round: number;
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            /** Status */
+            status: string;
+            /** Tree Sha */
+            tree_sha: string;
+        };
         /** DirectDiffResponse */
         DirectDiffResponse: {
             /** Diff */
@@ -3436,6 +3471,11 @@ export interface components {
             branch: string | null;
             /** Cancel Requested */
             cancel_requested: boolean;
+            /**
+             * Checks
+             * @default []
+             */
+            checks: components["schemas"]["DirectCheckResponse"][];
             /** Client */
             client: string;
             /** Created At */
@@ -3497,6 +3537,8 @@ export interface components {
              * Format: uuid
              */
             id: string;
+            /** Kind */
+            kind: string;
             /** Last Output At */
             last_output_at: string | null;
             /** Model */

@@ -7,7 +7,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from forge.domain.direct import DirectRunRecord, DirectSessionRecord
+from forge.domain.direct import DirectCheckRecord, DirectRunRecord, DirectSessionRecord
 
 
 class DirectRunCreateRequest(BaseModel):
@@ -20,12 +20,42 @@ class DirectRunCreateRequest(BaseModel):
     effort: str | None = Field(default=None, max_length=32)
 
 
+class DirectCheckResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: UUID
+    run_id: UUID
+    round: int
+    command_name: str
+    kind: str
+    tree_sha: str
+    command_digest: str
+    policy_version: int
+    status: str
+    exit_code: int | None
+    duration_ms: int | None
+    failure_excerpt: str | None
+    created_at: datetime | None
+
+    @classmethod
+    def from_record(cls, record: DirectCheckRecord) -> DirectCheckResponse:
+        return cls(
+            id=record.id, run_id=record.run_id, round=record.round,
+            command_name=record.command_name, kind=record.kind,
+            tree_sha=record.tree_sha, command_digest=record.command_digest,
+            policy_version=record.policy_version, status=record.status,
+            exit_code=record.exit_code, duration_ms=record.duration_ms,
+            failure_excerpt=record.failure_excerpt, created_at=record.created_at,
+        )
+
+
 class DirectSessionResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: UUID
     run_id: UUID
     state: str
+    kind: str
     client: str
     model: str
     effort: str | None
@@ -40,7 +70,8 @@ class DirectSessionResponse(BaseModel):
     @classmethod
     def from_record(cls, record: DirectSessionRecord) -> DirectSessionResponse:
         return cls(
-            id=record.id, run_id=record.run_id, state=record.state, client=record.client,
+            id=record.id, run_id=record.run_id, state=record.state,
+            kind=getattr(record, "kind", "implement"), client=record.client,
             model=record.model, effort=record.effort, pid=record.pid,
             output_bytes=record.output_bytes, exit_code=record.exit_code,
             started_at=record.started_at, ended_at=record.ended_at,
@@ -71,12 +102,14 @@ class DirectRunResponse(BaseModel):
     created_at: datetime | None
     updated_at: datetime | None
     sessions: tuple[DirectSessionResponse, ...] = ()
+    checks: tuple[DirectCheckResponse, ...] = ()
 
     @classmethod
     def from_record(
         cls,
         record: DirectRunRecord,
         sessions: tuple[DirectSessionRecord, ...] = (),
+        checks: tuple[DirectCheckRecord, ...] = (),
     ) -> DirectRunResponse:
         return cls(
             id=record.id, project_id=record.project_id, task=record.task_text,
@@ -88,6 +121,7 @@ class DirectRunResponse(BaseModel):
             cancel_requested=record.cancel_requested, created_at=record.created_at,
             updated_at=record.updated_at,
             sessions=tuple(DirectSessionResponse.from_record(s) for s in sessions),
+            checks=tuple(DirectCheckResponse.from_record(c) for c in checks),
         )
 
 
@@ -112,6 +146,7 @@ class DirectDiffResponse(BaseModel):
 
 
 __all__ = [
+    "DirectCheckResponse",
     "DirectDiffResponse",
     "DirectRouteResponse",
     "DirectRunCreateRequest",
