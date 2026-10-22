@@ -143,7 +143,46 @@ def parse_direct_result(text: str) -> DirectResult:
     )
 
 
+def _decoded_event_texts(text: str) -> list[str]:
+    """Pull assistant text out of JSONL event lines (agy/muse/claude/codex).
+
+    Stream-json CLIs wrap the final answer inside JSON string fields, so the
+    fenced result block only becomes parseable after one JSON decoding pass.
+    """
+
+    out: list[str] = []
+    for line in text.splitlines():
+        obj = _loads_object(line.strip())
+        if obj is None:
+            continue
+        for key in ("result", "response", "text"):
+            value = obj.get(key)
+            if isinstance(value, str):
+                out.append(value)
+            elif isinstance(value, dict):
+                for inner in ("response", "text", "summary"):
+                    inner_value = value.get(inner)
+                    if isinstance(inner_value, str):
+                        out.append(inner_value)
+                if "status" in value and "summary" in value:
+                    out.append(json.dumps(value, allow_nan=False))
+        if "status" in obj and "summary" in obj:
+            out.append(json.dumps(obj, allow_nan=False))
+    return out
+
+
 def _extract_result(text: str) -> dict[str, object] | None:
+    for decoded in reversed(_decoded_event_texts(text)):
+        parsed = _loads_object(decoded.strip())
+        if parsed is not None and "status" in parsed:
+            return parsed
+        fenced_in_decoded = re.findall(
+            r"```(?:json)?\s*(\{.*?\})\s*```", decoded, flags=re.DOTALL
+        )
+        for raw in reversed(fenced_in_decoded):
+            parsed = _loads_object(raw)
+            if parsed is not None:
+                return parsed
     fenced = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=re.DOTALL)
     for raw in reversed(fenced):
         parsed = _loads_object(raw)
@@ -222,8 +261,10 @@ def build_direct_launch(
             {"event": "user", "message": {"content": prompt}}, allow_nan=False
         )
         return DirectLaunch(
+            # No --print: it consumes the next flag as its prompt value.
+            # Stream-json input mode already runs non-interactively.
             argv=(
-                executable, "--print", "--input-format", "stream-json",
+                executable, "--input-format", "stream-json",
                 "--output-format", "stream-json", "--dangerously-skip-permissions",
                 "--model", model, "--disable-slash-commands",
             ),

@@ -26,6 +26,23 @@ def test_parse_fenced_result() -> None:
     assert result.degraded is False
 
 
+def test_parse_result_inside_antigravity_result_event() -> None:
+    import json
+
+    response = (
+        'Created it.\n\n```json\n{"status": "needs_decision", "summary": "s", '
+        '"question": "pick?", "options": ["x", "y"]}\n```\n'
+    )
+    line = json.dumps(
+        {"event": "result", "result": {"status": "SUCCESS", "response": response}}
+    )
+    result = parse_direct_result('{"event":"step_update"}\n' + line)
+    assert result.status == "needs_decision"
+    assert result.question == "pick?"
+    assert result.options == ("x", "y")
+    assert result.degraded is False
+
+
 def test_parse_unparseable_is_degraded_done() -> None:
     result = parse_direct_result("just some prose without json")
     assert result.status == "done"
@@ -59,6 +76,7 @@ def test_argv_per_client(tmp_path) -> None:
 
     agy = build_direct_launch(_installation("antigravity_cli"), **common)
     assert "--dangerously-skip-permissions" in agy.argv
+    assert "--print" not in agy.argv
     assert agy.stdin_data is not None and b"PROMPT" in agy.stdin_data
     assert b'"event": "user"' in agy.stdin_data or b'"event":"user"' in agy.stdin_data
 
