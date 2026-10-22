@@ -109,6 +109,15 @@ test('detail shows reviews section', async () => {
   await screen.findByText('needs work');
 });
 
+test('detail shows pull request link and rounds', async () => {
+  mockApi({ '/direct-runs/run-1': { ...run, state: 'PR_OPEN', pr_number: 42, pr_url: 'https://example.test/pr/42', pr_rounds: 1 } });
+  render(<DirectDetailPage />);
+  await screen.findByText(/State: PR_OPEN/);
+  const link = await screen.findByRole('link', { name: 'PR #42' });
+  expect(link).toHaveAttribute('href', 'https://example.test/pr/42');
+  await screen.findByText(/PR rounds: 1/);
+});
+
 test('detail shows diff and hides cancel when done', async () => {
   mockApi({ '/direct-runs/run-1': { ...run, state: 'DONE', summary: 'All fixed', head_sha: 'b'.repeat(40) } });
   render(<DirectDetailPage />);

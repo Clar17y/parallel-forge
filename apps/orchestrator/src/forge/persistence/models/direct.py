@@ -22,7 +22,7 @@ from forge.persistence.models.base import Base, TimestampMixin
 
 _RUN_STATES = (
     "('QUEUED','RUNNING','FINALIZING','CHECKING','REVIEWING','REPAIRING',"
-    "'DONE','FAILED','CANCELLED','NEEDS_DECISION')"
+    "'PUBLISHING','PR_OPEN','DONE','FAILED','CANCELLED','NEEDS_DECISION')"
 )
 _SESSION_STATES = "('RUNNING','SUCCEEDED','FAILED','KILLED','TIMED_OUT')"
 _CHECK_STATUSES = "('PASSED','FAILED','ERROR','CACHED')"
@@ -57,6 +57,9 @@ class DirectRun(Base, TimestampMixin):
     failure_reason: Mapped[str | None] = mapped_column(String(512))
     result_degraded: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     cancel_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    pr_number: Mapped[int | None] = mapped_column(Integer)
+    pr_url: Mapped[str | None] = mapped_column(String(1024))
+    pr_rounds: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
 
 class DirectSession(Base):

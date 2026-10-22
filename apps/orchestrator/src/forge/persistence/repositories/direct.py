@@ -39,6 +39,9 @@ def _run_record(row: DirectRun) -> DirectRunRecord:
         failure_reason=row.failure_reason,
         result_degraded=bool(row.result_degraded),
         cancel_requested=bool(row.cancel_requested),
+        pr_number=row.pr_number,
+        pr_url=row.pr_url,
+        pr_rounds=int(row.pr_rounds or 0),
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
@@ -143,6 +146,18 @@ class PostgresDirectRepository:
                 raise DirectRunNotFound("direct run project was not found")
             return project.canonical_path, project.default_branch
 
+    async def publication_for(self, run_id: UUID) -> tuple[str, str]:
+        """Return (github_repository, default_branch) for a run's project."""
+
+        async with self._factory() as session:
+            row = await session.get(DirectRun, run_id)
+            if row is None:
+                raise DirectRunNotFound("direct run was not found")
+            project = await session.get(Project, row.project_id)
+            if project is None:
+                raise DirectRunNotFound("direct run project was not found")
+            return project.github_repository or "", project.default_branch
+
     async def list(self, limit: int = 50) -> tuple[DirectRunRecord, ...]:
         async with self._factory() as session:
             rows = (
@@ -192,7 +207,12 @@ class PostgresDirectRepository:
             rows = (
                 await session.execute(
                     select(DirectRun).where(
-                        DirectRun.state.in_(("RUNNING", "CHECKING", "REVIEWING", "REPAIRING"))
+                        DirectRun.state.in_(
+                            (
+                                "RUNNING", "FINALIZING", "CHECKING", "REVIEWING",
+                                "REPAIRING", "PUBLISHING", "PR_OPEN",
+                            )
+                        )
                     )
                 )
             ).scalars().all()
@@ -304,7 +324,10 @@ class PostgresDirectRepository:
             if row.state == "QUEUED":
                 row.state = "CANCELLED"
                 row.cancel_requested = True
-            elif row.state in {"RUNNING", "FINALIZING", "CHECKING", "REVIEWING", "REPAIRING"}:
+            elif row.state in {
+                "RUNNING", "FINALIZING", "CHECKING", "REVIEWING", "REPAIRING",
+                "PUBLISHING", "PR_OPEN",
+            }:
                 row.cancel_requested = True
             await session.commit()
             await session.refresh(row)

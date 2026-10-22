@@ -6,13 +6,16 @@ import asyncio
 import json
 import logging
 import os
+import re
 import signal
 import sys
+import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from time import monotonic
+from typing import Protocol
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -27,15 +30,19 @@ from forge.domain.direct import (
     REVIEW_CLIENT_PREFERENCE,
     DirectFinding,
     DirectLaunch,
+    DirectPrFeedback,
+    DirectPrSnapshot,
     DirectResult,
     DirectReviewResult,
     DirectRunRecord,
     build_direct_launch,
+    build_direct_pr_repair_prompt,
     build_direct_prompt,
     build_direct_repair_prompt,
     build_direct_review_prompt,
     build_direct_review_repair_prompt,
     format_blocking_findings,
+    format_pr_feedback,
     parse_direct_result,
     parse_review_result,
 )
@@ -76,6 +83,165 @@ InstallationResolver = Callable[[DirectRunRecord], object | None]
 ReviewResolver = Callable[[DirectRunRecord, object], object | None]
 
 
+class PublisherError(RuntimeError):
+    """A git push or gh operation failed (details never carry env values)."""
+
+
+class DirectPublisher(Protocol):
+    async def push(self, worktree: Path, branch: str) -> None: ...
+    async def open_pr(self, *, repo: str, base: str, head: str, title: str, body: str, worktree: Path) -> tuple[int, str]: ...
+    async def poll(self, *, repo: str, number: int) -> DirectPrSnapshot: ...
+    async def reply(self, *, repo: str, number: int, feedback: DirectPrFeedback, body: str) -> None: ...
+    async def resolve(self, *, repo: str, feedback: DirectPrFeedback) -> None: ...
+    async def close_pr(self, *, repo: str, number: int) -> None: ...
+
+
+async def _run_publisher_argv(argv: tuple[str, ...], cwd: Path | None = None) -> str:
+    try:
+        proc = await asyncio.create_subprocess_exec(*argv, cwd=str(cwd) if cwd else None, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        out, _err = await proc.communicate()
+    except OSError as error:
+        raise PublisherError(f"publisher command could not start: {type(error).__name__}") from None
+    if proc.returncode != 0:
+        raise PublisherError(f"publisher command failed with exit code {proc.returncode}")
+    return out.decode("utf-8", errors="replace")
+
+
+def _parse_dt(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+class GhPublisher:
+    """Default publisher: git push in the worktree, gh on the trusted host."""
+
+    async def push(self, worktree: Path, branch: str) -> None:
+        await _run_publisher_argv(("git", "-C", str(worktree), "push", "-u", "origin", branch))
+
+    async def open_pr(self, *, repo: str, base: str, head: str, title: str, body: str, worktree: Path) -> tuple[int, str]:
+        body_file: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False, encoding="utf-8") as handle:
+                handle.write(body)
+                body_file = Path(handle.name)
+            out = await _run_publisher_argv(("gh", "pr", "create", "--repo", repo, "--base", base, "--head", head, "--title", title[:200], "--body-file", str(body_file)), cwd=worktree)
+        finally:
+            if body_file is not None:
+                body_file.unlink(missing_ok=True)
+        url = ""
+        for token in out.split():
+            if token.startswith("https://") and "/pull/" in token:
+                url = token.strip()
+                break
+        if url:
+            match = re.search(r"/pull/(\d+)", url)
+            if match:
+                return int(match.group(1)), url[:1024]
+        # Fallback: ask gh for the PR just created for this head.
+        view = await _run_publisher_argv(("gh", "pr", "view", head, "--repo", repo, "--json", "number,url"), cwd=worktree)
+        try:
+            data = json.loads(view)
+            return int(data["number"]), str(data["url"])[:1024]
+        except (ValueError, KeyError, TypeError) as error:
+            raise PublisherError("pr creation output unparseable") from error
+
+    async def poll(self, *, repo: str, number: int) -> DirectPrSnapshot:
+        view_out = await _run_publisher_argv(("gh", "pr", "view", str(number), "--repo", repo, "--json", "state,mergeable,reviewDecision,statusCheckRollup,url,createdAt,updatedAt"))
+        try:
+            view = json.loads(view_out)
+        except ValueError as error:
+            raise PublisherError("pr view output unparseable") from error
+        if not isinstance(view, dict):
+            raise PublisherError("pr view output unparseable")
+        checks_status = "NONE"
+        rollup = view.get("statusCheckRollup")
+        if isinstance(rollup, list) and rollup:
+            states: list[str] = []
+            for item in rollup:
+                if not isinstance(item, dict):
+                    continue
+                conclusion = str(item.get("conclusion") or item.get("state") or "")
+                status = str(item.get("status") or "")
+                if conclusion in {"FAILURE", "ERROR", "CANCELLED", "TIMED_OUT"}:
+                    states.append("FAILURE")
+                elif status and status != "COMPLETED":
+                    states.append("PENDING")
+                elif conclusion in {"SUCCESS", "NEUTRAL", "SKIPPED"}:
+                    states.append("SUCCESS")
+                else:
+                    states.append("PENDING")
+            if "FAILURE" in states:
+                checks_status = "FAILURE"
+            elif "PENDING" in states:
+                checks_status = "PENDING"
+            elif states:
+                checks_status = "SUCCESS"
+        threads: list[DirectPrFeedback] = []
+        changes: list[DirectPrFeedback] = []
+        activity_times: list[datetime] = []
+        has_activity = False
+        if "/" in repo:
+            owner, name = repo.split("/", 1)
+            query = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100){nodes{id isResolved comments(first:20){nodes{id body author{login} path createdAt updatedAt}}}} reviews(first:100){nodes{id state body author{login} submittedAt}}}}}"
+            gql_out = await _run_publisher_argv(("gh", "api", "graphql", "-f", f"query={query}", "-F", f"owner={owner}", "-F", f"name={name}", "-F", f"number={number}"))
+            try:
+                gql = json.loads(gql_out)
+                pr = gql["data"]["repository"]["pullRequest"]
+                if not isinstance(pr, dict):
+                    raise PublisherError("pr graphql output unparseable")
+                for node in pr.get("reviewThreads", {}).get("nodes", []):
+                    if not isinstance(node, dict):
+                        continue
+                    has_activity = True
+                    comments = node.get("comments", {}).get("nodes", []) if isinstance(node.get("comments"), dict) else []
+                    first = comments[0] if comments and isinstance(comments[0], dict) else {}
+                    stamp = _parse_dt(first.get("updatedAt") or first.get("createdAt"))
+                    if stamp:
+                        activity_times.append(stamp)
+                    if node.get("isResolved"):
+                        continue
+                    author_value = first.get("author")
+                    author = author_value if isinstance(author_value, dict) else {}
+                    threads.append(DirectPrFeedback(id=str(node.get("id", "")), thread_id=str(node.get("id", "")), comment_id=str(first.get("id")) if first.get("id") else None, body=str(first.get("body") or "")[:4000], author=str(author.get("login") or ""), path=str(first.get("path")) if first.get("path") else None, updated_at=stamp))
+                for node in pr.get("reviews", {}).get("nodes", []):
+                    if not isinstance(node, dict):
+                        continue
+                    has_activity = True
+                    stamp = _parse_dt(node.get("submittedAt"))
+                    if stamp:
+                        activity_times.append(stamp)
+                    if node.get("state") == "CHANGES_REQUESTED":
+                        author_value = node.get("author")
+                        author = author_value if isinstance(author_value, dict) else {}
+                        changes.append(DirectPrFeedback(id=str(node.get("id", "")), body=str(node.get("body") or "")[:4000], author=str(author.get("login") or ""), updated_at=stamp))
+            except (ValueError, KeyError, TypeError, AttributeError) as error:
+                raise PublisherError("pr graphql output unparseable") from error
+        updated = _parse_dt(view.get("updatedAt"))
+        if updated and has_activity:
+            activity_times.append(updated)
+        return DirectPrSnapshot(state=str(view.get("state") or "OPEN"), mergeable=str(view.get("mergeable") or ""), checks_status=checks_status, unresolved_threads=tuple(threads), changes_requested=tuple(changes), last_activity_at=max(activity_times) if activity_times else None, has_activity=has_activity, created_at=_parse_dt(view.get("createdAt")))
+
+    async def reply(self, *, repo: str, number: int, feedback: DirectPrFeedback, body: str) -> None:
+        if feedback.comment_id:
+            await _run_publisher_argv(("gh", "api", f"repos/{repo}/pulls/{number}/comments/{feedback.comment_id}/replies", "-f", f"body={body[:1000]}"))
+        else:
+            await _run_publisher_argv(("gh", "pr", "comment", str(number), "--repo", repo, "--body", body[:1000]))
+
+    async def resolve(self, *, repo: str, feedback: DirectPrFeedback) -> None:
+        if not feedback.thread_id:
+            return
+        mutation = "mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{id}}}"
+        await _run_publisher_argv(("gh", "api", "graphql", "-f", f"query={mutation}", "-F", f"id={feedback.thread_id}"))
+
+    async def close_pr(self, *, repo: str, number: int) -> None:
+        await _run_publisher_argv(("gh", "pr", "close", str(number), "--repo", repo))
+
+
 class DirectRunWorker:
     """Claim one QUEUED direct run and run its single session to settlement."""
 
@@ -87,6 +253,7 @@ class DirectRunWorker:
         argv_factory: ArgvFactory | None = None,
         installation_resolver: InstallationResolver | None = None,
         review_resolver: ReviewResolver | None = None,
+        publisher: DirectPublisher | None = None,
     ) -> None:
         self._factory = factory
         self._settings = settings
@@ -94,6 +261,7 @@ class DirectRunWorker:
         self._argv_factory = argv_factory
         self._installation_resolver = installation_resolver
         self._review_resolver = review_resolver
+        self._publisher = publisher
         self._redactor = Redactor(policy=RedactionPolicy(max_string_bytes=8192))
         self._active_run_id: UUID | None = None
 
@@ -109,7 +277,7 @@ class DirectRunWorker:
             logger.exception("direct run %s failed in worker", run.id)
             try:
                 current = await self._repo.get(run.id)
-                if current.state in {"RUNNING", "FINALIZING", "CHECKING", "REVIEWING", "REPAIRING"}:
+                if current.state in {"RUNNING", "FINALIZING", "CHECKING", "REVIEWING", "REPAIRING", "PUBLISHING", "PR_OPEN"}:
                     await self._repo.update_run(
                         run.id, state="FAILED", failure_reason="worker error"
                     )
@@ -293,10 +461,7 @@ class DirectRunWorker:
                 return
             blocking = tuple(f for f in review.findings if f.severity == "blocking")
             if not blocking:
-                await self._repo.update_run(
-                    run.id, state="DONE", head_sha=head_sha,
-                    summary=f"{summary}{check_note}",
-                )
+                await self._publish_and_watch(run, worktree=worktree, branch=branch, head_sha=head_sha, summary=f"{summary}{check_note}", installation=installation, transcript_dir=transcript_dir, has_agents_md=has_agents_md, check_round=check_round)
                 return
             if review_rounds >= self._settings.direct_max_review_rounds:
                 await self._repo.update_run(
@@ -326,6 +491,195 @@ class DirectRunWorker:
                     run.id, state="FAILED", failure_reason="repair made no changes"
                 )
                 return
+
+    def _log_pr_watch(self, transcript_dir: Path, message: str) -> None:
+        try:
+            transcript_dir.mkdir(parents=True, exist_ok=True)
+            redacted, _ = self._redactor.redact_text(message[:2000])
+            with (transcript_dir / "pr-watch.log").open("a", encoding="utf-8") as handle:
+                handle.write(f"[{datetime.now(UTC).isoformat()}] {redacted}\n")
+        except OSError:
+            pass
+
+    async def _pr_body(self, run: DirectRunRecord, summary: str) -> str:
+        lines = [summary[:4000], "", "Checks:"]
+        try:
+            checks = await self._repo.checks(run.id)
+        except Exception:  # noqa: BLE001
+            checks = ()
+        if checks:
+            for check in checks[-32:]:
+                lines.append(f"- {check.command_name}: {check.status} (round {check.round})")
+        else:
+            lines.append("- no checks recorded")
+        lines.append("")
+        lines.append("Reviews:")
+        try:
+            reviews = await self._repo.reviews(run.id)
+        except Exception:  # noqa: BLE001
+            reviews = ()
+        if reviews:
+            for review in reviews[-16:]:
+                lines.append(f"- {review.client}/{review.model}: {review.verdict} (round {review.round})")
+        else:
+            lines.append("- no reviews recorded")
+        lines.append("")
+        lines.append(f"Opened by Forge direct run {run.id}")
+        body, _ = self._redactor.redact_text("\n".join(lines))
+        return body[:8000]
+
+    async def _publish_and_watch(self, run: DirectRunRecord, *, worktree: Path, branch: str, head_sha: str, summary: str, installation: object, transcript_dir: Path, has_agents_md: bool, check_round: int) -> None:
+        github_repo, default_branch = await self._repo.publication_for(run.id)
+        if not github_repo.strip():
+            await self._repo.update_run(run.id, state="DONE", head_sha=head_sha, summary=f"{summary}\npublication skipped: no GitHub repository")
+            return
+        publisher: DirectPublisher = self._publisher if self._publisher is not None else GhPublisher()
+        await self._repo.update_run(run.id, state="PUBLISHING", head_sha=head_sha)
+        try:
+            await publisher.push(worktree, branch)
+        except Exception:  # noqa: BLE001
+            self._log_pr_watch(transcript_dir, "push failed")
+            await self._repo.update_run(run.id, state="FAILED", head_sha=head_sha, failure_reason="pr push failed")
+            return
+        title_raw = run.task_text.strip().splitlines()[0] if run.task_text.strip() else ""
+        title_redacted, _ = self._redactor.redact_text(title_raw)
+        title = title_redacted.strip()[:200] or f"Forge direct run {str(run.id)[:8]}"
+        body = await self._pr_body(run, summary)
+        try:
+            pr_number, pr_url = await publisher.open_pr(repo=github_repo, base=default_branch, head=branch, title=title, body=body, worktree=worktree)
+        except Exception:  # noqa: BLE001
+            self._log_pr_watch(transcript_dir, "pr creation failed")
+            await self._repo.update_run(run.id, state="FAILED", head_sha=head_sha, failure_reason="pr creation failed")
+            return
+        if not pr_url or pr_number is None:
+            await self._repo.update_run(run.id, state="FAILED", head_sha=head_sha, failure_reason="pr creation failed")
+            return
+        pr_url = pr_url[:1024]
+        await self._repo.update_run(run.id, state="PR_OPEN", head_sha=head_sha, pr_number=int(pr_number), pr_url=pr_url)
+        self._log_pr_watch(transcript_dir, f"pr opened {pr_url}")
+        started = monotonic()
+        pr_created_at = datetime.now(UTC)
+        last_push_at = pr_created_at
+        handled: set[str] = set()
+        consecutive_failures = 0
+        pr_rounds = 0
+        seen_activity = False
+        last_activity_at: datetime | None = None
+        current_summary = summary
+        while True:
+            if await self._repo.cancel_requested(run.id):
+                await self._repo.update_run(run.id, state="CANCELLED", head_sha=head_sha)
+                return
+            if monotonic() - started > float(self._settings.direct_pr_watch_timeout_seconds):
+                await self._repo.update_run(run.id, state="FAILED", head_sha=head_sha, failure_reason="pr watch timed out")
+                return
+            try:
+                snapshot = await publisher.poll(repo=github_repo, number=int(pr_number))
+            except Exception:  # noqa: BLE001
+                consecutive_failures += 1
+                self._log_pr_watch(transcript_dir, f"poll failure {consecutive_failures}")
+                if consecutive_failures >= 3:
+                    await self._repo.update_run(run.id, state="FAILED", head_sha=head_sha, failure_reason="pr watch failed")
+                    return
+                await asyncio.sleep(float(self._settings.direct_pr_poll_seconds))
+                continue
+            consecutive_failures = 0
+            self._log_pr_watch(transcript_dir, f"poll state={snapshot.state} mergeable={snapshot.mergeable} checks={snapshot.checks_status} threads={len(snapshot.unresolved_threads)} changes_requested={len(snapshot.changes_requested)}")
+            if snapshot.created_at is not None:
+                pr_created_at = snapshot.created_at if snapshot.created_at.tzinfo else snapshot.created_at.replace(tzinfo=UTC)
+            if snapshot.has_activity:
+                seen_activity = True
+                if snapshot.last_activity_at is not None:
+                    stamp = snapshot.last_activity_at if snapshot.last_activity_at.tzinfo else snapshot.last_activity_at.replace(tzinfo=UTC)
+                    last_activity_at = stamp if last_activity_at is None else max(last_activity_at, stamp)
+            batch: list[tuple[str, DirectPrFeedback]] = []
+            for feedback in snapshot.unresolved_threads:
+                key = f"thread:{feedback.thread_id or feedback.id}"
+                if key not in handled:
+                    batch.append((key, feedback))
+            for feedback in snapshot.changes_requested:
+                if feedback.updated_at is not None:
+                    stamp = feedback.updated_at if feedback.updated_at.tzinfo else feedback.updated_at.replace(tzinfo=UTC)
+                    if stamp <= last_push_at:
+                        continue
+                key = f"review:{feedback.id}:{feedback.updated_at.isoformat() if feedback.updated_at else ''}"
+                if key not in handled:
+                    batch.append((key, feedback))
+            if batch:
+                if pr_rounds >= self._settings.direct_max_pr_rounds:
+                    await self._repo.update_run(run.id, state="FAILED", head_sha=head_sha, failure_reason=f"pr comments still open after {self._settings.direct_max_pr_rounds} rounds")
+                    return
+                pr_rounds += 1
+                await self._repo.update_run(run.id, state="REPAIRING", pr_rounds=pr_rounds)
+                feedback_tuple = tuple(item for _key, item in batch)
+                formatted = format_pr_feedback(feedback_tuple)
+                redacted_detail, _ = self._redactor.redact_text(formatted)
+                repair_prompt = build_direct_pr_repair_prompt(run.task_text, redacted_detail, has_agents_md=has_agents_md)
+                repair = await self._launch_and_settle_session(run, installation, kind="repair", prompt=repair_prompt, worktree=worktree, transcript_dir=transcript_dir)
+                if repair is None:
+                    return
+                previous_head = head_sha
+                head_sha = await self._commit_and_record(run, worktree, previous_head, repair)
+                current_summary = repair.summary or current_summary
+                if head_sha == previous_head:
+                    await self._repo.update_run(run.id, state="FAILED", head_sha=head_sha, failure_reason="repair made no changes")
+                    return
+                await self._repo.update_run(run.id, state="CHECKING", head_sha=head_sha)
+                check_result = await self._run_checks(run, worktree, head_sha, round_no=check_round)
+                check_round += 1
+                if check_result.outcome == "cancelled":
+                    await self._repo.update_run(run.id, state="CANCELLED", head_sha=head_sha)
+                    return
+                if check_result.outcome == "failed":
+                    await self._repo.update_run(run.id, state="FAILED", head_sha=head_sha, failure_reason="checks failing after pr repair")
+                    return
+                if check_result.outcome == "error":
+                    await self._repo.update_run(run.id, state="FAILED", head_sha=head_sha, failure_reason=(check_result.error_reason or "check error")[:512])
+                    return
+                await self._repo.update_run(run.id, state="PUBLISHING", head_sha=head_sha)
+                try:
+                    await publisher.push(worktree, branch)
+                except Exception:  # noqa: BLE001
+                    await self._repo.update_run(run.id, state="FAILED", head_sha=head_sha, failure_reason="pr push failed")
+                    return
+                last_push_at = datetime.now(UTC)
+                await self._repo.update_run(run.id, state="PR_OPEN", head_sha=head_sha)
+                reply_text, _ = self._redactor.redact_text(f"Addressed in {head_sha}: {current_summary}")
+                try:
+                    for _key, feedback in batch:
+                        await publisher.reply(repo=github_repo, number=int(pr_number), feedback=feedback, body=reply_text[:1000])
+                        if feedback.thread_id:
+                            await publisher.resolve(repo=github_repo, feedback=feedback)
+                except Exception:  # noqa: BLE001
+                    await self._repo.update_run(run.id, state="FAILED", head_sha=head_sha, failure_reason="pr watch failed")
+                    return
+                handled.update(key for key, _item in batch)
+                continue
+            if snapshot.state != "OPEN":
+                await self._repo.update_run(run.id, state="FAILED", head_sha=head_sha, failure_reason="pr watch failed")
+                return
+            has_newer_changes = False
+            for feedback in snapshot.changes_requested:
+                if feedback.updated_at is None:
+                    has_newer_changes = True
+                else:
+                    stamp = feedback.updated_at if feedback.updated_at.tzinfo else feedback.updated_at.replace(tzinfo=UTC)
+                    if stamp > last_push_at:
+                        has_newer_changes = True
+            if snapshot.mergeable == "MERGEABLE" and snapshot.checks_status in {"SUCCESS", "NONE"} and not snapshot.unresolved_threads and not has_newer_changes:
+                now_dt = datetime.now(UTC)
+                quiet_seconds = float(self._settings.direct_pr_quiet_seconds)
+                if seen_activity:
+                    reference = last_activity_at or pr_created_at
+                    reference = max(reference, last_push_at)
+                    if (now_dt - reference).total_seconds() >= quiet_seconds:
+                        await self._repo.update_run(run.id, state="DONE", head_sha=head_sha, summary=current_summary)
+                        return
+                elif (now_dt - pr_created_at).total_seconds() >= quiet_seconds:
+                    await self._repo.update_run(run.id, state="DONE", head_sha=head_sha, summary=current_summary)
+                    return
+            await asyncio.sleep(float(self._settings.direct_pr_poll_seconds))
+
 
     async def _commit_and_record(
         self, run: DirectRunRecord, worktree: Path, previous_head: str, result: DirectResult
@@ -984,4 +1338,4 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
-__all__ = ["DirectLaunchContext", "DirectRunWorker"]
+__all__ = ["DirectLaunchContext", "DirectPublisher", "DirectRunWorker", "GhPublisher", "PublisherError"]

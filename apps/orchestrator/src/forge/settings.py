@@ -70,6 +70,10 @@ class Settings(BaseSettings):
     direct_max_repair_rounds: int = Field(default=3, ge=0, le=100, strict=True)
     direct_max_review_rounds: int = Field(default=3, ge=0, le=100, strict=True)
     direct_check_timeout_seconds: int = Field(default=1800, ge=1, le=86400, strict=True)
+    direct_max_pr_rounds: int = Field(default=3, ge=0, le=100, strict=True)
+    direct_pr_poll_seconds: int = Field(default=60, ge=0, le=86400, strict=True)
+    direct_pr_quiet_seconds: int = Field(default=180, ge=0, le=86400, strict=True)
+    direct_pr_watch_timeout_seconds: int = Field(default=1800, ge=1, le=86400, strict=True)
     # Omitted keeps the stored scheduler capacity policy (3/3/3 when none exists).
     subscription_capacity: SubscriptionCapacityLimits | None = None
     # Advisory search ranking. "shadow" measures without changing agent input;

@@ -3543,6 +3543,15 @@ export interface components {
             model: string;
             /** Options */
             options: string[];
+            /** Pr Number */
+            pr_number?: number | null;
+            /**
+             * Pr Rounds
+             * @default 0
+             */
+            pr_rounds: number;
+            /** Pr Url */
+            pr_url?: string | null;
             /**
              * Project Id
              * Format: uuid

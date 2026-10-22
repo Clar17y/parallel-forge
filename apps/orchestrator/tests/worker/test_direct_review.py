@@ -10,7 +10,20 @@ from uuid import uuid4
 
 import pytest
 from forge.application.services.direct_runs import DirectRunService
-from forge.domain.direct import DirectLaunch, DirectRunState
+from forge.domain.direct import DirectLaunch, DirectPrSnapshot, DirectRunState
+
+
+class _QuietPublisher:
+    async def push(self, worktree, branch): pass
+    async def open_pr(self, *, repo, base, head, title, body, worktree): return 1, "https://example.test/pr/1"
+    async def poll(self, *, repo, number):
+        from datetime import UTC, datetime
+        past = datetime(2000, 1, 1, tzinfo=UTC)
+        return DirectPrSnapshot(has_activity=True, last_activity_at=past, created_at=past)
+    async def reply(self, *, repo, number, feedback, body): pass
+    async def resolve(self, *, repo, feedback): pass
+    async def close_pr(self, *, repo, number): pass
+
 from forge.persistence.models import Project
 from forge.persistence.repositories.direct import PostgresDirectRepository
 from forge.settings import Settings
@@ -96,7 +109,7 @@ async def _setup(session_factory, tmp_path, *, mode, review_resolver_mode="disti
     async with session_factory() as session:
         session.add(Project(id=pid, name="P", canonical_path=str(repo), canonical_path_key=str(repo).lower(), github_repository=f"o/r-{pid}", default_branch="main"))
         await session.commit()
-    settings = Settings(data_root=tmp_path / "data", subscription_installations_path=None, **(settings_extra or {}))
+    settings = Settings(data_root=tmp_path / "data", subscription_installations_path=None, direct_pr_poll_seconds=0, direct_pr_quiet_seconds=0, **(settings_extra or {}))
     service = DirectRunService(session_factory, settings, installations=(SimpleNamespace(client="muse_code", model="model-1", effort="high"), SimpleNamespace(client="codex_app_server", model="review-model", effort=None)))
     run = await service.create(project_id=pid, task="do it", client="muse_code", model="model-1", effort=None)
     fake_cli = tmp_path / "fake_cli.py"
@@ -111,7 +124,7 @@ async def _setup(session_factory, tmp_path, *, mode, review_resolver_mode="disti
         resolver = lambda run, impl: None
     else:
         resolver = lambda run, impl: SimpleNamespace(client="codex_app_server", executable=sys.executable, model="review-model", effort=None)
-    worker = DirectRunWorker(session_factory, settings, argv_factory=factory, installation_resolver=lambda run: SimpleNamespace(client=run.client, executable=sys.executable, model=run.model, effort=run.effort), review_resolver=resolver)
+    worker = DirectRunWorker(session_factory, settings, argv_factory=factory, installation_resolver=lambda run: SimpleNamespace(client=run.client, executable=sys.executable, model=run.model, effort=run.effort), review_resolver=resolver, publisher=_QuietPublisher())
     return run, service, worker
 
 

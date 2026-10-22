@@ -37,6 +37,7 @@ export default function DirectDetailPage() {
     {value.summary && <p>{value.summary}</p>}
     {value.state === 'NEEDS_DECISION' && value.question && <section><h2>Decision needed</h2><p>{value.question}</p><ul>{value.options.map(o => <li key={o}>{o}</li>)}</ul></section>}
     {value.failure_reason && <p role="alert">{value.failure_reason}</p>}
+    {(value.pr_url || value.pr_number) && <section><h2>Pull request</h2>{value.pr_url ? <p><a href={value.pr_url} target="_blank" rel="noreferrer">{value.pr_number ? `PR #${value.pr_number}` : 'Pull request'}</a></p> : <p>PR #{value.pr_number}</p>}<p>PR rounds: {value.pr_rounds ?? 0}</p></section>}
     {!terminal && <button onClick={cancel}>Cancel run</button>}
     {error && <p role="alert">{error}</p>}
     <h2>Checks</h2>

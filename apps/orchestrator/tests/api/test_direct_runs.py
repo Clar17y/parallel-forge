@@ -33,6 +33,9 @@ class FakeRun:
     failure_reason: str | None = None
     result_degraded: bool = False
     cancel_requested: bool = False
+    pr_number: int | None = None
+    pr_url: str | None = None
+    pr_rounds: int = 0
     created_at: object = None
     updated_at: object = None
 

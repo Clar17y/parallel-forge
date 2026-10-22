@@ -13,7 +13,20 @@ from uuid import uuid4
 
 import pytest
 from forge.application.services.direct_runs import DirectRunService
-from forge.domain.direct import DirectLaunch, DirectRunState
+from forge.domain.direct import DirectLaunch, DirectPrSnapshot, DirectRunState
+
+
+class _QuietPublisher:
+    async def push(self, worktree, branch): pass
+    async def open_pr(self, *, repo, base, head, title, body, worktree): return 1, "https://example.test/pr/1"
+    async def poll(self, *, repo, number):
+        from datetime import UTC, datetime
+        past = datetime(2000, 1, 1, tzinfo=UTC)
+        return DirectPrSnapshot(has_activity=True, last_activity_at=past, created_at=past)
+    async def reply(self, *, repo, number, feedback, body): pass
+    async def resolve(self, *, repo, feedback): pass
+    async def close_pr(self, *, repo, number): pass
+
 from forge.domain.policy import CommandSpec, ProjectPolicy, StepKind
 from forge.persistence.models import Project, ProjectPolicyVersion
 from forge.persistence.repositories.direct import PostgresDirectRepository
@@ -181,6 +194,8 @@ async def _setup(session_factory, tmp_path, *, mode, settings_extra=None, env_ke
     settings = Settings(
         data_root=tmp_path / "data",
         subscription_installations_path=None,
+        direct_pr_poll_seconds=0,
+        direct_pr_quiet_seconds=0,
         **(settings_extra or {}),
     )
     service = _service(session_factory, settings)
@@ -206,6 +221,7 @@ async def _setup(session_factory, tmp_path, *, mode, settings_extra=None, env_ke
         session_factory,
         settings,
         argv_factory=factory,
+        publisher=_QuietPublisher(),
         installation_resolver=lambda run: SimpleNamespace(
             client=run.client, executable=sys.executable, model=run.model, effort=run.effort
         ),

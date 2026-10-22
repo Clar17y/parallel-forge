@@ -147,6 +147,9 @@ class DirectRunResponse(BaseModel):
     failure_reason: str | None
     result_degraded: bool
     cancel_requested: bool
+    pr_number: int | None = None
+    pr_url: str | None = None
+    pr_rounds: int = 0
     created_at: datetime | None
     updated_at: datetime | None
     sessions: tuple[DirectSessionResponse, ...] = ()
@@ -168,7 +171,9 @@ class DirectRunResponse(BaseModel):
             base_sha=record.base_sha, head_sha=record.head_sha, summary=record.summary,
             question=record.question, options=record.options,
             failure_reason=record.failure_reason, result_degraded=record.result_degraded,
-            cancel_requested=record.cancel_requested, created_at=record.created_at,
+            cancel_requested=record.cancel_requested,
+            pr_number=record.pr_number, pr_url=record.pr_url, pr_rounds=record.pr_rounds,
+            created_at=record.created_at,
             updated_at=record.updated_at,
             sessions=tuple(DirectSessionResponse.from_record(s) for s in sessions),
             checks=tuple(DirectCheckResponse.from_record(c) for c in checks),

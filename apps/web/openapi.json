@@ -4320,6 +4320,33 @@
             "title": "Options",
             "type": "array"
           },
+          "pr_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pr Number"
+          },
+          "pr_rounds": {
+            "default": 0,
+            "title": "Pr Rounds",
+            "type": "integer"
+          },
+          "pr_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pr Url"
+          },
           "project_id": {
             "format": "uuid",
             "title": "Project Id",
