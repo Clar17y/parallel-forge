@@ -80,6 +80,37 @@ def extract_check_failure(check_name: str, blob: bytes) -> CheckFailureEvidence:
     )
 
 
+def merge_check_failures(
+    primary: CheckFailureEvidence, fallback: CheckFailureEvidence
+) -> CheckFailureEvidence:
+    """Merge one check's stdout and stderr evidence under the same bounds.
+
+    Failing nodes are unioned (primary order first). The excerpt comes from
+    the stream that identified failing nodes when only one did, so unrelated
+    stdout progress output cannot suppress stderr diagnostics.
+    """
+    combined = list(primary.failing_nodes)
+    for node in fallback.failing_nodes:
+        if node not in combined:
+            combined.append(node)
+    extra = (
+        primary.extra_node_count
+        + fallback.extra_node_count
+        + max(0, len(combined) - MAX_FAILED_NODES_PER_CHECK)
+    )
+    if fallback.failing_nodes and not primary.failing_nodes:
+        excerpt = fallback.excerpt or primary.excerpt
+    else:
+        excerpt = primary.excerpt or fallback.excerpt
+    return CheckFailureEvidence(
+        check_name=primary.check_name,
+        failing_nodes=tuple(combined[:MAX_FAILED_NODES_PER_CHECK]),
+        extra_node_count=extra,
+        counts=primary.counts or fallback.counts,
+        excerpt=excerpt,
+    )
+
+
 def _format_check(evidence: CheckFailureEvidence) -> str:
     parts = [f"- {evidence.check_name}:"]
     if evidence.failing_nodes:

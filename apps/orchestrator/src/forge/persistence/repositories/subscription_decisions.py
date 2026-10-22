@@ -2627,8 +2627,14 @@ class PostgresSubscriptionDecisionRepository:
         result.accepted, result.disposition = True, disposition
         await self._session.flush()
         feedback = PostgresSubscriptionFeedbackRepository(self._session)
+        # This attempt produced a settled decision, so it launched and saw
+        # its bound context: settle any bound primary steering as delivered.
+        await feedback.settle_delivery(attempt.id)
         await feedback.close_exhausted(task.run_id)
-        if state == "blocked" and await feedback.has_pending_primary(task.run_id, task.id):
+        if state == "blocked" and (
+            await feedback.has_pending_primary(task.run_id, task.id)
+            or await feedback.has_pending_primary_feedback(task.run_id, task.id)
+        ):
             task.state = scheduled.state = "queued"
             await self._session.flush()
         return SubscriptionSettlement(True, disposition)

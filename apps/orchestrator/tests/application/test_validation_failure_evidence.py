@@ -8,6 +8,7 @@ from forge.application.services.validation_failure_evidence import (
     MAX_FAILURE_DETAIL_CHARS,
     build_failure_detail,
     extract_check_failure,
+    merge_check_failures,
 )
 
 
@@ -91,6 +92,34 @@ def test_total_detail_is_capped_across_many_failed_checks():
     assert len(detail) <= MAX_FAILURE_DETAIL_CHARS
     assert "check-0" in detail
     assert "tests/test_alpha.py::test_one" in detail
+
+
+def test_merge_prefers_stderr_nodes_when_stdout_has_unrelated_output():
+    stdout = extract_check_failure("unit", _envelope("progress: compiling modules\n"))
+    stderr = extract_check_failure("unit", _envelope(PYTEST_OUTPUT, "stderr"))
+    merged = merge_check_failures(stdout, stderr)
+    assert merged.failing_nodes == (
+        "tests/test_alpha.py::test_one",
+        "tests/test_beta.py::test_two",
+    )
+    assert merged.counts == "2 failed, 6251 passed"
+    assert "6251 passed" in merged.excerpt
+    detail = build_failure_detail([merged])
+    assert "tests/test_alpha.py::test_one" in detail
+
+
+def test_merge_unions_nodes_and_keeps_stdout_excerpt_when_it_identifies_failures():
+    stdout = extract_check_failure("unit", _envelope(PYTEST_OUTPUT))
+    stderr = extract_check_failure(
+        "unit", _envelope("FAILED tests/test_gamma.py::test_three - boom\n", "stderr")
+    )
+    merged = merge_check_failures(stdout, stderr)
+    assert merged.failing_nodes == (
+        "tests/test_alpha.py::test_one",
+        "tests/test_beta.py::test_two",
+        "tests/test_gamma.py::test_three",
+    )
+    assert "6251 passed" in merged.excerpt
 
 
 def test_detail_is_deterministic_from_same_inputs():

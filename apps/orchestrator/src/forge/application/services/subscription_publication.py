@@ -31,6 +31,7 @@ from forge.application.services.validation import (
 from forge.application.services.validation_failure_evidence import (
     build_failure_detail,
     extract_check_failure,
+    merge_check_failures,
 )
 from forge.domain.approval import (
     ApprovalGate,
@@ -296,7 +297,7 @@ class SubscriptionPublicationController:
             except Exception:  # noqa: BLE001 - detail never blocks rejection
                 blob = b""
             evidence = extract_check_failure(member.command_name, blob)
-            if not evidence.excerpt and member.stderr_digest != member.stdout_digest:
+            if member.stderr_digest != member.stdout_digest:
                 try:
                     fallback = extract_check_failure(
                         member.command_name,
@@ -304,8 +305,9 @@ class SubscriptionPublicationController:
                     )
                 except Exception:  # noqa: BLE001 - detail never blocks rejection
                     fallback = evidence
-                if fallback.excerpt or fallback.failing_nodes:
-                    evidence = fallback
+                # Always merge: stdout progress output must not suppress
+                # stderr diagnostics (see validation_failure_evidence).
+                evidence = merge_check_failures(evidence, fallback)
             evidences.append(evidence)
         return build_failure_detail(evidences)
 

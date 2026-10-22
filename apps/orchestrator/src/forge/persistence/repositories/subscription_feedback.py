@@ -147,8 +147,11 @@ def _close_primary(row: SubscriptionPrimaryFeedback, reason: str) -> None:
         "binding_digest": _primary_binding_digest(row),
         "reason": reason,
     }
+    if row.delivery_attempt_id is not None:
+        application["delivery_attempt_id"] = str(row.delivery_attempt_id)
     row.state = "closed"
     row.closed_reason = reason
+    row.delivery_attempt_id = None
     row.application_digest = canonical_digest(application)
 
 
@@ -533,8 +536,17 @@ class PostgresSubscriptionFeedbackRepository:
     async def _deliver_primary_feedback(
         self, admission: SubscriptionAdmission
     ) -> tuple[dict[str, object], ...]:
+        """Bind pending steering to this attempt; settle only on launch proof.
+
+        Mirrors worker feedback: building a request binds rows to the
+        attempt without marking them delivered. settle_delivery (launch
+        proof or a settled decision from this attempt) performs the
+        delivered transition. A row bound to an earlier attempt that
+        ended without settling is rebound here, so steering is never
+        silently lost when an attempt fails before launch.
+        """
         attempt_id = admission.attempt.attempt_id
-        already = list(
+        settled = list(
             await self._session.scalars(
                 select(SubscriptionPrimaryFeedback)
                 .where(
@@ -547,8 +559,8 @@ class PostgresSubscriptionFeedbackRepository:
                 .with_for_update()
             )
         )
-        if already:
-            return tuple(_primary_context(row) for row in already)
+        if settled:
+            return tuple(_primary_context(row) for row in settled)
         rows = list(
             await self._session.scalars(
                 select(SubscriptionPrimaryFeedback)
@@ -564,11 +576,18 @@ class PostgresSubscriptionFeedbackRepository:
         )
         if len(rows) > MAX_PRIMARY_FEEDBACK_PENDING:
             raise TaskFeedbackConflict("primary feedback invocation context exceeds its bound")
-        now = datetime.now(UTC)
         for row in rows:
-            row.state = "delivered"
+            if row.delivery_attempt_id == attempt_id:
+                continue
+            if row.delivery_attempt_id is not None:
+                previous = await self._session.get(
+                    SubscriptionAttempt, row.delivery_attempt_id
+                )
+                if previous is None or previous.status != "terminal":
+                    raise TaskFeedbackConflict(
+                        "primary feedback delivery attempt is still active"
+                    )
             row.delivery_attempt_id = attempt_id
-            row.delivered_at = now
         if rows:
             await self._session.flush()
         return tuple(_primary_context(row) for row in rows)
@@ -588,13 +607,14 @@ class PostgresSubscriptionFeedbackRepository:
                 .limit(1)
                 .with_for_update()
             )
-            primary_feedback = await self._deliver_primary_feedback(admission)
             if row is None:
+                primary_feedback = await self._deliver_primary_feedback(admission)
                 return FeedbackInvocationContext(primary_feedback=primary_feedback)
+            # A pending worker-feedback row makes this a forwarding-only
+            # turn: the primary must return only forward_feedback and cannot
+            # act on owner steering, so steering stays pending, unbound.
             await self._bind_primary(row, admission)
-            return FeedbackInvocationContext(
-                pending_primary=_context(row), primary_feedback=primary_feedback
-            )
+            return FeedbackInvocationContext(pending_primary=_context(row))
 
         rows = list(
             await self._session.scalars(
@@ -831,11 +851,24 @@ class PostgresSubscriptionFeedbackRepository:
                 .with_for_update()
             )
         )
+        primary_rows = list(
+            await self._session.scalars(
+                select(SubscriptionPrimaryFeedback)
+                .where(
+                    SubscriptionPrimaryFeedback.delivery_attempt_id == attempt_id,
+                    SubscriptionPrimaryFeedback.state == "pending",
+                )
+                .with_for_update()
+            )
+        )
         now = datetime.now(UTC)
         for row in rows:
             row.state = "delivered"
             row.delivered_at = now
-        if rows:
+        for prow in primary_rows:
+            prow.state = "delivered"
+            prow.delivered_at = now
+        if rows or primary_rows:
             await self._session.flush()
 
     async def close_cancelled(self, run_id: UUID, task_id: UUID) -> int:
@@ -1128,6 +1161,73 @@ class PostgresSubscriptionFeedbackRepository:
             )
             is not None
         )
+
+    async def has_pending_primary_feedback(self, run_id: UUID, primary_task_id: UUID) -> bool:
+        return (
+            await self._session.scalar(
+                select(SubscriptionPrimaryFeedback.id)
+                .where(
+                    SubscriptionPrimaryFeedback.run_id == run_id,
+                    SubscriptionPrimaryFeedback.primary_task_id == primary_task_id,
+                    SubscriptionPrimaryFeedback.state == "pending",
+                )
+                .limit(1)
+            )
+            is not None
+        )
+
+    async def requeue_primary_feedback_pending(self, run_id: UUID, primary_task_id: UUID) -> bool:
+        """Wake a terminal primary that still has undelivered owner steering.
+
+        Mirrors requeue_failed_primary's guards for the direct-feedback
+        table: steering submitted while an attempt was running must not
+        strand when that attempt settles the task terminal. Budget closure
+        itself stays with close_exhausted, which callers run afterwards.
+        """
+        if not await self.has_pending_primary_feedback(run_id, primary_task_id):
+            return False
+        task = await self._session.get(
+            SubscriptionTask, primary_task_id, with_for_update=True, populate_existing=True
+        )
+        scheduled = await self._session.get(
+            SubscriptionScheduledTask,
+            primary_task_id,
+            with_for_update=True,
+            populate_existing=True,
+        )
+        try:
+            contract = None if task is None else decode_subscription_record(task.payload)
+        except TypeError, ValueError:
+            contract = None
+        if (
+            task is None
+            or scheduled is None
+            or not isinstance(contract, LogicalTaskContract)
+            or contract.run_id != run_id
+            or contract.task_id != primary_task_id
+            or contract.parent_task_id is not None
+            or contract.purpose is not SpecialistPurpose.PRIMARY
+            or task.run_id != run_id
+            or scheduled.run_id != run_id
+            or task.state != "terminal"
+            or scheduled.state != "terminal"
+            or task.pause_requested
+            or scheduled.pause_requested
+            or task.cancel_requested
+            or scheduled.cancel_requested
+        ):
+            return False
+        remaining = await PostgresSubscriptionBudgetRepository(self._session).fit_reservation(
+            run_id,
+            primary_task_id,
+            replace(contract.budget, max_provider_attempts=1, max_repairs=0),
+        )
+        if remaining is None and not await self._has_unsettled_reservation(run_id):
+            return False
+        task.state = scheduled.state = "queued"
+        task.version += 1
+        await self._session.flush()
+        return True
 
     async def requeue_failed_primary(
         self, run_id: UUID, primary_task_id: UUID, attempt_id: UUID

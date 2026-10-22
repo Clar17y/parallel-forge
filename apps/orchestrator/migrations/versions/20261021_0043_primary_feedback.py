@@ -79,8 +79,10 @@ def upgrade() -> None:
             "closed_reason IS NULL OR closed_reason IN ('cancelled','budget_exhausted','run_terminal')",
             name="primary_feedback_closed_reason",
         ),
+        # Pending rows may carry a delivery_attempt_id binding, settled to
+        # delivered only on launch proof (mirrors worker feedback).
         sa.CheckConstraint(
-            "(state = 'pending' AND delivery_attempt_id IS NULL AND delivered_at IS NULL "
+            "(state = 'pending' AND delivered_at IS NULL "
             "AND closed_reason IS NULL AND application_digest IS NULL) OR "
             "(state = 'delivered' AND delivery_attempt_id IS NOT NULL "
             "AND delivered_at IS NOT NULL AND closed_reason IS NULL) OR "
