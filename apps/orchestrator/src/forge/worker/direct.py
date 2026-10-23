@@ -67,6 +67,26 @@ class _CommitFailure(RuntimeError):
     """A candidate commit (or the git probes around it) failed."""
 
 
+class _SessionBudgetExhausted(RuntimeError):
+    """The run's session budget was exhausted before a launch."""
+
+
+def _is_trusted_pr_author(author: str, repo: str, configured: str) -> bool:
+    login = (author or "").strip()
+    if not login:
+        return False
+    lowered = login.lower()
+    if lowered.endswith("[bot]"):
+        return True
+    owner = repo.split("/", 1)[0].strip() if "/" in repo else ""
+    if owner and lowered == owner.lower():
+        return True
+    configured_logins = {
+        part.strip().lower() for part in configured.split(",") if part.strip()
+    }
+    return lowered in configured_logins
+
+
 async def _iter_lines(stream: asyncio.StreamReader, *, max_line_bytes: int = _MAX_LINE_BYTES) -> AsyncIterator[bytes]:
     """Yield lines from chunked reads; no single line can exhaust the reader.
 
@@ -504,8 +524,13 @@ class DirectRunWorker:
                     return
                 head_sha, summary = repaired
             # Slice C: cross-provider review after every passed CHECKING.
+            if self._settings.direct_review_policy == "skip":
+                await self._publish_and_watch(run, worktree=worktree, branch=branch, head_sha=head_sha, summary=f"{summary}{check_note} (review skipped by owner policy)", installation=installation, transcript_dir=transcript_dir, has_agents_md=has_agents_md, check_round=check_round)
+                return
             await self._repo.update_run(run.id, state="REVIEWING", head_sha=head_sha)
             reviewer = self._resolve_review_installation(run, installation)
+            if reviewer is None and self._settings.direct_review_policy == "same_provider":
+                reviewer = installation
             if reviewer is None:
                 await self._repo.update_run(
                     run.id, state="FAILED", head_sha=head_sha,
@@ -620,6 +645,7 @@ class DirectRunWorker:
         pr_created_at = datetime.now(UTC)
         last_push_at = pr_created_at
         handled: set[str] = set()
+        ignored_untrusted: set[str] = set()
         consecutive_failures = 0
         pr_rounds = 0
         seen_activity = False
@@ -651,12 +677,30 @@ class DirectRunWorker:
                 if snapshot.last_activity_at is not None:
                     stamp = snapshot.last_activity_at if snapshot.last_activity_at.tzinfo else snapshot.last_activity_at.replace(tzinfo=UTC)
                     last_activity_at = stamp if last_activity_at is None else max(last_activity_at, stamp)
-            batch: list[tuple[str, DirectPrFeedback]] = []
+            trusted_threads: list[DirectPrFeedback] = []
+            trusted_changes: list[DirectPrFeedback] = []
             for feedback in snapshot.unresolved_threads:
+                if _is_trusted_pr_author(feedback.author, github_repo, self._settings.direct_trusted_pr_authors):
+                    trusted_threads.append(feedback)
+                else:
+                    key = f"thread:{feedback.thread_id or feedback.id}"
+                    if key not in ignored_untrusted:
+                        ignored_untrusted.add(key)
+                        self._log_pr_watch(transcript_dir, f"ignored untrusted pr feedback from {feedback.author}")
+            for feedback in snapshot.changes_requested:
+                if _is_trusted_pr_author(feedback.author, github_repo, self._settings.direct_trusted_pr_authors):
+                    trusted_changes.append(feedback)
+                else:
+                    key = f"review:{feedback.id}:{feedback.updated_at.isoformat() if feedback.updated_at else ''}"
+                    if key not in ignored_untrusted:
+                        ignored_untrusted.add(key)
+                        self._log_pr_watch(transcript_dir, f"ignored untrusted pr feedback from {feedback.author}")
+            batch: list[tuple[str, DirectPrFeedback]] = []
+            for feedback in trusted_threads:
                 key = f"thread:{feedback.thread_id or feedback.id}"
                 if key not in handled:
                     batch.append((key, feedback))
-            for feedback in snapshot.changes_requested:
+            for feedback in trusted_changes:
                 if feedback.updated_at is not None:
                     stamp = feedback.updated_at if feedback.updated_at.tzinfo else feedback.updated_at.replace(tzinfo=UTC)
                     if stamp <= last_push_at:
@@ -713,14 +757,14 @@ class DirectRunWorker:
                 await self._repo.update_run(run.id, state="FAILED", head_sha=head_sha, failure_reason="pr watch failed")
                 return
             has_newer_changes = False
-            for feedback in snapshot.changes_requested:
+            for feedback in trusted_changes:
                 if feedback.updated_at is None:
                     has_newer_changes = True
                 else:
                     stamp = feedback.updated_at if feedback.updated_at.tzinfo else feedback.updated_at.replace(tzinfo=UTC)
                     if stamp > last_push_at:
                         has_newer_changes = True
-            if snapshot.mergeable == "MERGEABLE" and snapshot.checks_status in {"SUCCESS", "NONE"} and not snapshot.unresolved_threads and not has_newer_changes:
+            if snapshot.mergeable == "MERGEABLE" and snapshot.checks_status in {"SUCCESS", "NONE"} and not trusted_threads and not has_newer_changes:
                 now_dt = datetime.now(UTC)
                 quiet_seconds = float(self._settings.direct_pr_quiet_seconds)
                 if seen_activity:
@@ -787,11 +831,30 @@ class DirectRunWorker:
     ) -> DirectResult | None:
         """Run one session; settle the run and return None on terminal outcomes."""
 
-        session_id, outcome, final_file = await self._launch_raw_session(
-            run, installation, kind=kind, prompt=prompt, worktree=worktree,
-            transcript_dir=transcript_dir,
-        )
+        try:
+            session_id, outcome, final_file = await self._launch_raw_session(
+                run, installation, kind=kind, prompt=prompt, worktree=worktree,
+                transcript_dir=transcript_dir,
+            )
+        except _SessionBudgetExhausted:
+            return None
         return await self._settle_session(run, session_id, outcome, final_file)
+
+    async def _session_budget_exhausted(self, run_id: UUID) -> bool:
+        sessions = await self._repo.sessions(run_id)
+        if len(sessions) >= self._settings.direct_max_sessions_per_run:
+            return True
+        total_seconds = 0.0
+        for session in sessions:
+            started = getattr(session, "started_at", None)
+            ended = getattr(session, "ended_at", None)
+            if started is None or ended is None:
+                continue
+            try:
+                total_seconds += (ended - started).total_seconds()
+            except TypeError:
+                continue
+        return total_seconds >= float(self._settings.direct_max_total_session_seconds)
 
     async def _launch_raw_session(
         self,
@@ -803,6 +866,12 @@ class DirectRunWorker:
         worktree: Path,
         transcript_dir: Path,
     ) -> tuple[UUID, tuple[str, int | None, str], Path]:
+        if await self._session_budget_exhausted(run.id):
+            await self._repo.update_run(
+                run.id, state="FAILED",
+                failure_reason="direct run session budget exhausted",
+            )
+            raise _SessionBudgetExhausted
         session = await self._repo.create_session(
             run_id=run.id, run=run, kind=kind,
             client=str(getattr(installation, "client", "")) or None,
@@ -836,10 +905,13 @@ class DirectRunWorker:
         worktree: Path, transcript_dir: Path, round_no: int,
     ) -> DirectReviewResult | None:
         before_head, before = await _snapshot_worktree(worktree)
-        session_id, outcome, final_file = await self._launch_raw_session(
-            run, reviewer, kind="review", prompt=prompt, worktree=worktree,
-            transcript_dir=transcript_dir,
-        )
+        try:
+            session_id, outcome, final_file = await self._launch_raw_session(
+                run, reviewer, kind="review", prompt=prompt, worktree=worktree,
+                transcript_dir=transcript_dir,
+            )
+        except _SessionBudgetExhausted:
+            return None
         # Post-hoc read-only enforcement before any verdict is applied.
         modified, restored = await _revert_reviewer_changes(worktree, before_head, before)
         if modified and not restored:

@@ -37,6 +37,8 @@ Three shapes, all autonomous after "go":
 - **Epic** — one decompose session returns a structured task list. Each
   task then runs the quick or planned pipeline **sequentially** on the
   epic's branch line. Parallel child worktrees are out of scope for v1.
+  Sequential execution is the v1 default; when the epic shape is built,
+  parallel/sequencing must become owner-overridable.
 
 ## The autonomous loop
 
@@ -66,7 +68,12 @@ not hundreds of tool calls.
   never revalidated.
 - **Review** is a fresh session from a **different provider** than the
   implementer, returning structured findings. Blocking findings feed a
-  repair session with the findings as its brief.
+  repair session with the findings as its brief. The owner-editable
+  review policy (`direct_review_policy`) defaults to `cross_provider`
+  (the behaviour above, failing when no distinct reviewer route exists);
+  `same_provider` falls back to the implementer as reviewer only when no
+  distinct route exists (the review row records the actual client/model),
+  and `skip` publishes after checks with no review session or row.
 - **Repair** sessions receive exactly what failed: check evidence
   (the #136 payload), review findings, or PR comments verbatim.
 - **Round caps:** at most 3 check/review repair rounds and 3 PR-comment
@@ -76,10 +83,20 @@ not hundreds of tool calls.
   decision request (structured, with options), a round cap is hit, a
   session/process dies unrecoverably, or the PR is ready to merge.
   Owner steering can be sent at any time and is delivered to the next
-  session; it is never required.
+  session; it is never required. Creating a direct run is the owner's
+  evidence-bound approval for push and PR-open of its resulting
+  candidate; this supersedes ADR-001's separate publication gate for
+  direct runs. Merge remains a separate immediate explicit owner action.
 - **"Done" means the PR is open, green and quiet**: checks passing, no
   unresolved review threads, no outstanding blocking findings. Merge
   remains the owner's immediate explicit action, always.
+- **PR feedback is gated by author trust**: only feedback from trusted
+  authors can trigger repair rounds or block the quiet/"Done" condition.
+  An author is trusted when they are the repository owner, are listed in
+  the owner-editable `direct_trusted_pr_authors` setting (comma-separated
+  GitHub logins, default `chatgpt-codex-connector`), or their login ends
+  with `[bot]`. Untrusted feedback is logged once per item and is never
+  replied to or resolved by Forge.
 
 ## Sessions and providers
 
@@ -130,7 +147,11 @@ that remain, because they are cheap and do not slow the loop:
   believed because a session said so.
 - Bounds: per-session timeout and silence watchdog, per-run round caps,
   provider step caps where the CLI supports them (e.g. Muse
-  `max_model_steps`), and cancellation at any time.
+  `max_model_steps`), and cancellation at any time. Session-boundary
+  budget caps are also enforced: `direct_max_sessions_per_run` (default
+  20) and `direct_max_total_session_seconds` (default 14400) are checked
+  before any session launch; exhausting either settles the run failed
+  with `direct run session budget exhausted` and creates no session row.
 - Persistence hygiene: transcripts and summaries are persisted
   redacted and bounded, as today. Credentials never enter prompts,
   artifacts, or run records.
@@ -171,9 +192,11 @@ behavior.
 4. Route-list settings UI and quota-fallback polish.
 
 Non-goals for v1: parallel epic children, per-action approvals or
-allowlists, Docker-sandboxed sessions, token-level budget enforcement
-(usage is reported where the CLI reports it), and any change to merge
-authorization.
+allowlists, Docker-sandboxed sessions, and any change to merge
+authorization. Token-level budget enforcement is deferred (usage is
+reported where the CLI reports it), while session-count and
+cumulative-duration caps are enforced at session boundaries (see
+Trust posture).
 
 ## Measuring success
 

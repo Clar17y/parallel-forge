@@ -42,6 +42,7 @@ def worker(tmp_path, **settings_kwargs):
         update_session=AsyncMock(), cancel_requested=AsyncMock(return_value=False),
         update_run=AsyncMock(side_effect=lambda run_id, **kw: SimpleNamespace(id=run_id)),
         create_review=AsyncMock(), create_session=AsyncMock(return_value=SimpleNamespace(id=uuid4())),
+        sessions=AsyncMock(return_value=()),
     )
     return obj
 
@@ -370,6 +371,92 @@ def test_output_cap_settings_defaults():
     settings = Settings()
     assert settings.direct_max_check_output_bytes == 8388608
     assert settings.direct_max_transcript_bytes == 33554432
+
+
+def test_pr_author_trust_rules():
+    is_trusted = direct._is_trusted_pr_author
+    assert is_trusted("o", "o/r", "chatgpt-codex-connector")
+    assert is_trusted("O", "o/r", "chatgpt-codex-connector")
+    assert is_trusted("ChatGPT-Codex-Connector", "o/r", "chatgpt-codex-connector")
+    assert is_trusted("alice", "o/r", "bob, Alice")
+    assert is_trusted("dependabot[bot]", "o/r", "")
+    assert not is_trusted("stranger", "o/r", "chatgpt-codex-connector")
+    assert not is_trusted("", "o/r", "chatgpt-codex-connector")
+    assert not is_trusted("o", "", "chatgpt-codex-connector")
+
+
+def test_new_owner_settings_defaults():
+    settings = Settings()
+    assert settings.direct_trusted_pr_authors == "chatgpt-codex-connector"
+    assert settings.direct_review_policy == "cross_provider"
+    assert settings.direct_max_sessions_per_run == 20
+    assert settings.direct_max_total_session_seconds == 14400
+
+
+# --- session budget caps ------------------------------------------------------
+
+def _ended_session(seconds, *, naive=False):
+    from datetime import UTC, datetime, timedelta
+
+    start = datetime(2026, 1, 1, tzinfo=None if naive else UTC)
+    return SimpleNamespace(started_at=start, ended_at=start + timedelta(seconds=seconds))
+
+
+@pytest.mark.asyncio
+async def test_session_count_budget_refuses_launch_and_settles_failed(tmp_path):
+    obj = worker(tmp_path, direct_max_sessions_per_run=1)
+    obj._repo.sessions = AsyncMock(return_value=(_ended_session(1),))
+    run = run_record()
+    result = await obj._launch_and_settle_session(
+        run, object(), kind="implement", prompt="p", worktree=tmp_path, transcript_dir=tmp_path
+    )
+    assert result is None
+    assert obj._repo.create_session.await_count == 0
+    failed = [c for c in obj._repo.update_run.await_args_list if c.kwargs.get("state") == "FAILED"]
+    assert len(failed) == 1
+    assert failed[0].kwargs.get("failure_reason") == "direct run session budget exhausted"
+
+
+@pytest.mark.asyncio
+async def test_session_duration_budget_refuses_review_launch(tmp_path):
+    root = repository(tmp_path)
+    obj = worker(tmp_path, direct_max_total_session_seconds=10)
+    obj._repo.sessions = AsyncMock(return_value=(_ended_session(100),))
+    run = run_record()
+    result = await obj._launch_and_settle_review(
+        run, object(), prompt="review", worktree=root, transcript_dir=tmp_path, round_no=0
+    )
+    assert result is None
+    assert obj._repo.create_session.await_count == 0
+    assert obj._repo.create_review.await_count == 0
+    failed = [c for c in obj._repo.update_run.await_args_list if c.kwargs.get("state") == "FAILED"]
+    assert len(failed) == 1
+    assert failed[0].kwargs.get("failure_reason") == "direct run session budget exhausted"
+
+
+@pytest.mark.asyncio
+async def test_session_duration_ignores_missing_and_mixed_timestamps(tmp_path):
+    from datetime import UTC, datetime, timedelta
+
+    aware_start = datetime(2026, 1, 1, tzinfo=UTC)
+    mixed = SimpleNamespace(started_at=aware_start.replace(tzinfo=None), ended_at=aware_start + timedelta(seconds=100))
+    obj = worker(tmp_path, direct_max_sessions_per_run=20, direct_max_total_session_seconds=10)
+    obj._repo.sessions = AsyncMock(return_value=(
+        SimpleNamespace(started_at=None, ended_at=None),
+        mixed,
+        _ended_session(5),
+    ))
+    run = run_record()
+    obj._run_session = AsyncMock(return_value=(
+        "exited", 0,
+        '```json\n{"status":"done","summary":"ok","question":null,"options":[]}\n```',
+    ))
+    result = await obj._launch_and_settle_session(
+        run, SimpleNamespace(client="muse_code", executable="muse", model="fake", effort=None),
+        kind="implement", prompt="p", worktree=tmp_path, transcript_dir=tmp_path,
+    )
+    assert result is not None and result.summary == "ok"
+    assert obj._repo.create_session.await_count == 1
 
 
 # --- F4 publisher ------------------------------------------------------------

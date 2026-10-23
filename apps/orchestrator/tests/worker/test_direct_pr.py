@@ -54,8 +54,12 @@ def snap(*, threads=(), changes=(), checks="SUCCESS", activity=True, created=PAS
                             created_at=created)
 
 
-def thread(tid, body="please fix this"):
-    return DirectPrFeedback(id=tid, thread_id=tid, comment_id=f"c-{tid}", body=body, author="reviewer", updated_at=PAST)
+def thread(tid, body="please fix this", author="chatgpt-codex-connector"):
+    return DirectPrFeedback(id=tid, thread_id=tid, comment_id=f"c-{tid}", body=body, author=author, updated_at=PAST)
+
+
+def changes_requested(rid, author="chatgpt-codex-connector", updated=None):
+    return DirectPrFeedback(id=rid, body="please change", author=author, updated_at=updated)
 
 
 class FakePublisher:
@@ -247,6 +251,98 @@ async def test_gh_poll_failures_x3_failed(session_factory, tmp_path):
     done = await service.get(run.id)
     assert done.state == "FAILED" and done.failure_reason == "pr watch failed"
     assert done.pr_url == "https://example.test/pr/42"
+
+
+def _watch_log(tmp_path, run_id):
+    path = tmp_path / "data" / "direct-transcripts" / str(run_id) / "pr-watch.log"
+    return path.read_text(encoding="utf-8") if path.exists() else ""
+
+
+@pytest.mark.integration
+async def test_untrusted_thread_no_repair_and_done(session_factory, tmp_path):
+    pub = FakePublisher([snap(threads=[thread("t1", author="stranger")])])
+    run, service, worker = await _setup(session_factory, tmp_path, publisher=pub)
+    await worker.run_once()
+    done = await service.get(run.id)
+    assert done.state == "DONE"
+    assert done.pr_rounds == 0
+    assert pub.replies == [] and pub.resolves == []
+    assert len(pub.pushes) == 1
+    assert "ignored untrusted pr feedback from stranger" in _watch_log(tmp_path, run.id)
+
+
+@pytest.mark.integration
+async def test_untrusted_thread_logged_once_not_per_poll(session_factory, tmp_path):
+    pub = FakePublisher([
+        snap(threads=[thread("t1", author="stranger")], checks="PENDING"),
+        snap(threads=[thread("t1", author="stranger")], checks="PENDING"),
+        snap(),
+    ])
+    run, service, worker = await _setup(session_factory, tmp_path, publisher=pub)
+    await worker.run_once()
+    done = await service.get(run.id)
+    assert done.state == "DONE"
+    assert _watch_log(tmp_path, run.id).count("ignored untrusted pr feedback from stranger") == 1
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("author", ["o", "CHATGPT-Codex-Connector", "dependabot[bot]"])
+async def test_trusted_thread_authors_trigger_repair(session_factory, tmp_path, author):
+    pub = FakePublisher([snap(threads=[thread("t1", author=author)]), snap()])
+    run, service, worker = await _setup(session_factory, tmp_path, publisher=pub)
+    await worker.run_once()
+    done = await service.get(run.id)
+    assert done.state == "DONE" and done.pr_rounds == 1
+    assert [r[0] for r in pub.replies] == ["t1"]
+    assert pub.resolves == ["t1"]
+
+
+@pytest.mark.integration
+async def test_trusted_configured_author_triggers_repair(session_factory, tmp_path):
+    pub = FakePublisher([snap(threads=[thread("t1", author="Alice")]), snap()])
+    run, service, worker = await _setup(
+        session_factory, tmp_path, publisher=pub,
+        settings_extra={"direct_trusted_pr_authors": "bob, alice"},
+    )
+    await worker.run_once()
+    done = await service.get(run.id)
+    assert done.state == "DONE" and done.pr_rounds == 1
+
+
+@pytest.mark.integration
+async def test_empty_author_thread_is_untrusted(session_factory, tmp_path):
+    pub = FakePublisher([snap(threads=[thread("t1", author="")])])
+    run, service, worker = await _setup(session_factory, tmp_path, publisher=pub)
+    await worker.run_once()
+    done = await service.get(run.id)
+    assert done.state == "DONE" and done.pr_rounds == 0
+    assert pub.replies == [] and pub.resolves == []
+
+
+@pytest.mark.integration
+async def test_untrusted_changes_requested_does_not_block_quiet(session_factory, tmp_path):
+    future = datetime.now(UTC) + timedelta(hours=1)
+    pub = FakePublisher([snap(changes=[changes_requested("r1", author="stranger", updated=future)])])
+    run, service, worker = await _setup(session_factory, tmp_path, publisher=pub)
+    await worker.run_once()
+    done = await service.get(run.id)
+    assert done.state == "DONE"
+    assert done.pr_rounds == 0
+    assert pub.replies == [] and pub.resolves == []
+    assert "ignored untrusted pr feedback from stranger" in _watch_log(tmp_path, run.id)
+
+
+@pytest.mark.integration
+async def test_trusted_changes_requested_triggers_repair(session_factory, tmp_path):
+    future = datetime.now(UTC) + timedelta(hours=1)
+    pub = FakePublisher([
+        snap(changes=[changes_requested("r1", updated=future)]),
+        snap(),
+    ])
+    run, service, worker = await _setup(session_factory, tmp_path, publisher=pub)
+    await worker.run_once()
+    done = await service.get(run.id)
+    assert done.state == "DONE" and done.pr_rounds == 1
 
 
 @pytest.mark.integration

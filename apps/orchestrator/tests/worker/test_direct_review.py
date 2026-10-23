@@ -203,6 +203,51 @@ async def test_single_route_no_review_session(session_factory, tmp_path):
 
 
 @pytest.mark.integration
+async def test_same_provider_falls_back_to_implementer_when_no_distinct(session_factory, tmp_path):
+    run, service, worker = await _setup(
+        session_factory, tmp_path, mode="clean", review_resolver_mode="none",
+        settings_extra={"direct_review_policy": "same_provider"},
+    )
+    await worker.run_once()
+    done = await service.get(run.id)
+    assert done.state == "DONE"
+    reviews = await PostgresDirectRepository(session_factory).reviews(run.id)
+    assert len(reviews) == 1
+    assert reviews[0].client == "muse_code" and reviews[0].model == "model-1"
+    sessions = await service.sessions(run.id)
+    assert [s.kind for s in sessions] == ["implement", "review"]
+
+
+@pytest.mark.integration
+async def test_same_provider_prefers_distinct_reviewer_when_available(session_factory, tmp_path):
+    run, service, worker = await _setup(
+        session_factory, tmp_path, mode="clean",
+        settings_extra={"direct_review_policy": "same_provider"},
+    )
+    await worker.run_once()
+    done = await service.get(run.id)
+    assert done.state == "DONE"
+    reviews = await PostgresDirectRepository(session_factory).reviews(run.id)
+    assert len(reviews) == 1 and reviews[0].client == "codex_app_server"
+
+
+@pytest.mark.integration
+async def test_skip_review_policy_publishes_without_review(session_factory, tmp_path):
+    run, service, worker = await _setup(
+        session_factory, tmp_path, mode="clean", review_resolver_mode="none",
+        settings_extra={"direct_review_policy": "skip"},
+    )
+    await worker.run_once()
+    done = await service.get(run.id)
+    assert done.state == "DONE"
+    assert "(review skipped by owner policy)" in (done.summary or "")
+    reviews = await PostgresDirectRepository(session_factory).reviews(run.id)
+    assert reviews == ()
+    sessions = await service.sessions(run.id)
+    assert [s.kind for s in sessions] == ["implement"]
+
+
+@pytest.mark.integration
 async def test_notes_only_done_no_repair(session_factory, tmp_path):
     run, service, worker = await _setup(session_factory, tmp_path, mode="notes_only")
     await worker.run_once()
