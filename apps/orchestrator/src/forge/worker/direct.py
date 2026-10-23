@@ -10,7 +10,7 @@ import re
 import signal
 import sys
 import tempfile
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -28,6 +28,7 @@ from forge.application.services.validation_failure_evidence import (
 from forge.domain.direct import (
     RESULT_SCHEMA,
     REVIEW_CLIENT_PREFERENCE,
+    REVIEW_SCHEMA,
     DirectFinding,
     DirectLaunch,
     DirectPrFeedback,
@@ -56,6 +57,73 @@ from forge.settings import Settings
 logger = logging.getLogger(__name__)
 
 _RUNNABLE_CHECK_KINDS = frozenset({"test", "lint", "typecheck", "build"})
+_MAX_LINE_BYTES = 262144
+_TAIL_BYTES = 262144
+_TRUNCATED_LINE = b" ...[line truncated]"
+_OUTPUT_TRUNCATED = "[output truncated]"
+
+
+class _CommitFailure(RuntimeError):
+    """A candidate commit (or the git probes around it) failed."""
+
+
+async def _iter_lines(stream: asyncio.StreamReader, *, max_line_bytes: int = _MAX_LINE_BYTES) -> AsyncIterator[bytes]:
+    """Yield lines from chunked reads; no single line can exhaust the reader.
+
+    Lines longer than ``max_line_bytes`` are yielded once, truncated with a
+    marker, and the remainder of that line is discarded.
+    """
+
+    buffer = bytearray()
+    discarding = False
+    while True:
+        chunk = await stream.read(65536)
+        if not chunk:
+            if buffer and not discarding:
+                yield bytes(buffer)
+            return
+        buffer.extend(chunk)
+        while True:
+            index = buffer.find(b"\n")
+            if index < 0:
+                if len(buffer) > max_line_bytes:
+                    if not discarding:
+                        yield bytes(buffer[:max_line_bytes]) + _TRUNCATED_LINE + b"\n"
+                    discarding = True
+                    buffer.clear()
+                break
+            line = bytes(buffer[: index + 1])
+            del buffer[: index + 1]
+            if discarding:
+                discarding = False
+                continue
+            if len(line) > max_line_bytes:
+                yield line[:max_line_bytes] + _TRUNCATED_LINE + b"\n"
+            else:
+                yield line
+
+
+class _BoundedTail:
+    """Byte-budgeted tail of decoded lines for failure-evidence extraction."""
+
+    def __init__(self, max_bytes: int = _TAIL_BYTES) -> None:
+        self._max = max_bytes
+        self._parts: list[str] = []
+        self._size = 0
+
+    def append(self, text: str) -> None:
+        self._parts.append(text)
+        self._size += len(text.encode("utf-8", errors="replace"))
+        while self._size > self._max and len(self._parts) > 1:
+            dropped = self._parts.pop(0)
+            self._size -= len(dropped.encode("utf-8", errors="replace"))
+        if self._size > self._max and self._parts:
+            encoded = self._parts[0].encode("utf-8", errors="replace")[-self._max :]
+            self._parts[0] = encoded.decode("utf-8", errors="replace")
+            self._size = len(encoded)
+
+    def text(self) -> str:
+        return "\n".join(self._parts)
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,7 +255,7 @@ class GhPublisher:
         has_activity = False
         if "/" in repo:
             owner, name = repo.split("/", 1)
-            query = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100){nodes{id isResolved comments(first:20){nodes{id body author{login} path createdAt updatedAt}}}} reviews(first:100){nodes{id state body author{login} submittedAt}}}}}"
+            query = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100){nodes{id isResolved comments(first:20){nodes{id databaseId body author{login} path createdAt updatedAt}}}} reviews(first:100){nodes{id state body author{login} submittedAt}}}}}"
             gql_out = await _run_publisher_argv(("gh", "api", "graphql", "-f", f"query={query}", "-F", f"owner={owner}", "-F", f"name={name}", "-F", f"number={number}"))
             try:
                 gql = json.loads(gql_out)
@@ -207,7 +275,7 @@ class GhPublisher:
                         continue
                     author_value = first.get("author")
                     author = author_value if isinstance(author_value, dict) else {}
-                    threads.append(DirectPrFeedback(id=str(node.get("id", "")), thread_id=str(node.get("id", "")), comment_id=str(first.get("id")) if first.get("id") else None, body=str(first.get("body") or "")[:4000], author=str(author.get("login") or ""), path=str(first.get("path")) if first.get("path") else None, updated_at=stamp))
+                    threads.append(DirectPrFeedback(id=str(node.get("id", "")), thread_id=str(node.get("id", "")), comment_id=str(first["databaseId"]) if isinstance(first.get("databaseId"), int) else None, body=str(first.get("body") or "")[:4000], author=str(author.get("login") or ""), path=str(first.get("path")) if first.get("path") else None, updated_at=stamp))
                 for node in pr.get("reviews", {}).get("nodes", []):
                     if not isinstance(node, dict):
                         continue
@@ -296,9 +364,11 @@ class DirectRunWorker:
             if run.id == self._active_run_id:
                 continue
             sessions = await self._repo.sessions(run.id)
-            alive = any(s.pid and _pid_alive(s.pid) for s in sessions)
-            if alive:
-                continue
+            # Single sequential worker: a non-active run has no live
+            # supervisor, so a still-live recorded pid is reclaimed here.
+            for session in sessions:
+                if session.state == "RUNNING" and session.pid and _pid_alive(session.pid):
+                    await _kill_pid_tree(session.pid)
             for session in sessions:
                 if session.state == "RUNNING":
                     await self._repo.update_session(
@@ -383,6 +453,8 @@ class DirectRunWorker:
         if result is None:
             return
         head_sha = await self._commit_and_record(run, worktree, base_sha, result)
+        if head_sha is None:
+            return
         summary = result.summary
         repairs_used = 0
         check_round = 0
@@ -454,7 +526,7 @@ class DirectRunWorker:
             if review is None:
                 return
             blocking = tuple(f for f in review.findings if f.severity == "blocking")
-            if not blocking:
+            if review.verdict == "clean" and not blocking:
                 await self._publish_and_watch(run, worktree=worktree, branch=branch, head_sha=head_sha, summary=f"{summary}{check_note}", installation=installation, transcript_dir=transcript_dir, has_agents_md=has_agents_md, check_round=check_round)
                 return
             if review_rounds >= self._settings.direct_max_review_rounds:
@@ -675,6 +747,8 @@ class DirectRunWorker:
             return None
         previous_head = head_sha
         new_head = await self._commit_and_record(run, worktree, previous_head, repair)
+        if new_head is None:
+            return None
         new_summary = repair.summary or summary
         if new_head == previous_head:
             await self._repo.update_run(
@@ -686,15 +760,18 @@ class DirectRunWorker:
 
     async def _commit_and_record(
         self, run: DirectRunRecord, worktree: Path, previous_head: str, result: DirectResult
-    ) -> str:
+    ) -> str | None:
         await self._repo.update_run(
             run.id, summary=result.summary,
             result_degraded=result.degraded,
         )
-        await _commit_worktree(worktree, previous_head, result.summary, run.id)
-        _head_code, _head_out = await _run_git(worktree, "rev-parse", "HEAD")
-        head = _head_out.strip() if _head_code == 0 else None
-        head_sha = head or previous_head
+        try:
+            head_sha = await _commit_worktree(worktree, previous_head, result.summary, run.id)
+        except _CommitFailure:
+            await self._repo.update_run(
+                run.id, state="FAILED", failure_reason="commit failed"
+            )
+            return None
         await self._repo.update_run(run.id, head_sha=head_sha)
         return head_sha
 
@@ -736,7 +813,7 @@ class DirectRunWorker:
         prompt_file = transcript_dir / f"{session.id}.prompt.txt"
         prompt_file.write_text(prompt, encoding="utf-8")
         schema_file = transcript_dir / f"{session.id}.schema.json"
-        schema_file.write_text(json.dumps(RESULT_SCHEMA), encoding="utf-8")
+        schema_file.write_text(json.dumps(REVIEW_SCHEMA if kind == "review" else RESULT_SCHEMA), encoding="utf-8")
         final_file = transcript_dir / f"{session.id}.final.txt"
         ctx = DirectLaunchContext(
             run=run, session_id=session.id, worktree=worktree, prompt=prompt,
@@ -758,13 +835,23 @@ class DirectRunWorker:
         self, run: DirectRunRecord, reviewer: object, *, prompt: str,
         worktree: Path, transcript_dir: Path, round_no: int,
     ) -> DirectReviewResult | None:
-        before = await _porcelain(worktree)
+        before_head, before = await _snapshot_worktree(worktree)
         session_id, outcome, final_file = await self._launch_raw_session(
             run, reviewer, kind="review", prompt=prompt, worktree=worktree,
             transcript_dir=transcript_dir,
         )
         # Post-hoc read-only enforcement before any verdict is applied.
-        modified = await _revert_reviewer_changes(worktree, before)
+        modified, restored = await _revert_reviewer_changes(worktree, before_head, before)
+        if modified and not restored:
+            await self._repo.update_session(
+                session_id, state="FAILED", ended_at=datetime.now(UTC),
+                failure_reason="reviewer modified worktree; candidate could not be restored",
+            )
+            await self._repo.update_run(
+                run.id, state="FAILED",
+                failure_reason="reviewer modified worktree; candidate could not be restored",
+            )
+            return None
         return await self._settle_review(
             run, session_id, outcome, final_file, reviewer=reviewer,
             round_no=round_no, modified=modified,
@@ -808,6 +895,20 @@ class DirectRunWorker:
         if review is None:
             await self._repo.update_run(run.id, state="FAILED", failure_reason="review result unparseable")
             return None
+        if review.verdict == "blocking" and not any(
+            finding.severity == "blocking" for finding in review.findings
+        ):
+            review = DirectReviewResult(
+                verdict=review.verdict, summary=review.summary,
+                findings=(
+                    *review.findings,
+                    DirectFinding(
+                        severity="blocking", file=None,
+                        detail=review.summary or "reviewer returned a blocking verdict without findings",
+                    ),
+                ),
+                degraded=review.degraded,
+            )
         summary_r, _ = self._redactor.redact_text(review.summary)
         findings_payload_items: list[dict[str, object]] = []
         redacted_findings: list[DirectFinding] = []
@@ -1021,21 +1122,30 @@ class DirectRunWorker:
         except OSError as error:
             reason = f"check could not start: {type(error).__name__}"
             return ("ERROR", None, 0, "", reason, False)
-        collected: dict[str, list[str]] = {"stdout": [], "stderr": []}
+        tails: dict[str, _BoundedTail] = {"stdout": _BoundedTail(), "stderr": _BoundedTail()}
+        file_bytes = 0
+        file_truncated = False
 
         async def _drain(stream: asyncio.StreamReader | None, name: str) -> None:
+            nonlocal file_bytes, file_truncated
             if stream is None:
                 return
             with log_path.open("a", encoding="utf-8") as handle:
-                while True:
-                    line = await stream.readline()
-                    if not line:
-                        break
+                async for line in _iter_lines(stream):
                     text = line.decode("utf-8", errors="replace")
                     redacted, _ = self._redactor.redact_text(text.rstrip("\n"))
-                    handle.write(f"[{name}] {redacted}\n")
+                    tails[name].append(redacted)
+                    if file_truncated:
+                        continue
+                    entry = f"[{name}] {redacted}\n"
+                    if file_bytes + len(entry.encode("utf-8")) > self._settings.direct_max_check_output_bytes:
+                        handle.write(f"{_OUTPUT_TRUNCATED}\n")
+                        handle.flush()
+                        file_truncated = True
+                        continue
+                    handle.write(entry)
                     handle.flush()
-                    collected[name].append(redacted)
+                    file_bytes += len(entry.encode("utf-8"))
 
         tasks = [
             asyncio.create_task(_drain(proc.stdout, "stdout")),
@@ -1043,25 +1153,40 @@ class DirectRunWorker:
         ]
         timed_out = False
         cancelled = False
-        while not all(task.done() for task in tasks) or proc.returncode is None:
-            if monotonic() - started > timeout:
-                timed_out = True
-                await _kill_tree(proc)
-                break
-            if await self._repo.cancel_requested(run.id):
-                cancelled = True
-                await _kill_tree(proc)
-                break
-            await asyncio.sleep(0.1)
-        await asyncio.gather(*tasks, return_exceptions=True)
-        exit_code = await proc.wait()
+        try:
+            while not all(task.done() for task in tasks) or proc.returncode is None:
+                if monotonic() - started > timeout:
+                    timed_out = True
+                    await _kill_tree(proc)
+                    break
+                if await self._repo.cancel_requested(run.id):
+                    cancelled = True
+                    await _kill_tree(proc)
+                    break
+                await asyncio.sleep(0.1)
+            await asyncio.gather(*tasks, return_exceptions=True)
+            exit_code = await proc.wait()
+        finally:
+            if proc.returncode is None:
+                try:
+                    await asyncio.shield(_kill_tree(proc))
+                except Exception:  # noqa: BLE001, S110
+                    pass
+                try:
+                    await asyncio.wait_for(asyncio.shield(proc.wait()), timeout=10)
+                except Exception:  # noqa: BLE001, S110
+                    pass
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
         duration_ms = int((monotonic() - started) * 1000)
         if cancelled:
             return None
         status = "PASSED" if exit_code == 0 and not timed_out else "FAILED"
         return (
             status, exit_code, duration_ms,
-            "\n".join(collected["stdout"]), "\n".join(collected["stderr"]), timed_out,
+            tails["stdout"].text(), tails["stderr"].text(), timed_out,
         )
 
     async def _run_session(
@@ -1084,81 +1209,114 @@ class DirectRunWorker:
             stderr=asyncio.subprocess.STDOUT,
             start_new_session=(os.name != "nt"),
         )
-        await self._repo.update_session(session_id, pid=proc.pid)
-        if launch.stdin_data is not None:
-            try:
-                proc.stdin.write(launch.stdin_data)  # type: ignore[union-attr]
-                await proc.stdin.drain()  # type: ignore[union-attr]
-            except (BrokenPipeError, ConnectionResetError):
-                pass
+        reader: asyncio.Task[None] | None = None
         try:
-            proc.stdin.close()  # type: ignore[union-attr]
-        except Exception:  # noqa: BLE001, S110
-            pass
-
-        started = monotonic()
-        last_output = started
-        output_bytes = 0
-        last_cancel_check = 0.0
-        last_progress_update = 0.0
-        collected: list[str] = []
-        kind = "exited"
-        assert proc.stdout is not None
-        queue: asyncio.Queue[bytes | None] = asyncio.Queue()
-
-        async def _reader() -> None:
+            await self._repo.update_session(session_id, pid=proc.pid)
+            if launch.stdin_data is not None:
+                try:
+                    proc.stdin.write(launch.stdin_data)  # type: ignore[union-attr]
+                    await proc.stdin.drain()  # type: ignore[union-attr]
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
             try:
-                while True:
-                    line = await proc.stdout.readline()  # type: ignore[union-attr]
-                    if not line:
-                        break
-                    await queue.put(line)
-            finally:
-                await queue.put(None)
+                proc.stdin.close()  # type: ignore[union-attr]
+            except Exception:  # noqa: BLE001, S110
+                pass
 
-        reader = asyncio.create_task(_reader())
-        with transcript_path.open("a", encoding="utf-8") as handle:
-            while True:
-                now = monotonic()
-                if now - last_output > silence or now - started > duration_limit:
-                    kind = "timeout"
-                    await _kill_tree(proc)
-                    break
-                if now - last_cancel_check >= 0.5:
-                    last_cancel_check = now
-                    if await self._repo.cancel_requested(run.id):
-                        kind = "cancelled"
+            started = monotonic()
+            last_output = started
+            output_bytes = 0
+            transcript_bytes = 0
+            transcript_truncated = False
+            last_cancel_check = 0.0
+            last_progress_update = 0.0
+            collected = _BoundedTail()
+            kind = "exited"
+            stream_eof = False
+            assert proc.stdout is not None
+            stdout_stream = proc.stdout
+            queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=128)
+
+            async def _reader() -> None:
+                try:
+                    async for line in _iter_lines(stdout_stream):
+                        await queue.put(line)
+                finally:
+                    try:
+                        queue.put_nowait(None)
+                    except asyncio.QueueFull:
+                        pass
+
+            reader = asyncio.create_task(_reader())
+            with transcript_path.open("a", encoding="utf-8") as handle:
+                while True:
+                    now = monotonic()
+                    if now - last_output > silence or now - started > duration_limit:
+                        kind = "timeout"
                         await _kill_tree(proc)
                         break
+                    if now - last_cancel_check >= 0.5:
+                        last_cancel_check = now
+                        if await self._repo.cancel_requested(run.id):
+                            kind = "cancelled"
+                            await _kill_tree(proc)
+                            break
+                    if stream_eof:
+                        if proc.returncode is not None:
+                            break
+                        await asyncio.sleep(0.05)
+                        continue
+                    try:
+                        line = await asyncio.wait_for(queue.get(), timeout=0.25)
+                    except TimeoutError:
+                        if reader.done() and queue.empty():
+                            stream_eof = True
+                        continue
+                    if line is None:
+                        stream_eof = True
+                        continue
+                    last_output = monotonic()
+                    text = line.decode("utf-8", errors="replace")
+                    redacted, _ = self._redactor.redact_text(text.rstrip("\n"))
+                    output_bytes += len(line)
+                    collected.append(redacted)
+                    if not transcript_truncated:
+                        entry = f"[{datetime.now(UTC).isoformat()}] {redacted}\n"
+                        entry_bytes = len(entry.encode("utf-8"))
+                        if transcript_bytes + entry_bytes > self._settings.direct_max_transcript_bytes:
+                            handle.write(f"[{datetime.now(UTC).isoformat()}] {_OUTPUT_TRUNCATED}\n")
+                            handle.flush()
+                            transcript_truncated = True
+                        else:
+                            handle.write(entry)
+                            handle.flush()
+                            transcript_bytes += entry_bytes
+                    if monotonic() - last_progress_update >= 2 or output_bytes % 65536 < len(line):
+                        last_progress_update = monotonic()
+                        await self._repo.update_session(
+                            session_id, last_output_at=datetime.now(UTC),
+                            output_bytes=output_bytes,
+                        )
+            exit_code = await proc.wait()
+            await self._repo.update_session(
+                session_id, last_output_at=datetime.now(UTC), output_bytes=output_bytes,
+                exit_code=exit_code,
+            )
+            return kind, exit_code, collected.text()[-262144:]
+        finally:
+            if reader is not None and not reader.done():
+                reader.cancel()
+                await asyncio.gather(reader, return_exceptions=True)
+            if proc.returncode is None:
                 try:
-                    line = await asyncio.wait_for(queue.get(), timeout=0.25)
-                except TimeoutError:
-                    continue
-                if line is None:
-                    break
-                last_output = monotonic()
-                text = line.decode("utf-8", errors="replace")
-                redacted, _ = self._redactor.redact_text(text.rstrip("\n"))
-                stamp = datetime.now(UTC).isoformat()
-                handle.write(f"[{stamp}] {redacted}\n")
-                handle.flush()
-                output_bytes += len(line)
-                collected.append(redacted)
-                if len(collected) > 2000:
-                    collected = collected[-2000:]
-                if monotonic() - last_progress_update >= 2 or output_bytes % 65536 < len(line):
-                    last_progress_update = monotonic()
-                    await self._repo.update_session(
-                        session_id, last_output_at=datetime.now(UTC),
-                        output_bytes=output_bytes,
-                    )
-        await reader
-        exit_code = await proc.wait()
-        await self._repo.update_session(
-            session_id, last_output_at=datetime.now(UTC), output_bytes=output_bytes,
-            exit_code=exit_code,
-        )
-        return kind, exit_code, "\n".join(collected)[-262144:]
+                    await asyncio.shield(_kill_tree(proc))
+                except Exception:  # noqa: BLE001, S110
+                    pass
+                try:
+                    await asyncio.wait_for(asyncio.shield(proc.wait()), timeout=10)
+                except Exception:  # noqa: BLE001, S110
+                    pass
+
 
 async def _run_git(cwd: Path | str, *args: str) -> tuple[int | None, str]:
     proc = await asyncio.create_subprocess_exec(
@@ -1183,26 +1341,49 @@ async def _porcelain(worktree: Path) -> dict[str, str]:
     return out
 
 
-async def _revert_reviewer_changes(worktree: Path, before: dict[str, str]) -> bool:
-    after = await _porcelain(worktree)
-    if after == before:
-        return False
-    await _run_git(worktree, "restore", "--", ".")
-    for path, status in after.items():
+async def _snapshot_worktree(worktree: Path) -> tuple[str | None, dict[str, str]]:
+    _code, out = await _run_git(worktree, "rev-parse", "HEAD")
+    head = out.strip() if _code == 0 and out.strip() else None
+    return head, await _porcelain(worktree)
+
+
+def _remove_worktree_path(worktree: Path, relative: str) -> None:
+    target = worktree / relative.rstrip("/")
+    try:
+        if target.is_dir() and not target.is_symlink():
+            import shutil
+
+            shutil.rmtree(target, ignore_errors=True)
+        elif target.exists() or target.is_symlink():
+            target.unlink()
+    except OSError:
+        pass
+
+
+async def _revert_reviewer_changes(
+    worktree: Path, before_head: str | None, before: dict[str, str]
+) -> tuple[bool, bool]:
+    """Return (modified, restored) for a read-only review session."""
+
+    after_head, after = await _snapshot_worktree(worktree)
+    modified = after != before or after_head != before_head
+    if not modified:
+        return False, True
+    if before_head is None:
+        return True, False
+    reset_code, _reset_out = await _run_git(worktree, "reset", "--hard", before_head)
+    if reset_code != 0:
+        return True, False
+    after_restore = await _porcelain(worktree)
+    for path, status in after_restore.items():
         if path in before:
             continue
         if not status.startswith("??"):
             continue
-        target = worktree / path.rstrip("/")
-        try:
-            if target.is_dir() and not target.is_symlink():
-                import shutil
-                shutil.rmtree(target, ignore_errors=True)
-            elif target.exists() or target.is_symlink():
-                target.unlink()
-        except OSError:
-            pass
-    return True
+        _remove_worktree_path(worktree, path)
+    restored_head, restored_status = await _snapshot_worktree(worktree)
+    restored = restored_head == before_head and restored_status == before
+    return True, restored
 
 
 def _spawn_argv(argv: tuple[str, ...]) -> tuple[str, ...]:
@@ -1221,12 +1402,29 @@ def _envelope(stream: str, text: str) -> bytes:
     return json.dumps({"stream": stream, "text": text}).encode()
 
 
+_CHECK_ENV_BASE_WINDOWS = (
+    "PATH", "PATHEXT", "SystemRoot", "WINDIR", "COMSPEC", "TEMP", "TMP",
+    "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA",
+    "NUMBER_OF_PROCESSORS",
+)
+_CHECK_ENV_BASE_POSIX = (
+    "PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "TMPDIR", "SHELL",
+)
+
+
 def _check_env(
     command: CommandSpec, policy: ProjectPolicy, worktree: Path
 ) -> tuple[dict[str, str], str | None]:
-    """Worker env first, then declared keys from allowed env files only."""
+    """Minimal platform base plus exactly the command's declared keys."""
 
-    env = dict(os.environ)
+    base_names = _CHECK_ENV_BASE_WINDOWS if os.name == "nt" else _CHECK_ENV_BASE_POSIX
+    env = {name: os.environ[name] for name in base_names if name in os.environ}
+    # Windows environment lookups are case-insensitive; PATH may be "Path".
+    if os.name == "nt" and "PATH" not in env:
+        for key, value in os.environ.items():
+            if key.upper() == "PATH":
+                env["PATH"] = value
+                break
     declared = set(command.environment_keys)
     if not declared:
         return env, None
@@ -1246,7 +1444,8 @@ def _check_env(
             if key in declared and key not in from_files:
                 from_files[key] = value.strip().strip('"').strip("'")
     for key in command.environment_keys:
-        if key in env:
+        if key in os.environ:
+            env[key] = os.environ[key]
             continue
         if key in from_files:
             env[key] = from_files[key]
@@ -1256,22 +1455,34 @@ def _check_env(
 
 
 async def _commit_worktree(worktree: Path, base_sha: str, summary: str | None, run_id: UUID) -> str:
-    await _run_git(worktree, "add", "-A")
+    add_code, _add_out = await _run_git(worktree, "add", "-A")
+    if add_code != 0:
+        raise _CommitFailure("commit failed: git add failed")
     _status_code, _status_out = await _run_git(worktree, "status", "--porcelain")
-    status = _status_out.strip() if _status_code == 0 else None
+    if _status_code != 0:
+        raise _CommitFailure("commit failed: git status failed")
+    status = _status_out.strip()
     if not status:
-        return base_sha
+        _head_code, _head_out = await _run_git(worktree, "rev-parse", "HEAD")
+        head = _head_out.strip() if _head_code == 0 else None
+        if not head:
+            raise _CommitFailure("commit failed: git rev-parse failed")
+        return head
     subject = (summary or "").strip().splitlines()[0][:200] if summary else ""
     if not subject:
         subject = f"Direct run {str(run_id)[:8]}"
-    await _run_git(
+    commit_code, _commit_out = await _run_git(
         worktree,
         "-c", "user.email=forge@localhost", "-c", "user.name=Forge",
         "commit", "-m", subject,
     )
+    if commit_code != 0:
+        raise _CommitFailure("commit failed: git commit failed")
     _head_code, _head_out = await _run_git(worktree, "rev-parse", "HEAD")
     head = _head_out.strip() if _head_code == 0 else None
-    return head or base_sha
+    if not head:
+        raise _CommitFailure("commit failed: git rev-parse failed")
+    return head
 
 
 async def _kill_tree(proc: asyncio.subprocess.Process) -> None:
@@ -1302,6 +1513,29 @@ async def _kill_tree(proc: asyncio.subprocess.Process) -> None:
         proc.kill()
 
 
+async def _kill_pid_tree(pid: int) -> None:
+    """Kill a process tree by pid (orphaned sessions are not our children)."""
+
+    if pid <= 0:
+        return
+    try:
+        if sys.platform == "win32":
+            killer = await asyncio.create_subprocess_exec(
+                "taskkill", "/PID", str(pid), "/T", "/F",
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+            )
+            await killer.wait()
+        else:
+            os.killpg(pid, signal.SIGTERM)
+            for _ in range(20):
+                if not _pid_alive(pid):
+                    return
+                await asyncio.sleep(0.05)
+            os.killpg(pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+
+
 def _pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False
@@ -1309,10 +1543,19 @@ def _pid_alive(pid: int) -> bool:
         import ctypes
 
         handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED
-        if handle:
+        if not handle:
+            return False
+        try:
+            # A terminated process object stays openable until reaped;
+            # liveness requires the STILL_ACTIVE (259) exit code.
+            exit_code = ctypes.c_ulong(0)
+            if not ctypes.windll.kernel32.GetExitCodeProcess(
+                handle, ctypes.byref(exit_code)
+            ):
+                return False
+            return exit_code.value == 259
+        finally:
             ctypes.windll.kernel32.CloseHandle(handle)
-            return True
-        return False
     try:
         os.kill(pid, 0)
     except OSError:

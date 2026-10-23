@@ -1,5 +1,5 @@
 'use client';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { LoadingStatus } from '@/components/ui/loading-status';
 import { useApi } from '@/hooks/use-api';
@@ -13,6 +13,12 @@ export default function DirectDetailPage() {
   const { id } = useParams<{ id: string }>();
   const run = useApi<Run>(`/direct-runs/${encodeURIComponent(id)}`);
   const terminal = run.value ? TERMINAL.has(run.value.state) : false;
+  const refreshRun = run.refresh;
+  useEffect(() => {
+    if (!run.value || terminal) return;
+    const timer = setTimeout(refreshRun, 3000);
+    return () => clearTimeout(timer);
+  }, [run.value, terminal, refreshRun]);
   const transcript = useApi<components['schemas']['DirectTranscriptResponse']>(
     `/direct-runs/${encodeURIComponent(id)}/transcript`,
     { refreshIntervalMs: terminal ? undefined : 3000 },

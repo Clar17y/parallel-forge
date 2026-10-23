@@ -185,7 +185,7 @@ def _service(session_factory, settings) -> DirectRunService:
     )
 
 
-async def _setup(session_factory, tmp_path, *, mode, settings_extra=None, env_keys=(),
+async def _setup(session_factory, tmp_path, *, mode, settings_extra=None, env_keys=("CHECK_COUNTER", "CHECK_MODE"),
                  with_policy=True, check_mode="normal"):
     repo = _repo(tmp_path)
     pid = uuid4()

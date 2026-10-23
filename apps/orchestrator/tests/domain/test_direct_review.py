@@ -1,6 +1,17 @@
 """Slice C domain: review prompt/parse contract."""
 
-from forge.domain.direct import build_direct_review_prompt, parse_review_result
+from forge.domain.direct import REVIEW_SCHEMA, build_direct_review_prompt, parse_review_result
+
+
+def test_review_schema_shape() -> None:
+    assert REVIEW_SCHEMA["type"] == "object"
+    assert REVIEW_SCHEMA["required"] == ["verdict", "summary", "findings"]
+    properties = REVIEW_SCHEMA["properties"]
+    assert properties["verdict"]["enum"] == ["clean", "blocking"]
+    item = properties["findings"]["items"]
+    assert item["required"] == ["severity", "file", "detail"]
+    assert item["properties"]["severity"]["enum"] == ["blocking", "note"]
+    assert item["properties"]["file"]["type"] == ["string", "null"]
 
 
 def test_review_prompt_marker_and_bounds() -> None:

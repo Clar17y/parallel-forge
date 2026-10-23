@@ -26,6 +26,30 @@ RESULT_SCHEMA: dict[str, object] = {
 }
 
 
+REVIEW_SCHEMA: dict[str, object] = {
+    "type": "object",
+    "properties": {
+        "verdict": {"type": "string", "enum": ["clean", "blocking"]},
+        "summary": {"type": "string"},
+        "findings": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "severity": {"type": "string", "enum": ["blocking", "note"]},
+                    "file": {"type": ["string", "null"]},
+                    "detail": {"type": "string"},
+                },
+                "required": ["severity", "file", "detail"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["verdict", "summary", "findings"],
+    "additionalProperties": False,
+}
+
+
 REVIEW_CLIENT_PREFERENCE = ("codex_app_server", "claude_code", "muse_code", "antigravity_cli")
 _REVIEW_DIFF_CAP = 32768
 _MAX_REVIEW_FINDINGS = 32
@@ -537,6 +561,7 @@ def build_direct_launch(
 __all__ = [
     "RESULT_SCHEMA",
     "REVIEW_CLIENT_PREFERENCE",
+    "REVIEW_SCHEMA",
     "SUPPORTED_DIRECT_CLIENTS",
     "DirectCheckRecord",
     "DirectFinding",

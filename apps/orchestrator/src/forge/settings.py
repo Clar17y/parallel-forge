@@ -78,6 +78,8 @@ class Settings(BaseSettings):
     direct_pr_poll_seconds: int = Field(default=60, ge=0, le=86400, strict=True)
     direct_pr_quiet_seconds: int = Field(default=180, ge=0, le=86400, strict=True)
     direct_pr_watch_timeout_seconds: int = Field(default=1800, ge=1, le=86400, strict=True)
+    direct_max_check_output_bytes: int = Field(default=8388608, ge=1, le=1073741824, strict=True)
+    direct_max_transcript_bytes: int = Field(default=33554432, ge=1, le=1073741824, strict=True)
     # Omitted keeps the stored scheduler capacity policy (3/3/3 when none exists).
     subscription_capacity: SubscriptionCapacityLimits | None = None
     # Advisory search ranking. "shadow" measures without changing agent input;

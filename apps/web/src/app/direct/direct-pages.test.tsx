@@ -1,4 +1,4 @@
-﻿import { cleanup, render, screen } from '@testing-library/react';
+﻿import { act, cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, test, vi } from 'vitest';
 import DirectPage from './page';
@@ -116,6 +116,35 @@ test('detail shows pull request link and rounds', async () => {
   const link = await screen.findByRole('link', { name: 'PR #42' });
   expect(link).toHaveAttribute('href', 'https://example.test/pr/42');
   await screen.findByText(/PR rounds: 1/);
+});
+
+test('detail polls the run from RUNNING to DONE and loads terminal artifacts', async () => {
+  vi.useFakeTimers();
+  try {
+    let runCalls = 0;
+    vi.mocked(api).mockImplementation(async <T,>(path: string) => {
+      if (path === '/direct-runs/run-1') {
+        runCalls += 1;
+        return (runCalls === 1 ? run : { ...run, state: 'DONE', summary: 'All fixed', head_sha: 'b'.repeat(40) }) as T;
+      }
+      if (path === '/direct-runs/run-1/transcript') return { text: 'agent output line' } as T;
+      if (path === '/direct-runs/run-1/diff') return { diff: '+changed' } as T;
+      throw new Error(`unexpected path ${path}`);
+    });
+    render(<DirectDetailPage />);
+    await act(async () => {});
+    expect(screen.getByText(/State: RUNNING/)).toBeInTheDocument();
+    expect(screen.queryByText('+changed')).not.toBeInTheDocument();
+    await act(async () => { vi.advanceTimersByTime(3000); });
+    await act(async () => {});
+    expect(screen.getByText(/State: DONE/)).toBeInTheDocument();
+    expect(screen.getByText('All fixed')).toBeInTheDocument();
+    expect(screen.getByText('+changed')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Cancel run' })).not.toBeInTheDocument();
+    expect(runCalls).toBeGreaterThanOrEqual(2);
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 test('detail shows diff and hides cancel when done', async () => {
