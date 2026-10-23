@@ -112,6 +112,37 @@ def router_for() -> APIRouter:
             absolute_expires_at=session.absolute_expires_at.isoformat(),
         )
 
+    @router.post("/auth/local-session", response_model=BootstrapResponse)
+    async def local_session(
+        request: Request,
+        response: Response,
+    ) -> BootstrapResponse:
+        # Loopback single-user deployments may opt out of bootstrap links
+        # (Settings.local_operator_auto_session); otherwise this route
+        # does not exist.
+        if not request.app.state.settings.local_operator_auto_session:
+            raise HTTPException(status_code=404, detail="not found")
+        try:
+            origin = require_same_origin(
+                request,
+                request.app.state.settings,
+                require_origin=True,
+            )
+        except RequestSecurityError, ValueError:
+            raise HTTPException(status_code=403, detail="request not allowed") from None
+        session = await cast(Any, request.app.state.auth_service).create_local_session()
+        if not isinstance(session, AuthenticatedSession):
+            raise HTTPException(status_code=500, detail="API security is not configured")
+        set_session_cookie(response, session.session_token, origin)
+        return BootstrapResponse(
+            actor_id=str(session.actor_id),
+            actor_class=session.actor_class,
+            csrf_token=session.csrf_token,
+            expires_at=session.expires_at.isoformat(),
+            idle_expires_at=session.idle_expires_at.isoformat(),
+            absolute_expires_at=session.absolute_expires_at.isoformat(),
+        )
+
     @router.post("/auth/logout", status_code=status.HTTP_204_NO_CONTENT)
     async def logout(
         request: Request,

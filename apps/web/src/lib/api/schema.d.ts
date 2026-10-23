@@ -296,6 +296,109 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/direct-runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Runs */
+        get: operations["list_runs_api_direct_runs_get"];
+        put?: never;
+        /** Create Run */
+        post: operations["create_run_api_direct_runs_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/direct-runs/routes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Routes */
+        get: operations["list_routes_api_direct_runs_routes_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/direct-runs/{run_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Run */
+        get: operations["get_run_api_direct_runs__run_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/direct-runs/{run_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cancel Run */
+        post: operations["cancel_run_api_direct_runs__run_id__cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/direct-runs/{run_id}/diff": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Diff */
+        get: operations["get_diff_api_direct_runs__run_id__diff_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/direct-runs/{run_id}/transcript": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Transcript */
+        get: operations["get_transcript_api_direct_runs__run_id__transcript_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/epics": {
         parameters: {
             query?: never;
@@ -3294,6 +3397,232 @@ export interface components {
              * @enum {string}
              */
             status: "verified" | "unknown" | "unverified";
+        };
+        /** DirectCheckResponse */
+        DirectCheckResponse: {
+            /** Command Digest */
+            command_digest: string;
+            /** Command Name */
+            command_name: string;
+            /** Created At */
+            created_at: string | null;
+            /** Duration Ms */
+            duration_ms: number | null;
+            /** Exit Code */
+            exit_code: number | null;
+            /** Failure Excerpt */
+            failure_excerpt: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Kind */
+            kind: string;
+            /** Policy Version */
+            policy_version: number;
+            /** Round */
+            round: number;
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            /** Status */
+            status: string;
+            /** Tree Sha */
+            tree_sha: string;
+        };
+        /** DirectDiffResponse */
+        DirectDiffResponse: {
+            /** Diff */
+            diff: string;
+        };
+        /** DirectFindingResponse */
+        DirectFindingResponse: {
+            /** Detail */
+            detail: string;
+            /** File */
+            file?: string | null;
+            /** Severity */
+            severity: string;
+        };
+        /** DirectReviewResponse */
+        DirectReviewResponse: {
+            /** Client */
+            client: string;
+            /** Created At */
+            created_at: string | null;
+            /** Degraded */
+            degraded: boolean;
+            /**
+             * Findings
+             * @default []
+             */
+            findings: components["schemas"]["DirectFindingResponse"][];
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Model */
+            model: string;
+            /** Reviewer Modified Worktree */
+            reviewer_modified_worktree: boolean;
+            /** Round */
+            round: number;
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            /**
+             * Session Id
+             * Format: uuid
+             */
+            session_id: string;
+            /** Summary */
+            summary: string | null;
+            /** Verdict */
+            verdict: string;
+        };
+        /** DirectRouteResponse */
+        DirectRouteResponse: {
+            /** Client */
+            client: string;
+            /** Effort */
+            effort: string | null;
+            /** Model */
+            model: string;
+        };
+        /** DirectRunCreateRequest */
+        DirectRunCreateRequest: {
+            /** Client */
+            client: string;
+            /** Effort */
+            effort?: string | null;
+            /** Model */
+            model: string;
+            /**
+             * Project Id
+             * Format: uuid
+             */
+            project_id: string;
+            /** Task */
+            task: string;
+        };
+        /** DirectRunResponse */
+        DirectRunResponse: {
+            /** Base Sha */
+            base_sha: string | null;
+            /** Branch */
+            branch: string | null;
+            /** Cancel Requested */
+            cancel_requested: boolean;
+            /**
+             * Checks
+             * @default []
+             */
+            checks: components["schemas"]["DirectCheckResponse"][];
+            /** Client */
+            client: string;
+            /** Created At */
+            created_at: string | null;
+            /** Effort */
+            effort: string | null;
+            /** Failure Reason */
+            failure_reason: string | null;
+            /** Head Sha */
+            head_sha: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Model */
+            model: string;
+            /** Options */
+            options: string[];
+            /** Pr Number */
+            pr_number?: number | null;
+            /**
+             * Pr Rounds
+             * @default 0
+             */
+            pr_rounds: number;
+            /** Pr Url */
+            pr_url?: string | null;
+            /**
+             * Project Id
+             * Format: uuid
+             */
+            project_id: string;
+            /** Question */
+            question: string | null;
+            /** Result Degraded */
+            result_degraded: boolean;
+            /**
+             * Reviews
+             * @default []
+             */
+            reviews: components["schemas"]["DirectReviewResponse"][];
+            /**
+             * Sessions
+             * @default []
+             */
+            sessions: components["schemas"]["DirectSessionResponse"][];
+            /** State */
+            state: string;
+            /** Summary */
+            summary: string | null;
+            /** Task */
+            task: string;
+            /** Updated At */
+            updated_at: string | null;
+            /** Worktree Path */
+            worktree_path: string | null;
+        };
+        /** DirectSessionResponse */
+        DirectSessionResponse: {
+            /** Client */
+            client: string;
+            /** Effort */
+            effort: string | null;
+            /** Ended At */
+            ended_at: string | null;
+            /** Exit Code */
+            exit_code: number | null;
+            /** Failure Reason */
+            failure_reason: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Kind */
+            kind: string;
+            /** Last Output At */
+            last_output_at: string | null;
+            /** Model */
+            model: string;
+            /** Output Bytes */
+            output_bytes: number;
+            /** Pid */
+            pid: number | null;
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            /** Started At */
+            started_at: string | null;
+            /** State */
+            state: string;
+        };
+        /** DirectTranscriptResponse */
+        DirectTranscriptResponse: {
+            /** Text */
+            text: string;
         };
         /** EpicAttempt */
         EpicAttempt: {
@@ -7627,6 +7956,217 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DashboardSummary"];
+                };
+            };
+        };
+    };
+    list_runs_api_direct_runs_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DirectRunResponse"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_run_api_direct_runs_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DirectRunCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DirectRunResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_routes_api_direct_runs_routes_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DirectRouteResponse"][];
+                };
+            };
+        };
+    };
+    get_run_api_direct_runs__run_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DirectRunResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_run_api_direct_runs__run_id__cancel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DirectRunResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_diff_api_direct_runs__run_id__diff_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DirectDiffResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_transcript_api_direct_runs__run_id__transcript_get: {
+        parameters: {
+            query?: {
+                session?: string | null;
+                tail_bytes?: number;
+            };
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DirectTranscriptResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

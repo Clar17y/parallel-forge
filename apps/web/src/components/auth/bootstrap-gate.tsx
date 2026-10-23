@@ -13,7 +13,7 @@ type Props = {
   session?: (signal: AbortSignal) => Promise<Session>;
 };
 
-export function BootstrapGate({ children, exchange = exchangeBootstrap, session = recoverSession }: Props) {
+export function BootstrapGate({ children, exchange = exchangeBootstrap, session = recoverOrLocalSession }: Props) {
   const [state, setState] = useState<'pending' | 'ready' | 'failed'>('pending');
   const [actorId, setActorId] = useState<string | null>(null);
   const fragment = useRef<string | null>(null);
@@ -66,6 +66,22 @@ async function exchangeBootstrap(token: string, signal: AbortSignal): Promise<Se
   });
   if (!result?.csrf_token) throw new Error('Invalid session response');
   return { csrfToken: result.csrf_token };
+}
+
+async function recoverOrLocalSession(signal: AbortSignal): Promise<Session> {
+  try {
+    return await recoverSession(signal);
+  } catch (error) {
+    if (signal.aborted) throw error;
+    // Loopback single-user deployments may enable local auto-session
+    // (FORGE_LOCAL_OPERATOR_AUTO_SESSION); when disabled this returns 404
+    // and the gate falls back to the bootstrap sign-in message.
+    const result = await api<{ actor_id: string; csrf_token: string }>('/auth/local-session', {
+      method: 'POST', signal, headers: { 'Content-Type': 'application/json' },
+    });
+    if (!result?.csrf_token || !result?.actor_id) throw error;
+    return { csrfToken: result.csrf_token, actorId: result.actor_id };
+  }
 }
 
 async function recoverSession(signal: AbortSignal): Promise<Session> {

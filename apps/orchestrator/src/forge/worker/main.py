@@ -60,6 +60,7 @@ from forge.persistence.repositories.subscription_quota import PostgresSubscripti
 from forge.persistence.unit_of_work import PostgresUnitOfWork
 from forge.settings import Settings
 from forge.worker.composition import WorkerCompositionError, WorkerHandlers, compose_worker_handlers
+from forge.worker.direct import DirectRunWorker
 from forge.worker.epic_brainstorm import EpicBrainstormWorker, brainstorm_worker_owner
 from forge.worker.epic_decomposition import ValidatedDecompositionGateway
 from forge.worker.startup import run_startup_recovery
@@ -375,6 +376,11 @@ async def run_worker(
             polls.append(
                 asyncio.create_task(_poll_epic_controls(epic_controls, stop_event, poll_interval))
             )
+            polls.append(
+                asyncio.create_task(
+                    _poll_direct(DirectRunWorker(factory, settings), stop_event, poll_interval)
+                )
+            )
         if status_reporter is not None:
             polls.append(asyncio.create_task(status_reporter.run(stop_event)))
             if catalog_specs:
@@ -582,6 +588,22 @@ async def _poll_epic_dispatch(
             await asyncio.wait_for(stop_event.wait(), timeout=poll_interval)
         except TimeoutError:
             pass
+
+
+async def _poll_direct(
+    worker: DirectRunWorker, stop_event: asyncio.Event, poll_interval: float
+) -> None:
+    while not stop_event.is_set():
+        try:
+            result = await worker.run_once()
+        except Exception:  # noqa: BLE001 - one direct run cannot stop the worker
+            logger.warning("Direct run polling failed; retrying durable work")
+            result = None
+        if result is None:
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=poll_interval)
+            except TimeoutError:
+                pass
 
 
 async def _poll_brainstorms(

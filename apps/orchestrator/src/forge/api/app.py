@@ -20,6 +20,7 @@ from forge.api.routes.approvals import router_for as approval_router_for
 from forge.api.routes.artifacts import router_for as artifact_router_for
 from forge.api.routes.auth import router_for as auth_router_for
 from forge.api.routes.dashboard import router_for as dashboard_router_for
+from forge.api.routes.direct import router_for as direct_router_for
 from forge.api.routes.epic_brainstorm import router_for as epic_brainstorm_router_for
 from forge.api.routes.epic_brief import router_for as epic_brief_router_for
 from forge.api.routes.epic_decomposition import router_for as epic_decomposition_router_for
@@ -51,6 +52,7 @@ from forge.application.services.approvals import (
 )
 from forge.application.services.artifact_reads import ArtifactReadService
 from forge.application.services.auth import AuthService
+from forge.application.services.direct_runs import DirectRunService
 from forge.application.services.epic_brainstorm import (
     EpicBrainstormService,
     EpicBriefBrainstormAdapter,
@@ -131,6 +133,7 @@ def create_app(
     subscription_task_feedback_service: Any | None = None,
     jev_reporting_service: Any | None = None,
     subscription_recovery_service: Any | None = None,
+    direct_run_service: Any | None = None,
 ) -> FastAPI:
     """Create the API without opening a database connection."""
 
@@ -331,6 +334,11 @@ def create_app(
     app.state.subscription_task_feedback_service = resolved_task_feedback_service
     app.state.subscription_recovery_service = resolved_subscription_recovery_service
     app.state.github_issue_import_service = resolved_issue_import
+    app.state.direct_run_service = direct_run_service or (
+        DirectRunService(session_factory, resolved_settings)
+        if session_factory is not None
+        else None
+    )
     app.state.run_service = resolved_run_service
     app.state.run_command_service = resolved_run_command_service
     app.state.jev_reporting_service = resolved_jev_reporting_service
@@ -390,6 +398,7 @@ def create_app(
     app.include_router(epic_brainstorm_router_for(), prefix="/api")
     app.include_router(epic_decomposition_router_for(), prefix="/api")
     app.include_router(run_router_for(), prefix="/api")
+    app.include_router(direct_router_for(), prefix="/api")
     app.include_router(jev_router_for(), prefix="/api")
     app.include_router(dashboard_router_for(), prefix="/api")
     app.include_router(artifact_router_for(), prefix="/api")

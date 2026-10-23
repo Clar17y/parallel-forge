@@ -47,6 +47,10 @@ class Settings(BaseSettings):
     web_origin: str = "http://127.0.0.1:3000"
     runner_image: str = ""
     allow_remote: bool = False
+    # Single-user local deployments may skip the one-time bootstrap link:
+    # the web app then mints an ordinary operator session on first load.
+    # Loopback binds only (enforced below); sessions/CSRF are unchanged.
+    local_operator_auto_session: bool = False
     provider_secret_reference: str = Field(default="", repr=False)
     google_api_key_reference: str = Field(default="", repr=False)
     github_token_reference: str = Field(default="", repr=False)
@@ -64,6 +68,22 @@ class Settings(BaseSettings):
         )
     )
     subscription_worker_concurrency: int = Field(default=3, ge=1, le=64, strict=True)
+    direct_silence_timeout_seconds: int = Field(default=600, ge=1, le=86400)
+    direct_session_timeout_seconds: int = Field(default=7200, ge=1, le=86400)
+    direct_max_model_steps: int = Field(default=2000, ge=1, le=100000)
+    direct_max_repair_rounds: int = Field(default=3, ge=0, le=100)
+    direct_max_review_rounds: int = Field(default=3, ge=0, le=100)
+    direct_check_timeout_seconds: int = Field(default=1800, ge=1, le=86400)
+    direct_max_pr_rounds: int = Field(default=3, ge=0, le=100)
+    direct_pr_poll_seconds: int = Field(default=60, ge=0, le=86400)
+    direct_pr_quiet_seconds: int = Field(default=180, ge=0, le=86400)
+    direct_pr_watch_timeout_seconds: int = Field(default=1800, ge=1, le=86400)
+    direct_max_check_output_bytes: int = Field(default=8388608, ge=1, le=1073741824)
+    direct_max_transcript_bytes: int = Field(default=33554432, ge=1, le=1073741824)
+    direct_trusted_pr_authors: str = "chatgpt-codex-connector"
+    direct_review_policy: Literal["cross_provider", "same_provider", "skip"] = "cross_provider"
+    direct_max_sessions_per_run: int = Field(default=20, ge=1)
+    direct_max_total_session_seconds: int = Field(default=14400, ge=1)
     # Omitted keeps the stored scheduler capacity policy (3/3/3 when none exists).
     subscription_capacity: SubscriptionCapacityLimits | None = None
     # Advisory search ranking. "shadow" measures without changing agent input;
@@ -160,6 +180,12 @@ class Settings(BaseSettings):
 
         if self.bind_host not in {"127.0.0.1", "::1", "localhost"} and not self.allow_remote:
             raise ValueError("remote exposure requires a later authentication design")
+        if self.local_operator_auto_session and self.bind_host not in {
+            "127.0.0.1",
+            "::1",
+            "localhost",
+        }:
+            raise ValueError("local operator auto-session requires a loopback bind")
         if (
             self.provider_secret_reference
             and self.google_api_key_reference

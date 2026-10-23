@@ -187,13 +187,6 @@ class AuthService:
         if not isinstance(token, str) or not token:
             raise AuthenticationError("invalid or expired bootstrap token")
         now = _aware_now(self._clock)
-        session_token = _new_token()
-        csrf_token = _session_csrf_token(session_token)
-        actor_id = uuid4()
-        session_id = uuid4()
-        absolute_expires_at = now + SESSION_ABSOLUTE_LIFETIME
-        idle_expires_at = min(now + SESSION_IDLE_LIFETIME, absolute_expires_at)
-
         async with self._unit_of_work_factory() as work:
             consumed = await work.auth.consume_bootstrap(
                 token_hash=hash_token(token),
@@ -201,17 +194,40 @@ class AuthService:
             )
             if consumed is None:
                 raise AuthenticationError("invalid or expired bootstrap token")
-            await work.auth.create_session(
-                session_id=session_id,
-                token_hash=hash_token(session_token),
-                csrf_hash=hash_token(csrf_token),
-                actor_id=actor_id,
-                expires_at=absolute_expires_at,
-                idle_expires_at=idle_expires_at,
-                absolute_expires_at=absolute_expires_at,
-            )
+            session = await self._create_session(work, now)
             await work.commit()
+        return session
 
+    async def create_local_session(self) -> AuthenticatedSession:
+        """Create an ordinary operator session without a bootstrap exchange.
+
+        Only reachable when the operator explicitly enabled
+        local_operator_auto_session for a loopback deployment; the
+        resulting session is identical to a bootstrap-exchanged one.
+        """
+
+        now = _aware_now(self._clock)
+        async with self._unit_of_work_factory() as work:
+            session = await self._create_session(work, now)
+            await work.commit()
+        return session
+
+    async def _create_session(self, work: AuthUnitOfWork, now: datetime) -> AuthenticatedSession:
+        session_token = _new_token()
+        csrf_token = _session_csrf_token(session_token)
+        actor_id = uuid4()
+        session_id = uuid4()
+        absolute_expires_at = now + SESSION_ABSOLUTE_LIFETIME
+        idle_expires_at = min(now + SESSION_IDLE_LIFETIME, absolute_expires_at)
+        await work.auth.create_session(
+            session_id=session_id,
+            token_hash=hash_token(session_token),
+            csrf_hash=hash_token(csrf_token),
+            actor_id=actor_id,
+            expires_at=absolute_expires_at,
+            idle_expires_at=idle_expires_at,
+            absolute_expires_at=absolute_expires_at,
+        )
         return AuthenticatedSession(
             session_id=session_id,
             actor_id=actor_id,

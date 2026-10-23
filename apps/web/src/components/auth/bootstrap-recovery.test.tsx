@@ -22,6 +22,18 @@ test('a new authenticated session replaces the actor identity exposed to recover
   expect(fetcher).toHaveBeenCalledTimes(4);
 });
 
+test('local auto-session signs in when no live session exists', async () => {
+  const Identity = () => <p>Actor {useSessionIdentity()}</p>;
+  const fetcher = vi.spyOn(globalThis, 'fetch')
+    .mockResolvedValueOnce(new Response('{"detail":"authentication required"}', { status: 401 }))
+    .mockResolvedValueOnce(new Response('{"actor_id":"local-actor","actor_class":"operator","csrf_token":"local-csrf","expires_at":"x","idle_expires_at":"y","absolute_expires_at":"z"}'));
+  render(<BootstrapGate><Identity /></BootstrapGate>);
+  expect(await screen.findByText('Actor local-actor')).toBeInTheDocument();
+  expect(csrf.get()).toBe('local-csrf');
+  expect(fetcher).toHaveBeenCalledTimes(2);
+  expect(String(fetcher.mock.calls[1][0])).toContain('/auth/local-session');
+});
+
 test('StrictMode exchanges once, strips fragment before completion and recovers memory CSRF', async () => {
   window.location.hash = '#bootstrap=one-time';
   let finish!: (value: { csrfToken: string }) => void;
