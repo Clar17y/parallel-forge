@@ -36,6 +36,10 @@ class FakeRun:
     pr_number: int | None = None
     pr_url: str | None = None
     pr_rounds: int = 0
+    shape: str = "quick"
+    review_plan_first: bool = False
+    plan_text: str | None = None
+    plan_approved: bool = False
     created_at: object = None
     updated_at: object = None
 
@@ -84,6 +88,13 @@ class FakeDirectService:
 
     async def cancel(self, run_id):
         self.run.state = "CANCELLED"
+        return self.run
+
+    async def approve_plan(self, run_id):
+        if self.run.state != "AWAITING_PLAN_APPROVAL":
+            raise ValueError("direct run is not awaiting plan approval")
+        self.run.plan_approved = True
+        self.run.state = "QUEUED"
         return self.run
 
     async def transcript(self, run_id, session_id=None, tail_bytes=32768):
@@ -183,3 +194,53 @@ async def test_direct_routes_and_create(direct_client, direct_context):
     )
     assert cancelled.status_code == 200
     assert cancelled.json()["state"] == "CANCELLED"
+
+
+async def test_direct_create_planned_shape_and_approve_plan(direct_client, direct_context):
+    created = await direct_client.post(
+        "/api/direct-runs",
+        headers=HEADERS,
+        json={
+            "project_id": str(direct_context.service.run.project_id),
+            "task": "plan it",
+            "client": "muse_code",
+            "model": "model-1",
+            "shape": "planned",
+            "review_plan_first": True,
+        },
+    )
+    assert created.status_code == 201
+    sent = direct_context.service.created[-1]
+    assert sent["shape"] == "planned"
+    assert sent["review_plan_first"] is True
+
+    bad_shape = await direct_client.post(
+        "/api/direct-runs",
+        headers=HEADERS,
+        json={
+            "project_id": str(direct_context.service.run.project_id),
+            "task": "epic it",
+            "client": "muse_code",
+            "model": "model-1",
+            "shape": "epic",
+        },
+    )
+    assert bad_shape.status_code == 422
+
+    early = await direct_client.post(
+        f"/api/direct-runs/{direct_context.service.run.id}/approve-plan",
+        headers=HEADERS, json={},
+    )
+    assert early.status_code == 422
+
+    direct_context.service.run.state = "AWAITING_PLAN_APPROVAL"
+    direct_context.service.run.plan_text = "the plan"
+    approved = await direct_client.post(
+        f"/api/direct-runs/{direct_context.service.run.id}/approve-plan",
+        headers=HEADERS, json={},
+    )
+    assert approved.status_code == 200
+    body = approved.json()
+    assert body["state"] == "QUEUED"
+    assert body["plan_approved"] is True
+    assert body["plan_text"] == "the plan"

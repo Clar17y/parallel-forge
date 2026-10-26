@@ -18,6 +18,8 @@ export default function DirectPage() {
   const routes = useApi<Route[]>('/direct-runs/routes');
   const [projectId, setProjectId] = useState('');
   const [task, setTask] = useState('');
+  const [shape, setShape] = useState<'quick' | 'planned'>('quick');
+  const [reviewPlanFirst, setReviewPlanFirst] = useState(false);
   const [routeKey, setRouteKey] = useState('');
   const [error, setError] = useState('');
   const routeList = routes.value ?? [];
@@ -31,7 +33,8 @@ export default function DirectPage() {
     try {
       const created = await mutate<Run>('/direct-runs', {
         project_id: project, task, client: selected.client, model: selected.model,
-        effort: selected.effort ?? undefined,
+        effort: selected.effort ?? undefined, shape,
+        review_plan_first: shape === 'planned' && reviewPlanFirst,
       }, { idempotencyKey: crypto.randomUUID() });
       if (created) router.push(`/direct/${encodeURIComponent(created.id)}`);
     } catch { setError('Direct run could not be created.'); }
@@ -44,6 +47,11 @@ export default function DirectPage() {
         {(projects.value ?? []).map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
       </select></label>
       <label>Task <textarea aria-label="Task" value={task} onChange={e => setTask(e.target.value)} /></label>
+      <label>Shape <select aria-label="Shape" value={shape} onChange={e => setShape(e.target.value as 'quick' | 'planned')}>
+        <option value="quick">Quick implementation</option>
+        <option value="planned">Planned (plan session first)</option>
+      </select></label>
+      {shape === 'planned' && <label><input type="checkbox" checked={reviewPlanFirst} onChange={e => setReviewPlanFirst(e.target.checked)} /> Review plan before implementation</label>}
       <label>Route <select aria-label="Route" value={routeKey} onChange={e => setRouteKey(e.target.value)}>
         {routeList.map((r, i) => <option key={`${r.client}-${r.model}-${r.effort}`} value={`${i}`}>{`${r.client} / ${r.model}${r.effort ? ` / ${r.effort}` : ''}`}</option>)}
       </select></label>

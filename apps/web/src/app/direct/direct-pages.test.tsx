@@ -53,6 +53,7 @@ test('creates a direct run from the form and navigates to it', async () => {
     {
       project_id: 'project-1', task: 'Fix the parser bug',
       client: 'antigravity_cli', model: 'gemini-3.8-flash-medium', effort: 'medium',
+      shape: 'quick', review_plan_first: false,
     },
     expect.objectContaining({ idempotencyKey: expect.any(String) }),
   );
@@ -145,6 +146,40 @@ test('detail polls the run from RUNNING to DONE and loads terminal artifacts', a
   } finally {
     vi.useRealTimers();
   }
+});
+
+test('creates a planned run with plan review from the form', async () => {
+  mockApi();
+  vi.mocked(mutate).mockResolvedValue(run);
+  render(<DirectPage />);
+  await screen.findByText(/Fix the parser bug/);
+  await userEvent.selectOptions(screen.getByLabelText('Shape'), 'planned');
+  await userEvent.click(screen.getByLabelText(/Review plan before implementation/));
+  await userEvent.type(screen.getByLabelText('Task'), 'Plan then fix');
+  await userEvent.click(screen.getByRole('button', { name: 'Start direct run' }));
+  expect(vi.mocked(mutate)).toHaveBeenCalledWith(
+    '/direct-runs',
+    expect.objectContaining({ shape: 'planned', review_plan_first: true }),
+    expect.objectContaining({ idempotencyKey: expect.any(String) }),
+  );
+});
+
+test('detail shows the plan and approves it', async () => {
+  mockApi({
+    '/direct-runs/run-1': {
+      ...run, state: 'AWAITING_PLAN_APPROVAL', shape: 'planned',
+      review_plan_first: true, plan_text: 'Step 1: edit parser.py', plan_approved: false,
+    },
+  });
+  vi.mocked(mutate).mockResolvedValue({ ...run, state: 'QUEUED', plan_approved: true });
+  render(<DirectDetailPage />);
+  await screen.findByText(/State: AWAITING_PLAN_APPROVAL/);
+  await screen.findByText(/Step 1: edit parser\.py/);
+  await userEvent.click(screen.getByRole('button', { name: 'Approve plan and continue' }));
+  expect(vi.mocked(mutate)).toHaveBeenCalledWith(
+    '/direct-runs/run-1/approve-plan', {}, expect.objectContaining({ idempotencyKey: expect.any(String) }),
+  );
+  expect(screen.getByRole('button', { name: 'Cancel run' })).toBeInTheDocument();
 });
 
 test('detail shows diff and hides cancel when done', async () => {

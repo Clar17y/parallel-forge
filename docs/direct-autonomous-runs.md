@@ -1,6 +1,8 @@
 # Direct autonomous runs — design
 
-Status: owner-approved direction, 2026-10-22. Not yet implemented.
+Status: owner-approved direction, 2026-10-22. Quick shape implemented in
+#142; planned shape implemented on `claude/direct-planned-shape` (plan
+session reuses the run's route until the route-list slice lands).
 Supersedes the step order in [issue #128](https://github.com/Clar17y/parallel-forge/issues/128)
 for everyday local development. Motivated by
 [the overhaul assessment](local-development-overhaul-assessment.md): a small
@@ -33,7 +35,12 @@ Three shapes, all autonomous after "go":
   and returns a plan artifact. Implementation then follows automatically.
   The existing per-run workflow preference ("review plan before
   implementation", default off) remains the only way a human plan
-  approval enters the flow.
+  approval enters the flow. As implemented: `shape="planned"` at run
+  creation; the read-only plan session's edits are reverted before its
+  plan is stored on the run (`plan_text`) and carried into the implement
+  prompt; with `review_plan_first` the run parks in
+  `AWAITING_PLAN_APPROVAL` until the owner approves (API/UI) or cancels,
+  then resumes in the same worktree.
 - **Epic** — one decompose session returns a structured task list. Each
   task then runs the quick or planned pipeline **sequentially** on the
   epic's branch line. Parallel child worktrees are out of scope for v1.

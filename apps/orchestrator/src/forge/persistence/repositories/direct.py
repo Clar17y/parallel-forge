@@ -42,6 +42,10 @@ def _run_record(row: DirectRun) -> DirectRunRecord:
         pr_number=row.pr_number,
         pr_url=row.pr_url,
         pr_rounds=int(row.pr_rounds or 0),
+        shape=row.shape or "quick",
+        review_plan_first=bool(row.review_plan_first),
+        plan_text=row.plan_text,
+        plan_approved=bool(row.plan_approved),
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
@@ -106,7 +110,8 @@ class PostgresDirectRepository:
         self._factory = factory
 
     async def create(
-        self, *, project_id: UUID, task_text: str, client: str, model: str, effort: str | None
+        self, *, project_id: UUID, task_text: str, client: str, model: str,
+        effort: str | None, shape: str = "quick", review_plan_first: bool = False,
     ) -> DirectRunRecord:
         async with self._factory() as session:
             project = await session.get(Project, project_id)
@@ -121,6 +126,8 @@ class PostgresDirectRepository:
                 client=client,
                 model=model,
                 effort=effort,
+                shape=shape,
+                review_plan_first=review_plan_first,
             )
             session.add(row)
             await session.commit()
@@ -209,14 +216,27 @@ class PostgresDirectRepository:
                     select(DirectRun).where(
                         DirectRun.state.in_(
                             (
-                                "RUNNING", "FINALIZING", "CHECKING", "REVIEWING",
-                                "REPAIRING", "PUBLISHING", "PR_OPEN",
+                                "PLANNING", "RUNNING", "FINALIZING", "CHECKING",
+                                "REVIEWING", "REPAIRING", "PUBLISHING", "PR_OPEN",
                             )
                         )
                     )
                 )
             ).scalars().all()
             return tuple(_run_record(row) for row in rows)
+
+    async def approve_plan(self, run_id: UUID) -> DirectRunRecord:
+        async with self._factory() as session:
+            row = await session.get(DirectRun, run_id)
+            if row is None:
+                raise DirectRunNotFound("direct run was not found")
+            if row.state != "AWAITING_PLAN_APPROVAL":
+                raise ValueError("direct run is not awaiting plan approval")
+            row.plan_approved = True
+            row.state = "QUEUED"
+            await session.commit()
+            await session.refresh(row)
+            return _run_record(row)
 
     async def policy_for(self, run_id: UUID) -> tuple[ProjectPolicy, int] | None:
         """Return (policy, version) for the run's project, or None if unset."""
@@ -321,12 +341,12 @@ class PostgresDirectRepository:
             row = await session.get(DirectRun, run_id)
             if row is None:
                 raise DirectRunNotFound("direct run was not found")
-            if row.state == "QUEUED":
+            if row.state in {"QUEUED", "AWAITING_PLAN_APPROVAL"}:
                 row.state = "CANCELLED"
                 row.cancel_requested = True
             elif row.state in {
-                "RUNNING", "FINALIZING", "CHECKING", "REVIEWING", "REPAIRING",
-                "PUBLISHING", "PR_OPEN",
+                "PLANNING", "RUNNING", "FINALIZING", "CHECKING", "REVIEWING",
+                "REPAIRING", "PUBLISHING", "PR_OPEN",
             }:
                 row.cancel_requested = True
             await session.commit()

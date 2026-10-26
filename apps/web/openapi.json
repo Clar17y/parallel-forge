@@ -4202,6 +4202,20 @@
             "title": "Project Id",
             "type": "string"
           },
+          "review_plan_first": {
+            "default": false,
+            "title": "Review Plan First",
+            "type": "boolean"
+          },
+          "shape": {
+            "default": "quick",
+            "enum": [
+              "quick",
+              "planned"
+            ],
+            "title": "Shape",
+            "type": "string"
+          },
           "task": {
             "maxLength": 65536,
             "minLength": 1,
@@ -4320,6 +4334,22 @@
             "title": "Options",
             "type": "array"
           },
+          "plan_approved": {
+            "default": false,
+            "title": "Plan Approved",
+            "type": "boolean"
+          },
+          "plan_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan Text"
+          },
           "pr_number": {
             "anyOf": [
               {
@@ -4367,6 +4397,11 @@
             "title": "Result Degraded",
             "type": "boolean"
           },
+          "review_plan_first": {
+            "default": false,
+            "title": "Review Plan First",
+            "type": "boolean"
+          },
           "reviews": {
             "default": [],
             "items": {
@@ -4382,6 +4417,11 @@
             },
             "title": "Sessions",
             "type": "array"
+          },
+          "shape": {
+            "default": "quick",
+            "title": "Shape",
+            "type": "string"
           },
           "state": {
             "title": "State",
@@ -15751,6 +15791,24 @@
         "summary": "Recover Csrf"
       }
     },
+    "/api/auth/local-session": {
+      "post": {
+        "operationId": "local_session_api_auth_local_session_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BootstrapResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Local Session"
+      }
+    },
     "/api/auth/logout": {
       "post": {
         "operationId": "logout_api_auth_logout_post",
@@ -15977,6 +16035,52 @@
           }
         ],
         "summary": "Get Run"
+      }
+    },
+    "/api/direct-runs/{run_id}/approve-plan": {
+      "post": {
+        "operationId": "approve_plan_api_direct_runs__run_id__approve_plan_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DirectRunResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "CSRF": [],
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Approve Plan"
       }
     },
     "/api/direct-runs/{run_id}/cancel": {
