@@ -58,6 +58,8 @@ _MAX_FINDING_DETAIL = 1000
 
 class DirectRunState(StrEnum):
     QUEUED = "QUEUED"
+    PLANNING = "PLANNING"
+    AWAITING_PLAN_APPROVAL = "AWAITING_PLAN_APPROVAL"
     RUNNING = "RUNNING"
     FINALIZING = "FINALIZING"
     CHECKING = "CHECKING"
@@ -97,6 +99,10 @@ class DirectRunRecord:
     pr_number: int | None = None
     pr_url: str | None = None
     pr_rounds: int = 0
+    shape: str = "quick"
+    review_plan_first: bool = False
+    plan_text: str | None = None
+    plan_approved: bool = False
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -383,12 +389,29 @@ def _loads_object(raw: str) -> dict[str, object] | None:
     return value if isinstance(value, dict) else None
 
 
-def build_direct_prompt(task: str, *, has_agents_md: bool) -> str:
+_MAX_PLAN_CHARS = 8192
+
+
+def _plan_section(plan: str | None) -> str:
+    if not plan:
+        return ""
+    bounded_plan = plan
+    if len(bounded_plan) > _MAX_PLAN_CHARS:
+        bounded_plan = bounded_plan[:_MAX_PLAN_CHARS] + "\n[TRUNCATED]"
+    return (
+        "\nPlan prepared for this task (follow it; adapt only where the "
+        "code proves it wrong, and say so in your summary):\n"
+        f"{bounded_plan}\n"
+    )
+
+
+def build_direct_prompt(task: str, *, has_agents_md: bool, plan: str | None = None) -> str:
     if len(task.encode("utf-8")) > _MAX_TASK_BYTES:
         raise ValueError("direct task text is too large")
     agents = (
         "Read and follow the repository's AGENTS.md before starting.\n" if has_agents_md else ""
     )
+    plan_section = _plan_section(plan)
     return (
         "You are an autonomous coding agent working in a managed git worktree.\n"
         "Work only inside this worktree; do not modify anything outside it. "
@@ -396,6 +419,7 @@ def build_direct_prompt(task: str, *, has_agents_md: bool) -> str:
         f"{agents}"
         "\nTask:\n"
         f"{task}\n"
+        f"{plan_section}"
         "\nWhen finished, end your reply with exactly one JSON object in a fenced "
         "json block (and, for Muse, as your structured output):\n"
         '{"status": "done"|"needs_decision"|"blocked", "summary": "...", '
@@ -405,8 +429,35 @@ def build_direct_prompt(task: str, *, has_agents_md: bool) -> str:
     )
 
 
+def build_direct_plan_prompt(task: str, *, has_agents_md: bool) -> str:
+    if len(task.encode("utf-8")) > _MAX_TASK_BYTES:
+        raise ValueError("direct task text is too large")
+    agents = (
+        "Read and follow the repository's AGENTS.md before starting.\n" if has_agents_md else ""
+    )
+    return (
+        "PLAN: You are planning a coding task in a managed git worktree.\n"
+        "This is a read-only planning session: investigate freely, but change "
+        "nothing; any modification will be reverted. Do not run state-changing "
+        "commands.\n"
+        f"{agents}"
+        "\nTask:\n"
+        f"{task}\n"
+        "\nWhen finished, end your reply with exactly one JSON object in a fenced "
+        "json block (and, for Muse, as your structured output):\n"
+        '{"status": "done"|"needs_decision"|"blocked", "summary": "...", '
+        '"question": null or "...", "options": ["..."]}\n'
+        'Put the full implementation plan in "summary": the files to change, the '
+        "approach, the checks that prove it, and any risks. Keep it concise and "
+        "concrete; a later session will implement from this plan alone.\n"
+        'Use "needs_decision" only when a genuine owner decision is required; '
+        'put the question in "question" and the choices in "options".\n'
+    )
+
+
 def build_direct_review_prompt(
-    task: str, diff: str, *, base_sha: str, head_sha: str, has_agents_md: bool = False
+    task: str, diff: str, *, base_sha: str, head_sha: str,
+    has_agents_md: bool = False, plan: str | None = None,
 ) -> str:
     if len(task.encode("utf-8")) > _MAX_TASK_BYTES:
         raise ValueError("direct task text is too large")
@@ -425,6 +476,7 @@ def build_direct_review_prompt(
         f"{agents}"
         "\nOriginal task:\n"
         f"{task}\n"
+        f"{_plan_section(plan)}"
         f"\nDiff {base_sha}..{head_sha}:\n"
         f"{bounded}{truncated}\n"
         "\nWhen finished, end your reply with exactly one JSON object in a fenced "
@@ -437,11 +489,11 @@ def build_direct_review_prompt(
 
 
 def build_direct_review_repair_prompt(
-    task: str, findings_detail: str, *, has_agents_md: bool
+    task: str, findings_detail: str, *, has_agents_md: bool, plan: str | None = None
 ) -> str:
     if len(task.encode("utf-8")) > _MAX_TASK_BYTES:
         raise ValueError("direct task text is too large")
-    base = build_direct_prompt(task, has_agents_md=has_agents_md)
+    base = build_direct_prompt(task, has_agents_md=has_agents_md, plan=plan)
     return (
         f"{base}\n"
         "This is a repair session. A cross-provider review found blocking issues.\n"
@@ -470,11 +522,11 @@ def format_pr_feedback(feedback: tuple[DirectPrFeedback, ...]) -> str:
 
 
 def build_direct_pr_repair_prompt(
-    task: str, feedback_detail: str, *, has_agents_md: bool
+    task: str, feedback_detail: str, *, has_agents_md: bool, plan: str | None = None
 ) -> str:
     if len(task.encode("utf-8")) > _MAX_TASK_BYTES:
         raise ValueError("direct task text is too large")
-    base = build_direct_prompt(task, has_agents_md=has_agents_md)
+    base = build_direct_prompt(task, has_agents_md=has_agents_md, plan=plan)
     return (
         f"{base}\n"
         "This is a repair session for PR comments on the pull request for this run.\n"
@@ -486,10 +538,12 @@ def build_direct_pr_repair_prompt(
     )
 
 
-def build_direct_repair_prompt(task: str, failure_detail: str, *, has_agents_md: bool) -> str:
+def build_direct_repair_prompt(
+    task: str, failure_detail: str, *, has_agents_md: bool, plan: str | None = None
+) -> str:
     if len(task.encode("utf-8")) > _MAX_TASK_BYTES:
         raise ValueError("direct task text is too large")
-    base = build_direct_prompt(task, has_agents_md=has_agents_md)
+    base = build_direct_prompt(task, has_agents_md=has_agents_md, plan=plan)
     return (
         f"{base}\n"
         "This is a repair session. Forge-run checks failed on your previous work.\n"
@@ -576,6 +630,7 @@ __all__ = [
     "DirectRunState",
     "DirectSessionRecord",
     "build_direct_launch",
+    "build_direct_plan_prompt",
     "build_direct_pr_repair_prompt",
     "build_direct_prompt",
     "build_direct_repair_prompt",

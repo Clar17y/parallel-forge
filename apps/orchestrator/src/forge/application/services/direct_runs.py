@@ -76,16 +76,23 @@ class DirectRunService:
         raise ValueError("unknown direct route")
 
     async def create(
-        self, *, project_id: UUID, task: str, client: str, model: str, effort: str | None
+        self, *, project_id: UUID, task: str, client: str, model: str,
+        effort: str | None, shape: str = "quick", review_plan_first: bool = False,
     ) -> DirectRunRecord:
         if client not in SUPPORTED_DIRECT_CLIENTS:
             raise ValueError("unknown direct route")
+        if shape not in {"quick", "planned"}:
+            raise ValueError("unknown direct run shape")
         if not task.strip() or len(task.encode("utf-8")) > 64 * 1024:
             raise ValueError("direct task text is invalid")
         self.find_installation(client, model, effort)
         return await self._repo.create(
-            project_id=project_id, task_text=task, client=client, model=model, effort=effort
+            project_id=project_id, task_text=task, client=client, model=model,
+            effort=effort, shape=shape, review_plan_first=review_plan_first,
         )
+
+    async def approve_plan(self, run_id: UUID) -> DirectRunRecord:
+        return await self._repo.approve_plan(run_id)
 
     async def list(self, limit: int = 50) -> tuple[DirectRunRecord, ...]:
         return await self._repo.list(min(max(limit, 1), MAX_LIST))

@@ -40,6 +40,13 @@ if "REVIEW" in prompt_text:
     print('{"verdict":"clean","summary":"ok","findings":[]}')
     print('```', flush=True)
     sys.exit(0)
+if "PLAN: You are planning" in prompt_text:
+    if mode == "plan-edit":
+        (wt / "planned.txt").write_text("planner edit\\n")
+    print('```json')
+    print('{"status":"done","summary":"PLAN-TEXT: edit changed.txt then run tests","question":null,"options":[]}')
+    print('```', flush=True)
+    sys.exit(0)
 if mode == "sleep":
     print("starting", flush=True)
     time.sleep(120)
@@ -312,6 +319,93 @@ async def test_routes_hide_executable(session_factory, tmp_path):
     _, _, _settings, service = await _setup(session_factory, tmp_path)
     routes = service.routes()
     assert routes == ({"client": "muse_code", "model": "model-1", "effort": "high"},)
+
+
+@pytest.mark.integration
+async def test_planned_run_auto_continues_with_plan(session_factory, tmp_path, fake_cli):
+    _, pid, settings, service = await _setup(session_factory, tmp_path)
+    run = await service.create(
+        project_id=pid, task="planned work", client="muse_code", model="model-1",
+        effort=None, shape="planned",
+    )
+    assert run.shape == "planned"
+    await _worker(session_factory, settings, fake_cli, "happy").run_once()
+    done = await service.get(run.id)
+    assert done.state == "DONE"
+    assert done.plan_text and "PLAN-TEXT" in done.plan_text
+    sessions = await service.sessions(run.id)
+    kinds = [s.kind for s in sessions]
+    assert kinds.index("plan") < kinds.index("implement")
+    implement = next(s for s in sessions if s.kind == "implement")
+    prompt = (fake_cli.parent / f"prompt-{implement.id}.txt").read_text(encoding="utf-8")
+    assert "PLAN-TEXT" in prompt
+
+
+@pytest.mark.integration
+async def test_planned_run_waits_for_plan_approval(session_factory, tmp_path, fake_cli):
+    _, pid, settings, service = await _setup(session_factory, tmp_path)
+    run = await service.create(
+        project_id=pid, task="gate me", client="muse_code", model="model-1",
+        effort=None, shape="planned", review_plan_first=True,
+    )
+    worker = _worker(session_factory, settings, fake_cli, "happy")
+    await worker.run_once()
+    parked = await service.get(run.id)
+    assert parked.state == "AWAITING_PLAN_APPROVAL"
+    assert parked.plan_text and "PLAN-TEXT" in parked.plan_text
+    assert parked.plan_approved is False
+    # No implementation happened while parked, and no worker claims it.
+    assert [s.kind for s in await service.sessions(run.id)] == ["plan"]
+    assert await worker.run_once() is None
+    approved = await service.approve_plan(run.id)
+    assert approved.state == "QUEUED"
+    assert approved.plan_approved is True
+    await worker.run_once()
+    done = await service.get(run.id)
+    assert done.state == "DONE"
+    kinds = [s.kind for s in await service.sessions(run.id)]
+    assert kinds.count("plan") == 1
+    assert "implement" in kinds
+
+
+@pytest.mark.integration
+async def test_plan_session_edits_are_reverted(session_factory, tmp_path, fake_cli):
+    _, pid, settings, service = await _setup(session_factory, tmp_path)
+    run = await service.create(
+        project_id=pid, task="edit while planning", client="muse_code",
+        model="model-1", effort=None, shape="planned",
+    )
+    await _worker(session_factory, settings, fake_cli, "plan-edit").run_once()
+    done = await service.get(run.id)
+    assert done.state == "DONE"
+    wt = Path(done.worktree_path)
+    assert not (wt / "planned.txt").exists()
+    assert (wt / "changed.txt").exists()
+
+
+@pytest.mark.integration
+async def test_cancel_awaiting_plan_approval(session_factory, tmp_path, fake_cli):
+    _, pid, settings, service = await _setup(session_factory, tmp_path)
+    run = await service.create(
+        project_id=pid, task="gate me", client="muse_code", model="model-1",
+        effort=None, shape="planned", review_plan_first=True,
+    )
+    await _worker(session_factory, settings, fake_cli, "happy").run_once()
+    assert (await service.get(run.id)).state == "AWAITING_PLAN_APPROVAL"
+    cancelled = await service.cancel(run.id)
+    assert cancelled.state == "CANCELLED"
+    with pytest.raises(ValueError):
+        await service.approve_plan(run.id)
+
+
+@pytest.mark.integration
+async def test_invalid_shape_rejected(session_factory, tmp_path):
+    _, pid, _settings, service = await _setup(session_factory, tmp_path)
+    with pytest.raises(ValueError):
+        await service.create(
+            project_id=pid, task="x", client="muse_code", model="model-1",
+            effort=None, shape="epic",
+        )
 
 
 @pytest.mark.integration

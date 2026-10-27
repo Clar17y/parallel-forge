@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -23,6 +24,8 @@ class DirectRunCreateRequest(BaseModel):
     client: str = Field(min_length=1, max_length=64)
     model: str = Field(min_length=1, max_length=255)
     effort: str | None = Field(default=None, max_length=32)
+    shape: Literal["quick", "planned"] = "quick"
+    review_plan_first: bool = False
 
 
 class DirectCheckResponse(BaseModel):
@@ -150,6 +153,10 @@ class DirectRunResponse(BaseModel):
     pr_number: int | None = None
     pr_url: str | None = None
     pr_rounds: int = 0
+    shape: str = "quick"
+    review_plan_first: bool = False
+    plan_text: str | None = None
+    plan_approved: bool = False
     created_at: datetime | None
     updated_at: datetime | None
     sessions: tuple[DirectSessionResponse, ...] = ()
@@ -173,6 +180,10 @@ class DirectRunResponse(BaseModel):
             failure_reason=record.failure_reason, result_degraded=record.result_degraded,
             cancel_requested=record.cancel_requested,
             pr_number=record.pr_number, pr_url=record.pr_url, pr_rounds=record.pr_rounds,
+            shape=getattr(record, "shape", "quick"),
+            review_plan_first=getattr(record, "review_plan_first", False),
+            plan_text=getattr(record, "plan_text", None),
+            plan_approved=getattr(record, "plan_approved", False),
             created_at=record.created_at,
             updated_at=record.updated_at,
             sessions=tuple(DirectSessionResponse.from_record(s) for s in sessions),

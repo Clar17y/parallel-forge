@@ -245,6 +245,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/auth/local-session": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Local Session */
+        post: operations["local_session_api_auth_local_session_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/auth/logout": {
         parameters: {
             query?: never;
@@ -342,6 +359,23 @@ export interface paths {
         get: operations["get_run_api_direct_runs__run_id__get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/direct-runs/{run_id}/approve-plan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Approve Plan */
+        post: operations["approve_plan_api_direct_runs__run_id__approve_plan_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3508,6 +3542,17 @@ export interface components {
              * Format: uuid
              */
             project_id: string;
+            /**
+             * Review Plan First
+             * @default false
+             */
+            review_plan_first: boolean;
+            /**
+             * Shape
+             * @default quick
+             * @enum {string}
+             */
+            shape: "quick" | "planned";
             /** Task */
             task: string;
         };
@@ -3543,6 +3588,13 @@ export interface components {
             model: string;
             /** Options */
             options: string[];
+            /**
+             * Plan Approved
+             * @default false
+             */
+            plan_approved: boolean;
+            /** Plan Text */
+            plan_text?: string | null;
             /** Pr Number */
             pr_number?: number | null;
             /**
@@ -3562,6 +3614,11 @@ export interface components {
             /** Result Degraded */
             result_degraded: boolean;
             /**
+             * Review Plan First
+             * @default false
+             */
+            review_plan_first: boolean;
+            /**
              * Reviews
              * @default []
              */
@@ -3571,6 +3628,11 @@ export interface components {
              * @default []
              */
             sessions: components["schemas"]["DirectSessionResponse"][];
+            /**
+             * Shape
+             * @default quick
+             */
+            shape: string;
             /** State */
             state: string;
             /** Summary */
@@ -7902,6 +7964,26 @@ export interface operations {
             };
         };
     };
+    local_session_api_auth_local_session_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BootstrapResponse"];
+                };
+            };
+        };
+    };
     logout_api_auth_logout_post: {
         parameters: {
             query?: never;
@@ -8045,6 +8127,37 @@ export interface operations {
         };
     };
     get_run_api_direct_runs__run_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DirectRunResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    approve_plan_api_direct_runs__run_id__approve_plan_post: {
         parameters: {
             query?: never;
             header?: never;

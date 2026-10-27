@@ -37,6 +37,7 @@ from forge.domain.direct import (
     DirectReviewResult,
     DirectRunRecord,
     build_direct_launch,
+    build_direct_plan_prompt,
     build_direct_pr_repair_prompt,
     build_direct_prompt,
     build_direct_repair_prompt,
@@ -365,7 +366,7 @@ class DirectRunWorker:
             logger.exception("direct run %s failed in worker", run.id)
             try:
                 current = await self._repo.get(run.id)
-                if current.state in {"RUNNING", "FINALIZING", "CHECKING", "REVIEWING", "REPAIRING", "PUBLISHING", "PR_OPEN"}:
+                if current.state in {"PLANNING", "RUNNING", "FINALIZING", "CHECKING", "REVIEWING", "REPAIRING", "PUBLISHING", "PR_OPEN"}:
                     await self._repo.update_run(
                         run.id, state="FAILED", failure_reason="worker error"
                     )
@@ -440,32 +441,62 @@ class DirectRunWorker:
     async def _execute(self, run: DirectRunRecord) -> None:
         canonical, default_branch = await self._repo.project_for(run.id)
         data_root = Path(self._settings.data_root)
-        worktree = data_root / "direct-worktrees" / str(run.id)
-        branch = f"forge/direct-{str(run.id)[:8]}"
-        _base_code, _base_out = await _run_git(canonical, "rev-parse", default_branch)
-        base_sha = _base_out.strip() if _base_code == 0 else None
-        if base_sha is None:
-            await self._repo.update_run(
-                run.id, state="FAILED", failure_reason="base branch unavailable"
-            )
-            return
-        worktree.parent.mkdir(parents=True, exist_ok=True)
-        created, _created_out = await _run_git(
-            canonical, "worktree", "add", "-b", branch, str(worktree), default_branch
+        # A run resumed after plan approval already has its worktree recorded;
+        # reuse it instead of recreating branch and worktree.
+        resumed = bool(
+            run.worktree_path and run.base_sha and run.branch
+            and Path(run.worktree_path).exists()
         )
-        if created != 0:
-            await self._repo.update_run(
-                run.id, state="FAILED", failure_reason="worktree creation failed"
+        if resumed:
+            worktree = Path(run.worktree_path or "")
+            branch = run.branch or ""
+            base_sha = run.base_sha or ""
+        else:
+            worktree = data_root / "direct-worktrees" / str(run.id)
+            branch = f"forge/direct-{str(run.id)[:8]}"
+            _base_code, _base_out = await _run_git(canonical, "rev-parse", default_branch)
+            resolved_base = _base_out.strip() if _base_code == 0 else None
+            if resolved_base is None:
+                await self._repo.update_run(
+                    run.id, state="FAILED", failure_reason="base branch unavailable"
+                )
+                return
+            base_sha = resolved_base
+            worktree.parent.mkdir(parents=True, exist_ok=True)
+            created, _created_out = await _run_git(
+                canonical, "worktree", "add", "-b", branch, str(worktree), default_branch
             )
-            return
-        run = await self._repo.update_run(
-            run.id, branch=branch, worktree_path=str(worktree), base_sha=base_sha
-        )
+            if created != 0:
+                await self._repo.update_run(
+                    run.id, state="FAILED", failure_reason="worktree creation failed"
+                )
+                return
+            run = await self._repo.update_run(
+                run.id, branch=branch, worktree_path=str(worktree), base_sha=base_sha
+            )
         transcript_dir = data_root / "direct-transcripts" / str(run.id)
         transcript_dir.mkdir(parents=True, exist_ok=True)
         installation = self._resolve_installation(run)
         has_agents_md = (worktree / "AGENTS.md").exists()
-        prompt = build_direct_prompt(run.task_text, has_agents_md=has_agents_md)
+        plan_text = run.plan_text
+        if run.shape == "planned" and not plan_text:
+            await self._repo.update_run(run.id, state="PLANNING")
+            planned = await self._launch_and_settle_plan(
+                run, installation,
+                prompt=build_direct_plan_prompt(run.task_text, has_agents_md=has_agents_md),
+                worktree=worktree, transcript_dir=transcript_dir,
+            )
+            if planned is None:
+                return
+            plan_text = planned
+            run = await self._repo.update_run(run.id, plan_text=plan_text)
+            if run.review_plan_first and not run.plan_approved:
+                await self._repo.update_run(run.id, state="AWAITING_PLAN_APPROVAL")
+                return
+            await self._repo.update_run(run.id, state="RUNNING")
+        prompt = build_direct_prompt(
+            run.task_text, has_agents_md=has_agents_md, plan=plan_text
+        )
         result = await self._launch_and_settle_session(
             run, installation, kind="implement", prompt=prompt,
             worktree=worktree, transcript_dir=transcript_dir,
@@ -514,7 +545,7 @@ class DirectRunWorker:
                 repairs_used += 1
                 await self._repo.update_run(run.id, state="REPAIRING")
                 repair_prompt = build_direct_repair_prompt(
-                    run.task_text, detail, has_agents_md=has_agents_md
+                    run.task_text, detail, has_agents_md=has_agents_md, plan=plan_text
                 )
                 repaired = await self._execute_repair_step(
                     run, installation, prompt=repair_prompt, worktree=worktree,
@@ -540,7 +571,7 @@ class DirectRunWorker:
             diff_text = await _git_diff(worktree, base_sha, head_sha)
             review_prompt = build_direct_review_prompt(
                 run.task_text, diff_text, base_sha=base_sha, head_sha=head_sha,
-                has_agents_md=has_agents_md,
+                has_agents_md=has_agents_md, plan=plan_text,
             )
             review_round = review_rounds
             review_rounds += 1
@@ -566,7 +597,7 @@ class DirectRunWorker:
             await self._repo.update_run(run.id, state="REPAIRING")
             review_repair_prompt = build_direct_review_repair_prompt(
                 run.task_text, format_blocking_findings(review.findings),
-                has_agents_md=has_agents_md,
+                has_agents_md=has_agents_md, plan=plan_text,
             )
             repaired = await self._execute_repair_step(
                 run, installation, prompt=review_repair_prompt, worktree=worktree,
@@ -717,7 +748,7 @@ class DirectRunWorker:
                 feedback_tuple = tuple(item for _key, item in batch)
                 formatted = format_pr_feedback(feedback_tuple)
                 redacted_detail, _ = self._redactor.redact_text(formatted)
-                repair_prompt = build_direct_pr_repair_prompt(run.task_text, redacted_detail, has_agents_md=has_agents_md)
+                repair_prompt = build_direct_pr_repair_prompt(run.task_text, redacted_detail, has_agents_md=has_agents_md, plan=run.plan_text)
                 repaired = await self._execute_repair_step(run, installation, prompt=repair_prompt, worktree=worktree, transcript_dir=transcript_dir, head_sha=head_sha, summary=current_summary)
                 if repaired is None:
                     return
@@ -900,30 +931,69 @@ class DirectRunWorker:
         outcome = await self._run_session(run, session.id, launch, worktree, transcript_path)
         return session.id, outcome, final_file
 
-    async def _launch_and_settle_review(
-        self, run: DirectRunRecord, reviewer: object, *, prompt: str,
-        worktree: Path, transcript_dir: Path, round_no: int,
-    ) -> DirectReviewResult | None:
+    async def _launch_and_settle_plan(
+        self, run: DirectRunRecord, installation: object, *, prompt: str,
+        worktree: Path, transcript_dir: Path,
+    ) -> str | None:
+        """Run the read-only plan session; return its plan text or None."""
+
+        launched = await self._launch_read_only_session(
+            run, installation, kind="plan", noun="planner", prompt=prompt,
+            worktree=worktree, transcript_dir=transcript_dir,
+        )
+        if launched is None:
+            return None
+        session_id, outcome, final_file, modified = launched
+        result = await self._settle_session(run, session_id, outcome, final_file)
+        if result is None:
+            return None
+        plan_text, _ = self._redactor.redact_text(result.summary)
+        plan_text = plan_text[:8000]
+        if modified:
+            plan_text += "\n(planner modified the worktree; changes were reverted)"
+        return plan_text
+
+    async def _launch_read_only_session(
+        self, run: DirectRunRecord, installation: object, *, kind: str, noun: str,
+        prompt: str, worktree: Path, transcript_dir: Path,
+    ) -> tuple[UUID, tuple[str, int | None, str], Path, bool] | None:
+        """Launch a read-only session and revert any edits before returning.
+
+        Returns (session_id, outcome, final_file, modified), or None when the
+        run was settled terminally (budget exhausted, unrestorable edits).
+        """
+
         before_head, before = await _snapshot_worktree(worktree)
         try:
             session_id, outcome, final_file = await self._launch_raw_session(
-                run, reviewer, kind="review", prompt=prompt, worktree=worktree,
+                run, installation, kind=kind, prompt=prompt, worktree=worktree,
                 transcript_dir=transcript_dir,
             )
         except _SessionBudgetExhausted:
             return None
-        # Post-hoc read-only enforcement before any verdict is applied.
+        # Post-hoc read-only enforcement before any result is applied.
         modified, restored = await _revert_reviewer_changes(worktree, before_head, before)
         if modified and not restored:
+            reason = f"{noun} modified worktree; candidate could not be restored"
             await self._repo.update_session(
                 session_id, state="FAILED", ended_at=datetime.now(UTC),
-                failure_reason="reviewer modified worktree; candidate could not be restored",
+                failure_reason=reason,
             )
-            await self._repo.update_run(
-                run.id, state="FAILED",
-                failure_reason="reviewer modified worktree; candidate could not be restored",
-            )
+            await self._repo.update_run(run.id, state="FAILED", failure_reason=reason)
             return None
+        return session_id, outcome, final_file, modified
+
+    async def _launch_and_settle_review(
+        self, run: DirectRunRecord, reviewer: object, *, prompt: str,
+        worktree: Path, transcript_dir: Path, round_no: int,
+    ) -> DirectReviewResult | None:
+        launched = await self._launch_read_only_session(
+            run, reviewer, kind="review", noun="reviewer", prompt=prompt,
+            worktree=worktree, transcript_dir=transcript_dir,
+        )
+        if launched is None:
+            return None
+        session_id, outcome, final_file, modified = launched
         return await self._settle_review(
             run, session_id, outcome, final_file, reviewer=reviewer,
             round_no=round_no, modified=modified,

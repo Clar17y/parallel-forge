@@ -21,12 +21,14 @@ from sqlalchemy.orm import Mapped, mapped_column
 from forge.persistence.models.base import Base, TimestampMixin
 
 _RUN_STATES = (
-    "('QUEUED','RUNNING','FINALIZING','CHECKING','REVIEWING','REPAIRING',"
-    "'PUBLISHING','PR_OPEN','DONE','FAILED','CANCELLED','NEEDS_DECISION')"
+    "('QUEUED','PLANNING','AWAITING_PLAN_APPROVAL','RUNNING','FINALIZING',"
+    "'CHECKING','REVIEWING','REPAIRING','PUBLISHING','PR_OPEN','DONE',"
+    "'FAILED','CANCELLED','NEEDS_DECISION')"
 )
+_RUN_SHAPES = "('quick','planned')"
 _SESSION_STATES = "('RUNNING','SUCCEEDED','FAILED','KILLED','TIMED_OUT')"
 _CHECK_STATUSES = "('PASSED','FAILED','ERROR','CACHED')"
-_SESSION_KINDS = "('implement','repair','review')"
+_SESSION_KINDS = "('implement','repair','review','plan')"
 _REVIEW_VERDICTS = "('clean','blocking')"
 
 
@@ -34,6 +36,7 @@ class DirectRun(Base, TimestampMixin):
     __tablename__ = "direct_runs"
     __table_args__ = (
         CheckConstraint(f"state IN {_RUN_STATES}", name="direct_runs_state"),
+        CheckConstraint(f"shape IN {_RUN_SHAPES}", name="direct_runs_shape"),
         CheckConstraint("btrim(task_text) <> ''", name="direct_runs_task_nonblank"),
         Index("ix_direct_runs_state_created", "state", "created_at"),
     )
@@ -60,6 +63,12 @@ class DirectRun(Base, TimestampMixin):
     pr_number: Mapped[int | None] = mapped_column(Integer)
     pr_url: Mapped[str | None] = mapped_column(String(1024))
     pr_rounds: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    shape: Mapped[str] = mapped_column(String(16), nullable=False, default="quick")
+    review_plan_first: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    plan_text: Mapped[str | None] = mapped_column(Text)
+    plan_approved: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
 
 class DirectSession(Base):

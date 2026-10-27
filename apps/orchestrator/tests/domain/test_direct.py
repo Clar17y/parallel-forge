@@ -4,7 +4,10 @@ from types import SimpleNamespace
 
 from forge.domain.direct import (
     build_direct_launch,
+    build_direct_plan_prompt,
     build_direct_prompt,
+    build_direct_repair_prompt,
+    build_direct_review_prompt,
     parse_direct_result,
 )
 
@@ -90,3 +93,36 @@ def test_argv_per_client(tmp_path) -> None:
     assert claude.argv[1] == "-p"
     assert "bypassPermissions" in claude.argv
     assert claude.stdin_data == b"PROMPT"
+
+
+def test_plan_prompt_is_read_only_and_returns_plan_as_summary() -> None:
+    prompt = build_direct_plan_prompt("Add a feature", has_agents_md=True)
+    assert "Add a feature" in prompt
+    assert "AGENTS.md" in prompt
+    assert "read-only" in prompt.lower()
+    assert "needs_decision" in prompt
+    # The plan itself travels in the summary field of the shared contract.
+    assert "summary" in prompt
+
+
+def test_implement_prompt_carries_bounded_plan() -> None:
+    plan = "1. edit a.py\n2. run tests"
+    prompt = build_direct_prompt("Do the thing", has_agents_md=False, plan=plan)
+    assert "Do the thing" in prompt
+    assert plan in prompt
+    long_plan = "x" * 40000
+    bounded = build_direct_prompt("Do the thing", has_agents_md=False, plan=long_plan)
+    assert "[TRUNCATED]" in bounded
+    assert long_plan not in bounded
+
+
+def test_review_and_repair_prompts_carry_plan() -> None:
+    plan = "PLAN-CARRY-MARKER"
+    review = build_direct_review_prompt(
+        "Task", "diff", base_sha="a", head_sha="b", plan=plan
+    )
+    assert plan in review
+    repair = build_direct_repair_prompt("Task", "failure", has_agents_md=False, plan=plan)
+    assert plan in repair
+    no_plan = build_direct_review_prompt("Task", "diff", base_sha="a", head_sha="b")
+    assert "Plan prepared" not in no_plan

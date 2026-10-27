@@ -45,7 +45,8 @@ def router_for() -> APIRouter:
         try:
             record = await service.create(
                 project_id=body.project_id, task=body.task, client=body.client,
-                model=body.model, effort=body.effort,
+                model=body.model, effort=body.effort, shape=body.shape,
+                review_plan_first=body.review_plan_first,
             )
         except Exception as error:  # noqa: BLE001
             raise translate_error(error) from None
@@ -107,6 +108,19 @@ def router_for() -> APIRouter:
         except Exception as error:  # noqa: BLE001
             raise translate_error(error) from None
         return DirectDiffResponse(diff=text)
+
+    @router.post("/direct-runs/{run_id}/approve-plan", response_model=DirectRunResponse)
+    async def approve_plan(
+        run_id: UUID,
+        request: Request,
+        _actor: AuthenticatedActor = Depends(require_operator_mutation),  # noqa: B008
+    ) -> DirectRunResponse:
+        service = _service(request)
+        try:
+            record = await service.approve_plan(run_id)
+        except Exception as error:  # noqa: BLE001
+            raise translate_error(error) from None
+        return DirectRunResponse.from_record(record)
 
     @router.post("/direct-runs/{run_id}/cancel", response_model=DirectRunResponse)
     async def cancel_run(
