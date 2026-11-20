@@ -365,6 +365,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/direct-runs/{run_id}/approve-decomposition": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Approve Decomposition */
+        post: operations["approve_decomposition_api_direct_runs__run_id__approve_decomposition_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/direct-runs/{run_id}/approve-plan": {
         parameters: {
             query?: never;
@@ -409,6 +426,23 @@ export interface paths {
         /** Get Diff */
         get: operations["get_diff_api_direct_runs__run_id__diff_get"];
         put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/direct-runs/{run_id}/tasks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Update Tasks */
+        put: operations["update_tasks_api_direct_runs__run_id__tasks_put"];
         post?: never;
         delete?: never;
         options?: never;
@@ -3432,6 +3466,13 @@ export interface components {
              */
             status: "verified" | "unknown" | "unverified";
         };
+        /** DirectApprovalRequest */
+        DirectApprovalRequest: {
+            /** Expected Version */
+            expected_version?: number | null;
+            /** Task Id */
+            task_id?: string | null;
+        };
         /** DirectCheckResponse */
         DirectCheckResponse: {
             /** Command Digest */
@@ -3464,6 +3505,8 @@ export interface components {
             run_id: string;
             /** Status */
             status: string;
+            /** Task Id */
+            task_id?: string | null;
             /** Tree Sha */
             tree_sha: string;
         };
@@ -3517,6 +3560,8 @@ export interface components {
             session_id: string;
             /** Summary */
             summary: string | null;
+            /** Task Id */
+            task_id?: string | null;
             /** Verdict */
             verdict: string;
         };
@@ -3552,12 +3597,14 @@ export interface components {
              * @default quick
              * @enum {string}
              */
-            shape: "quick" | "planned";
+            shape: "quick" | "planned" | "epic";
             /** Task */
             task: string;
         };
         /** DirectRunResponse */
         DirectRunResponse: {
+            /** Approval Task Id */
+            approval_task_id?: string | null;
             /** Base Sha */
             base_sha: string | null;
             /** Branch */
@@ -3571,6 +3618,11 @@ export interface components {
             checks: components["schemas"]["DirectCheckResponse"][];
             /** Client */
             client: string;
+            /**
+             * Control Version
+             * @default 0
+             */
+            control_version: number;
             /** Created At */
             created_at: string | null;
             /** Effort */
@@ -3588,6 +3640,13 @@ export interface components {
             model: string;
             /** Options */
             options: string[];
+            /**
+             * Owner Actions
+             * @default []
+             */
+            owner_actions: {
+                [key: string]: unknown;
+            }[];
             /**
              * Plan Approved
              * @default false
@@ -3639,6 +3698,11 @@ export interface components {
             summary: string | null;
             /** Task */
             task: string;
+            /**
+             * Tasks
+             * @default []
+             */
+            tasks: components["schemas"]["DirectTaskResponse"][];
             /** Updated At */
             updated_at: string | null;
             /** Worktree Path */
@@ -3680,6 +3744,64 @@ export interface components {
             started_at: string | null;
             /** State */
             state: string;
+            /** Task Id */
+            task_id?: string | null;
+        };
+        /** DirectTaskItemUpdate */
+        DirectTaskItemUpdate: {
+            /** Id */
+            id?: string | null;
+            /**
+             * Shape
+             * @default quick
+             * @enum {string}
+             */
+            shape: "quick" | "planned";
+            /** Task */
+            task: string;
+        };
+        /** DirectTaskResponse */
+        DirectTaskResponse: {
+            /** Created At */
+            created_at?: string | null;
+            /** Head Sha */
+            head_sha?: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Ordinal */
+            ordinal: number;
+            /**
+             * Plan Approved
+             * @default false
+             */
+            plan_approved: boolean;
+            /** Plan Text */
+            plan_text?: string | null;
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            /** Shape */
+            shape: string;
+            /** State */
+            state: string;
+            /** Summary */
+            summary?: string | null;
+            /** Task */
+            task: string;
+            /** Updated At */
+            updated_at?: string | null;
+        };
+        /** DirectTasksUpdateRequest */
+        DirectTasksUpdateRequest: {
+            /** Expected Version */
+            expected_version: number;
+            /** Tasks */
+            tasks: components["schemas"]["DirectTaskItemUpdate"][];
         };
         /** DirectTranscriptResponse */
         DirectTranscriptResponse: {
@@ -8157,6 +8279,41 @@ export interface operations {
             };
         };
     };
+    approve_decomposition_api_direct_runs__run_id__approve_decomposition_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["DirectApprovalRequest"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DirectRunResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     approve_plan_api_direct_runs__run_id__approve_plan_post: {
         parameters: {
             query?: never;
@@ -8166,7 +8323,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["DirectApprovalRequest"] | null;
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -8237,6 +8398,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DirectDiffResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_tasks_api_direct_runs__run_id__tasks_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DirectTasksUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DirectRunResponse"];
                 };
             };
             /** @description Validation Error */

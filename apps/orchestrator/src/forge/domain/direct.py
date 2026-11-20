@@ -11,6 +11,10 @@ from pathlib import Path
 from uuid import UUID
 
 SUPPORTED_DIRECT_CLIENTS = ("muse_code", "antigravity_cli", "codex_app_server", "claude_code")
+ACTIVE_DIRECT_RUN_STATES = frozenset({
+    "PLANNING", "DECOMPOSING", "RUNNING", "FINALIZING", "CHECKING",
+    "REVIEWING", "REPAIRING", "PUBLISHING", "PR_OPEN",
+})
 _MAX_TASK_BYTES = 64 * 1024
 
 RESULT_SCHEMA: dict[str, object] = {
@@ -50,6 +54,32 @@ REVIEW_SCHEMA: dict[str, object] = {
 }
 
 
+DECOMPOSE_SCHEMA: dict[str, object] = {
+    "type": "object",
+    "properties": {
+        "status": {"type": "string", "enum": ["done", "needs_decision", "blocked"]},
+        "summary": {"type": "string"},
+        "tasks": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "task": {"type": "string", "minLength": 1, "maxLength": 8000},
+                    "shape": {"type": "string", "enum": ["quick", "planned"]},
+                },
+                "required": ["task", "shape"],
+                "additionalProperties": False,
+            },
+        },
+        "question": {"type": ["string", "null"]},
+        "options": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["status", "summary", "tasks"],
+    "additionalProperties": False,
+}
+
+
 REVIEW_CLIENT_PREFERENCE = ("codex_app_server", "claude_code", "muse_code", "antigravity_cli")
 _REVIEW_DIFF_CAP = 32768
 _MAX_REVIEW_FINDINGS = 32
@@ -60,6 +90,8 @@ class DirectRunState(StrEnum):
     QUEUED = "QUEUED"
     PLANNING = "PLANNING"
     AWAITING_PLAN_APPROVAL = "AWAITING_PLAN_APPROVAL"
+    DECOMPOSING = "DECOMPOSING"
+    AWAITING_DECOMPOSITION_APPROVAL = "AWAITING_DECOMPOSITION_APPROVAL"
     RUNNING = "RUNNING"
     FINALIZING = "FINALIZING"
     CHECKING = "CHECKING"
@@ -75,6 +107,37 @@ class DirectRunState(StrEnum):
 
 class DirectRunNotFound(LookupError):
     """The requested direct run does not exist."""
+
+
+@dataclass(frozen=True, slots=True)
+class DirectDecomposeTask:
+    task: str
+    shape: str = "quick"
+
+
+@dataclass(frozen=True, slots=True)
+class DirectDecomposeResult:
+    status: str
+    summary: str
+    tasks: tuple[DirectDecomposeTask, ...] = ()
+    question: str | None = None
+    options: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class DirectChildTaskRecord:
+    id: UUID
+    run_id: UUID
+    ordinal: int
+    task_text: str
+    shape: str = "quick"
+    state: str = "PENDING"
+    plan_text: str | None = None
+    head_sha: str | None = None
+    summary: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    plan_approved: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,6 +166,9 @@ class DirectRunRecord:
     review_plan_first: bool = False
     plan_text: str | None = None
     plan_approved: bool = False
+    control_version: int = 0
+    approval_task_id: UUID | None = None
+    owner_actions: tuple[dict[str, object], ...] = ()
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -145,6 +211,7 @@ class DirectCheckRecord:
     duration_ms: int | None = None
     failure_excerpt: str | None = None
     created_at: datetime | None = None
+    task_id: UUID | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -176,6 +243,7 @@ class DirectReviewRecord:
     degraded: bool = False
     reviewer_modified_worktree: bool = False
     created_at: datetime | None = None
+    task_id: UUID | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,6 +263,7 @@ class DirectSessionRecord:
     started_at: datetime | None = None
     ended_at: datetime | None = None
     failure_reason: str | None = None
+    task_id: UUID | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -313,6 +382,168 @@ def parse_review_result(text: str) -> DirectReviewResult | None:
     )
 
 
+_MAX_DECOMPOSE_TASKS = 20
+
+
+def _decompose_record(value: object, depth: int) -> tuple[bool, dict[str, object] | None]:
+    """Distinguish an authoritative role answer from ordinary CLI metadata."""
+    if depth > 32:
+        return True, None
+    if isinstance(value, str):
+        return True, _extract_decompose(value, depth=depth + 1)
+    if not isinstance(value, dict):
+        return True, None
+
+    payload_type = value.get("payload_type")
+    if isinstance(payload_type, str) and payload_type.startswith("run.terminal."):
+        payload = value.get("payload")
+        if (payload_type != "run.terminal.completed" or not isinstance(payload, dict)
+                or payload.get("kind") != "run_terminal" or payload.get("terminal") != "completed"
+                or not isinstance(payload.get("text"), str)):
+            return True, None
+        return _decompose_record(payload["text"], depth + 1)
+    if value.get("type") == "item.completed":
+        item = value.get("item")
+        if isinstance(item, dict) and item.get("type") == "agent_message":
+            if not isinstance(item.get("text"), str):
+                return True, None
+            return _decompose_record(item.get("text"), depth + 1)
+        return False, None
+    if value.get("type") in ("error", "turn.failed"):
+        return True, None
+    if value.get("event") == "result" or value.get("type") == "result":
+        status = value.get("status")
+        subtype = value.get("subtype")
+        if (value.get("is_error") or ("status" in value and (
+                not isinstance(status, str) or status.casefold() != "success"))
+                or (subtype is not None and subtype != "success")):
+            return True, None
+        return _decompose_record(value.get("result"), depth + 1)
+
+    status = value.get("status")
+    # A role result must be validated as-is, including unknown extra fields.
+    # Transport SUCCESS belongs to wrappers, never to the role schema.
+    if isinstance(status, str) and status in {"done", "blocked", "needs_decision"}:
+        return True, value
+    if (isinstance(status, str) and status.casefold() == "success"
+            and not set(value) & {"type", "event", "payload_type"}):
+        for key in ("result", "response", "text"):
+            if key in value:
+                return _decompose_record(value[key], depth + 1)
+    if set(value) & {"summary", "tasks", "question", "options"}:
+        return True, value
+    if set(value) & {"type", "event", "payload_type"}:
+        return False, None
+    for key in ("result", "response", "text"):
+        if key in value:
+            if "status" in value and (not isinstance(status, str) or status.casefold() != "success"):
+                return True, None
+            return _decompose_record(value[key], depth + 1)
+    return True, value
+
+
+def _extract_decompose(text: str, *, depth: int = 0) -> dict[str, object] | None:
+    """Read output records in order; invalid final output replaces prior success.
+
+    Fences frame multiline answers; plain JSON records also support JSONL CLI
+    envelopes. Decode JSON before locating the closing fence, so quoted fence
+    literals remain data. Recognized final payloads replace prior answers even
+    when malformed; ordinary metadata does not.
+    """
+    candidate: dict[str, object] | None = None
+    decoder = json.JSONDecoder()
+    record_start = re.compile(r'```|(?m:^[ \t]*(?:[\{\[]|(?P<primitive>["0-9tfn-])))')
+    position = 0
+    while match := record_start.search(text, position):
+        start = match.start()
+        fenced = text.startswith("```", start)
+        primitive = match.group("primitive") is not None
+        if fenced:
+            start += 3
+            if text.startswith("json", start):
+                start += 4
+            while start < len(text) and text[start].isspace():
+                start += 1
+        else:
+            start = match.end() - 1  # opening brace/bracket, after indentation
+        line_end = text.find("\n", start)
+        if line_end == -1:
+            line_end = len(text)
+        try:
+            value, position = decoder.raw_decode(text, start)
+        except (ValueError, RecursionError):
+            if primitive and text[start] != '"':
+                # Ordinary prose/bullets can begin with n/f/t, digits or '-'.
+                position = line_end + 1
+                continue
+            # Do not reinterpret nested objects or an earlier answer after a
+            # malformed authoritative record.
+            return None
+        if primitive:
+            # A standalone JSON primitive is a complete output record with an
+            # invalid role schema. A prose line such as "42 reasons" is not.
+            if not text[position:line_end].strip():
+                candidate = None
+            position = line_end + 1
+            continue
+        if fenced:
+            while position < len(text) and text[position].isspace():
+                position += 1
+            if not text.startswith("```", position):
+                return None
+            position += 3
+        # A fenced JSON answer is the role contract itself, not a CLI event.
+        authoritative, parsed = ((True, value if isinstance(value, dict) else None)
+                                 if fenced else _decompose_record(value, depth))
+        if authoritative:
+            candidate = parsed
+    return candidate
+
+
+def parse_decompose_result(text: str) -> DirectDecomposeResult | None:
+    """Accept the bounded decomposition schema without silently repairing it."""
+    candidate = _extract_decompose(text)
+    if candidate is None or set(candidate) - {"status", "summary", "tasks", "question", "options"}:
+        return None
+    status = candidate.get("status")
+    summary = candidate.get("summary")
+    raw_tasks = candidate.get("tasks")
+    question = candidate.get("question")
+    options = candidate.get("options", [])
+    if (
+        not isinstance(status, str) or status not in {"done", "needs_decision", "blocked"}
+        or not isinstance(summary, str) or not summary.strip()
+        or not isinstance(raw_tasks, list)
+        or (question is not None and not isinstance(question, str))
+        or not isinstance(options, list) or len(options) > 16
+        or any(not isinstance(item, str) or len(item) > 1000 for item in options)
+    ):
+        return None
+    if status == "needs_decision" and (not question or not question.strip()):
+        return None
+    if status != "done":
+        if raw_tasks:
+            return None
+        return DirectDecomposeResult(
+            status=status, summary=summary[:4000], question=question[:1000] if question else None,
+            options=tuple(options),
+        )
+    if not 1 <= len(raw_tasks) <= _MAX_DECOMPOSE_TASKS:
+        return None
+    tasks = []
+    for item in raw_tasks:
+        if not isinstance(item, dict) or set(item) != {"task", "shape"}:
+            return None
+        task = item["task"]
+        if (not isinstance(task, str) or not task.strip() or len(task) > 8000
+                or len(task.encode("utf-8")) > _MAX_TASK_BYTES
+                or not isinstance(item["shape"], str)
+                or item["shape"] not in {"quick", "planned"}):
+            return None
+        tasks.append(DirectDecomposeTask(task=task.strip(), shape=item["shape"]))
+    return DirectDecomposeResult(status=status, summary=summary[:4000], tasks=tuple(tasks))
+
+
 def format_blocking_findings(findings: tuple[DirectFinding, ...]) -> str:
     lines = []
     for finding in findings:
@@ -405,13 +636,36 @@ def _plan_section(plan: str | None) -> str:
     )
 
 
-def build_direct_prompt(task: str, *, has_agents_md: bool, plan: str | None = None) -> str:
+def _prior_summaries_section(summaries: tuple[str, ...] | list[str] = ()) -> str:
+    if not summaries:
+        return ""
+    lines = ["\nPrevious completed tasks in this epic:"]
+    total = 0
+    for s in summaries[-4:]:
+        bounded = s[:500]
+        if total + len(bounded) > 2000:
+            lines.append("... [earlier summaries omitted]")
+            break
+        lines.append(f"- {bounded}")
+        total += len(bounded)
+    lines.append("")
+    return "\n".join(lines)
+
+
+def build_direct_prompt(
+    task: str,
+    *,
+    has_agents_md: bool,
+    plan: str | None = None,
+    prior_summaries: tuple[str, ...] | list[str] = (),
+) -> str:
     if len(task.encode("utf-8")) > _MAX_TASK_BYTES:
         raise ValueError("direct task text is too large")
     agents = (
         "Read and follow the repository's AGENTS.md before starting.\n" if has_agents_md else ""
     )
     plan_section = _plan_section(plan)
+    priors_section = _prior_summaries_section(prior_summaries)
     return (
         "You are an autonomous coding agent working in a managed git worktree.\n"
         "Work only inside this worktree; do not modify anything outside it. "
@@ -419,6 +673,7 @@ def build_direct_prompt(task: str, *, has_agents_md: bool, plan: str | None = No
         f"{agents}"
         "\nTask:\n"
         f"{task}\n"
+        f"{priors_section}"
         f"{plan_section}"
         "\nWhen finished, end your reply with exactly one JSON object in a fenced "
         "json block (and, for Muse, as your structured output):\n"
@@ -450,6 +705,34 @@ def build_direct_plan_prompt(task: str, *, has_agents_md: bool) -> str:
         'Put the full implementation plan in "summary": the files to change, the '
         "approach, the checks that prove it, and any risks. Keep it concise and "
         "concrete; a later session will implement from this plan alone.\n"
+        'Use "needs_decision" only when a genuine owner decision is required; '
+        'put the question in "question" and the choices in "options".\n'
+    )
+
+
+def build_direct_decompose_prompt(task: str, *, has_agents_md: bool) -> str:
+    if len(task.encode("utf-8")) > _MAX_TASK_BYTES:
+        raise ValueError("direct task text is too large")
+    agents = (
+        "Read and follow the repository's AGENTS.md before starting.\n" if has_agents_md else ""
+    )
+    return (
+        "DECOMPOSE: You are decomposing an epic into sequential coding tasks in a managed git worktree.\n"
+        "This is a read-only decomposition session: investigate freely, but change "
+        "nothing; any modification will be reverted. Do not run state-changing commands.\n"
+        f"{agents}"
+        "\nEpic task:\n"
+        f"{task}\n"
+        "\nBreak this task down into sequential, focused child tasks.\n"
+        "Return 1-20 tasks, each at most 8000 characters. Use an empty task list only when blocked or requesting a decision.\n"
+        "Each child task must be self-contained and specify its shape:\n"
+        '- "quick": direct implementation without a planning step\n'
+        '- "planned": requires an exploratory planning session before implementation\n'
+        "\nWhen finished, end your reply with exactly one JSON object in a fenced "
+        "json block (and, for Muse, as your structured output):\n"
+        '{"status": "done"|"needs_decision"|"blocked", "summary": "...", '
+        '"tasks": [{"task": "...", "shape": "quick"|"planned"}], '
+        '"question": null or "...", "options": ["..."]}\n'
         'Use "needs_decision" only when a genuine owner decision is required; '
         'put the question in "question" and the choices in "options".\n'
     )
@@ -613,11 +896,15 @@ def build_direct_launch(
 
 
 __all__ = [
+    "DECOMPOSE_SCHEMA",
     "RESULT_SCHEMA",
     "REVIEW_CLIENT_PREFERENCE",
     "REVIEW_SCHEMA",
     "SUPPORTED_DIRECT_CLIENTS",
     "DirectCheckRecord",
+    "DirectChildTaskRecord",
+    "DirectDecomposeResult",
+    "DirectDecomposeTask",
     "DirectFinding",
     "DirectLaunch",
     "DirectPrFeedback",
@@ -629,6 +916,7 @@ __all__ = [
     "DirectRunRecord",
     "DirectRunState",
     "DirectSessionRecord",
+    "build_direct_decompose_prompt",
     "build_direct_launch",
     "build_direct_plan_prompt",
     "build_direct_pr_repair_prompt",
@@ -638,6 +926,7 @@ __all__ = [
     "build_direct_review_repair_prompt",
     "format_blocking_findings",
     "format_pr_feedback",
+    "parse_decompose_result",
     "parse_direct_result",
     "parse_review_result",
 ]

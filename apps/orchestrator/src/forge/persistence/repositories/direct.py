@@ -2,21 +2,50 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, datetime
+from hashlib import sha256
 from uuid import UUID, uuid4
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from forge.domain.direct import (
+    ACTIVE_DIRECT_RUN_STATES,
     DirectCheckRecord,
+    DirectChildTaskRecord,
+    DirectDecomposeResult,
     DirectReviewRecord,
     DirectRunNotFound,
     DirectRunRecord,
     DirectSessionRecord,
 )
 from forge.domain.policy import ProjectPolicy
-from forge.persistence.models import DirectCheck, DirectReview, DirectRun, DirectSession, Project
+from forge.persistence.models import (
+    DirectCheck,
+    DirectReview,
+    DirectRun,
+    DirectSession,
+    DirectTask,
+    Project,
+)
+
+
+def _task_record(row: DirectTask) -> DirectChildTaskRecord:
+    return DirectChildTaskRecord(
+        id=row.id,
+        run_id=row.run_id,
+        ordinal=row.ordinal,
+        task_text=row.task_text,
+        shape=row.shape or "quick",
+        state=row.state or "PENDING",
+        plan_text=row.plan_text,
+        head_sha=row.head_sha,
+        summary=row.summary,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+        plan_approved=bool(row.plan_approved),
+    )
 
 
 def _run_record(row: DirectRun) -> DirectRunRecord:
@@ -46,6 +75,9 @@ def _run_record(row: DirectRun) -> DirectRunRecord:
         review_plan_first=bool(row.review_plan_first),
         plan_text=row.plan_text,
         plan_approved=bool(row.plan_approved),
+        control_version=row.control_version,
+        approval_task_id=row.approval_task_id,
+        owner_actions=tuple(row.owner_actions or []),
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
@@ -53,6 +85,7 @@ def _run_record(row: DirectRun) -> DirectRunRecord:
 
 def _check_record(row: DirectCheck) -> DirectCheckRecord:
     return DirectCheckRecord(
+        task_id=row.task_id,
         id=row.id,
         run_id=row.run_id,
         round=row.round,
@@ -75,6 +108,7 @@ def _review_record(row: DirectReview) -> DirectReviewRecord:
         {str(k): v for k, v in item.items()} for item in raw if isinstance(item, dict)
     )
     return DirectReviewRecord(
+        task_id=row.task_id,
         id=row.id, run_id=row.run_id, session_id=row.session_id, round=row.round,
         client=row.client, model=row.model, verdict=row.verdict, findings=findings,
         summary=row.summary, degraded=bool(row.degraded),
@@ -85,6 +119,7 @@ def _review_record(row: DirectReview) -> DirectReviewRecord:
 
 def _session_record(row: DirectSession) -> DirectSessionRecord:
     return DirectSessionRecord(
+        task_id=row.task_id,
         id=row.id,
         run_id=row.run_id,
         state=row.state,
@@ -214,29 +249,222 @@ class PostgresDirectRepository:
             rows = (
                 await session.execute(
                     select(DirectRun).where(
-                        DirectRun.state.in_(
-                            (
-                                "PLANNING", "RUNNING", "FINALIZING", "CHECKING",
-                                "REVIEWING", "REPAIRING", "PUBLISHING", "PR_OPEN",
-                            )
-                        )
+                        DirectRun.state.in_(ACTIVE_DIRECT_RUN_STATES)
                     )
                 )
             ).scalars().all()
             return tuple(_run_record(row) for row in rows)
 
-    async def approve_plan(self, run_id: UUID) -> DirectRunRecord:
+    async def _locked_run(self, session: AsyncSession, run_id: UUID) -> DirectRun:
+        row = (await session.execute(
+            select(DirectRun).where(DirectRun.id == run_id).with_for_update()
+        )).scalar_one_or_none()
+        if row is None:
+            raise DirectRunNotFound("direct run was not found")
+        return row
+
+    @staticmethod
+    def _owner_action(
+        row: DirectRun, action: str, actor_id: UUID | None, expected_version: int | None,
+        *, task_id: UUID | None = None,
+    ) -> None:
+        if row.shape == "epic" and expected_version is None:
+            raise ValueError("a current snapshot version is required")
+        if expected_version is not None and expected_version != row.control_version:
+            raise ValueError("stale direct run snapshot; refresh before retrying")
+        event: dict[str, object] = {
+            "actor_id": str(actor_id) if actor_id else None, "action": action,
+            "snapshot_version": row.control_version, "state": row.state,
+            "task_id": str(task_id) if task_id else None, "warnings": [],
+            "at": datetime.now(UTC).isoformat(),
+        }
+        row.owner_actions = [*(row.owner_actions or []), event][-64:]
+        row.control_version += 1
+
+    async def approve_plan(
+        self, run_id: UUID, *, expected_version: int | None = None,
+        task_id: UUID | None = None, actor_id: UUID | None = None,
+    ) -> DirectRunRecord:
         async with self._factory() as session:
-            row = await session.get(DirectRun, run_id)
-            if row is None:
-                raise DirectRunNotFound("direct run was not found")
-            if row.state != "AWAITING_PLAN_APPROVAL":
+            row = await self._locked_run(session, run_id)
+            if row.state != "AWAITING_PLAN_APPROVAL" or row.cancel_requested:
                 raise ValueError("direct run is not awaiting plan approval")
-            row.plan_approved = True
+            if row.approval_task_id != task_id:
+                raise ValueError("stale child plan approval")
+            self._owner_action(row, "approve_plan", actor_id, expected_version, task_id=task_id)
+            if task_id is not None:
+                child = await session.get(DirectTask, task_id)
+                if child is None or child.run_id != run_id or child.state != "AWAITING_PLAN_APPROVAL":
+                    raise ValueError("child is not awaiting plan approval")
+                child.plan_approved = True
+                # The worker resumes this plan, rather than planning or replaying earlier children.
+            else:
+                row.plan_approved = True
+            row.approval_task_id = None
             row.state = "QUEUED"
             await session.commit()
             await session.refresh(row)
             return _run_record(row)
+
+    async def approve_decomposition(
+        self, run_id: UUID, *, expected_version: int | None = None,
+        actor_id: UUID | None = None,
+    ) -> DirectRunRecord:
+        async with self._factory() as session:
+            row = await self._locked_run(session, run_id)
+            if row.state != "AWAITING_DECOMPOSITION_APPROVAL" or row.cancel_requested:
+                raise ValueError("direct run is not awaiting decomposition approval")
+            self._owner_action(row, "approve_decomposition", actor_id, expected_version)
+            row.state = "QUEUED"
+            row.plan_approved = True
+            await session.commit()
+            await session.refresh(row)
+            return _run_record(row)
+
+    async def accept_decomposition(
+        self, run_id: UUID, result: DirectDecomposeResult,
+    ) -> DirectRunRecord:
+        """The accepted list and parked/active state become durable together."""
+        if result.status != "done" or not 1 <= len(result.tasks) <= 20:
+            raise ValueError("invalid accepted decomposition")
+        async with self._factory() as session:
+            row = await self._locked_run(session, run_id)
+            if row.state != "DECOMPOSING":
+                raise ValueError("direct run is not decomposing")
+            if row.cancel_requested:
+                row.state = "CANCELLED"
+            else:
+                existing = await session.scalar(select(DirectTask.id).where(DirectTask.run_id == run_id).limit(1))
+                if existing is not None:
+                    raise ValueError("decomposition is already persisted")
+                session.add_all([
+                    DirectTask(id=uuid4(), run_id=run_id, ordinal=i, task_text=t.task, shape=t.shape)
+                    for i, t in enumerate(result.tasks)
+                ])
+                row.summary = result.summary
+                row.state = "AWAITING_DECOMPOSITION_APPROVAL" if row.review_plan_first else "RUNNING"
+            row.control_version += 1
+            await session.commit()
+            await session.refresh(row)
+            return _run_record(row)
+
+    async def park_child_plan(self, run_id: UUID, task_id: UUID, plan: str) -> None:
+        async with self._factory() as session:
+            row = await self._locked_run(session, run_id)
+            child = await session.get(DirectTask, task_id)
+            if child is None or child.run_id != run_id or child.state != "PLANNING":
+                raise ValueError("child is not planning")
+            child.plan_text = plan
+            child.state = "CANCELLED" if row.cancel_requested else "AWAITING_PLAN_APPROVAL"
+            row.state = child.state
+            row.approval_task_id = None if row.cancel_requested else task_id
+            row.control_version += 1
+            await session.commit()
+
+    async def tasks(self, run_id: UUID) -> tuple[DirectChildTaskRecord, ...]:
+        async with self._factory() as session:
+            rows = (
+                await session.execute(
+                    select(DirectTask)
+                    .where(DirectTask.run_id == run_id)
+                    .order_by(DirectTask.ordinal)
+                )
+            ).scalars().all()
+            return tuple(_task_record(row) for row in rows)
+
+    async def create_task(
+        self,
+        *,
+        run_id: UUID,
+        ordinal: int,
+        task_text: str,
+        shape: str = "quick",
+        id: UUID | None = None,
+    ) -> DirectChildTaskRecord:
+        async with self._factory() as session:
+            row = DirectTask(
+                id=id or uuid4(),
+                run_id=run_id,
+                ordinal=ordinal,
+                task_text=task_text,
+                shape=shape,
+                state="PENDING",
+            )
+            session.add(row)
+            await session.commit()
+            await session.refresh(row)
+            return _task_record(row)
+
+    async def update_task(self, task_id: UUID, **fields: object) -> DirectChildTaskRecord:
+        async with self._factory() as session:
+            row = await session.get(DirectTask, task_id)
+            if row is None:
+                raise ValueError("direct task was not found")
+            for key, value in fields.items():
+                setattr(row, key, value)
+            await session.commit()
+            await session.refresh(row)
+            return _task_record(row)
+
+    async def replace_pending_tasks(
+        self, run_id: UUID, task_items: Sequence[dict[str, object]], *,
+        expected_version: int | None = None, actor_id: UUID | None = None,
+    ) -> tuple[DirectChildTaskRecord, ...]:
+        if not 1 <= len(task_items) <= 20:
+            raise ValueError("direct epic requires between 1 and 20 tasks")
+        async with self._factory() as session:
+            run = await self._locked_run(session, run_id)
+            if run.state != "AWAITING_DECOMPOSITION_APPROVAL" or run.cancel_requested:
+                raise ValueError("direct run is not awaiting decomposition approval")
+            existing = (await session.scalars(
+                select(DirectTask).where(DirectTask.run_id == run_id).order_by(DirectTask.ordinal)
+            )).all()
+            if any(t.state != "PENDING" for t in existing):
+                raise ValueError("cannot edit tasks that have already started")
+            self._owner_action(run, "edit_tasks", actor_id, expected_version)
+            def snapshot(tasks: Sequence[DirectTask]) -> list[dict[str, object]]:
+                return [{"id": str(t.id), "ordinal": t.ordinal, "shape": t.shape,
+                         "task_sha256": sha256(t.task_text.encode("utf-8")).hexdigest()}
+                        for t in tasks]
+
+            before_tasks = snapshot(existing)
+            by_id = {t.id: t for t in existing}
+            seen: set[UUID] = set()
+            ordered = []
+            for idx, item in enumerate(task_items):
+                text = item.get("task")
+                shape = item.get("shape", "quick")
+                if not isinstance(text, str) or not text.strip() or len(text) > 8000 or len(text.encode("utf-8")) > 65536:
+                    raise ValueError("task text is invalid")
+                if shape not in {"quick", "planned"}:
+                    raise ValueError("direct task shape is invalid")
+                raw_id = item.get("id")
+                tid = UUID(str(raw_id)) if raw_id else None
+                if tid is not None and (tid not in by_id or tid in seen):
+                    raise ValueError("unknown or duplicate direct task identity")
+                if tid is None:
+                    task = DirectTask(id=uuid4(), run_id=run_id, state="PENDING")
+                    session.add(task)
+                else:
+                    seen.add(tid)
+                    task = by_id[tid]
+                task.ordinal = idx
+                task.task_text = text.strip()
+                task.shape = str(shape)
+                ordered.append(task)
+            for task in existing:
+                if task.id not in seen:
+                    await session.delete(task)
+            # Retain bounded content-free identities for the exact owner edit,
+            # including its prior order, without duplicating task prose/secrets.
+            run.owner_actions = [*run.owner_actions[:-1], {
+                **run.owner_actions[-1], "before_tasks": before_tasks,
+                "after_tasks": snapshot(ordered),
+            }]
+            await session.commit()
+            for task in ordered:
+                await session.refresh(task)
+            return tuple(_task_record(t) for t in ordered)
 
     async def policy_for(self, run_id: UUID) -> tuple[ProjectPolicy, int] | None:
         """Return (policy, version) for the run's project, or None if unset."""
@@ -282,11 +510,13 @@ class PostgresDirectRepository:
         exit_code: int | None = None,
         duration_ms: int | None = None,
         failure_excerpt: str | None = None,
+        task_id: UUID | None = None,
     ) -> DirectCheckRecord:
         async with self._factory() as session:
             row = DirectCheck(
                 id=uuid4(),
                 run_id=run_id,
+                task_id=task_id,
                 round=round,
                 command_name=command_name,
                 kind=kind,
@@ -325,9 +555,12 @@ class PostgresDirectRepository:
 
     async def update_run(self, run_id: UUID, **fields: object) -> DirectRunRecord:
         async with self._factory() as session:
-            row = await session.get(DirectRun, run_id)
-            if row is None:
-                raise DirectRunNotFound("direct run was not found")
+            row = await self._locked_run(session, run_id)
+            if row.state == "CANCELLED" and fields.get("state", "CANCELLED") != "CANCELLED":
+                raise ValueError("cancelled direct run cannot resume")
+            if row.cancel_requested and fields.get("state") in {"AWAITING_PLAN_APPROVAL", "AWAITING_DECOMPOSITION_APPROVAL"}:
+                fields["state"] = "CANCELLED"
+            row.control_version += 1
             for key, value in fields.items():
                 if key == "options" and isinstance(value, tuple):
                     value = list(value)
@@ -336,18 +569,22 @@ class PostgresDirectRepository:
             await session.refresh(row)
             return _run_record(row)
 
-    async def request_cancel(self, run_id: UUID) -> DirectRunRecord:
+    async def request_cancel(self, run_id: UUID, *, actor_id: UUID | None = None) -> DirectRunRecord:
         async with self._factory() as session:
-            row = await session.get(DirectRun, run_id)
-            if row is None:
-                raise DirectRunNotFound("direct run was not found")
-            if row.state in {"QUEUED", "AWAITING_PLAN_APPROVAL"}:
+            row = await self._locked_run(session, run_id)
+            parked_states = {"QUEUED", "AWAITING_PLAN_APPROVAL", "AWAITING_DECOMPOSITION_APPROVAL"}
+            if row.state not in parked_states | ACTIVE_DIRECT_RUN_STATES:
+                return _run_record(row)
+            # Cancellation always applies to the locked current state; it must
+            # not depend on the browser still having the latest progress poll.
+            self._owner_action(row, "cancel", actor_id, row.control_version)
+            if row.state in parked_states:
                 row.state = "CANCELLED"
                 row.cancel_requested = True
-            elif row.state in {
-                "PLANNING", "RUNNING", "FINALIZING", "CHECKING", "REVIEWING",
-                "REPAIRING", "PUBLISHING", "PR_OPEN",
-            }:
+                await session.execute(update(DirectTask).where(
+                    DirectTask.run_id == run_id, DirectTask.state == "AWAITING_PLAN_APPROVAL"
+                ).values(state="CANCELLED"))
+            elif row.state in ACTIVE_DIRECT_RUN_STATES:
                 row.cancel_requested = True
             await session.commit()
             await session.refresh(row)
@@ -376,15 +613,33 @@ class PostgresDirectRepository:
             return tuple(_review_record(row) for row in rows)
 
     async def create_review(
-        self, *, run_id: UUID, session_id: UUID, round: int, client: str, model: str,
-        verdict: str, findings: tuple[dict[str, object], ...], summary: str | None,
-        degraded: bool, reviewer_modified_worktree: bool,
+        self,
+        *,
+        run_id: UUID,
+        session_id: UUID,
+        round: int,
+        client: str,
+        model: str,
+        verdict: str,
+        findings: tuple[dict[str, object], ...],
+        summary: str | None,
+        degraded: bool,
+        reviewer_modified_worktree: bool,
+        task_id: UUID | None = None,
     ) -> DirectReviewRecord:
         async with self._factory() as session:
             row = DirectReview(
-                id=uuid4(), run_id=run_id, session_id=session_id, round=round,
-                client=client, model=model, verdict=verdict, findings=list(findings),
-                summary=summary, degraded=degraded,
+                id=uuid4(),
+                run_id=run_id,
+                task_id=task_id,
+                session_id=session_id,
+                round=round,
+                client=client,
+                model=model,
+                verdict=verdict,
+                findings=list(findings),
+                summary=summary,
+                degraded=degraded,
                 reviewer_modified_worktree=reviewer_modified_worktree,
             )
             session.add(row)
@@ -393,14 +648,22 @@ class PostgresDirectRepository:
             return _review_record(row)
 
     async def create_session(
-        self, *, run_id: UUID, run: DirectRunRecord | None = None, kind: str = "implement",
-        client: str | None = None, model: str | None = None, effort: str | None = None,
+        self,
+        *,
+        run_id: UUID,
+        run: DirectRunRecord | None = None,
+        kind: str = "implement",
+        client: str | None = None,
+        model: str | None = None,
+        effort: str | None = None,
+        task_id: UUID | None = None,
     ) -> DirectSessionRecord:
         async with self._factory() as session:
             source = run or _run_record(await self._require(session, run_id))
             row = DirectSession(
                 id=uuid4(),
                 run_id=run_id,
+                task_id=task_id,
                 kind=kind,
                 state="RUNNING",
                 client=client if client is not None else source.client,

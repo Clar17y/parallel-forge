@@ -81,6 +81,7 @@ class FakePublisher:
             raise PublisherError("push failed")
 
     async def open_pr(self, *, repo, base, head, title, body, worktree):
+        assert len(body) <= 65536, "outbound PR body exceeds GitHub's codepoint limit"
         self.creates.append({"repo": repo, "base": base, "head": head, "title": title, "body": body})
         return 42, "https://example.test/pr/42"
 
@@ -105,6 +106,39 @@ class FakePublisher:
 class QuietPublisher(FakePublisher):
     def __init__(self):
         super().__init__([snap()])
+
+
+@pytest.mark.parametrize("task", ["a" * 65536, "a" * 60000 + "🧭" * 1384], ids=["ascii", "unicode"])
+async def test_epic_pr_body_bounds_echo_without_losing_evidence(task):
+    from unittest.mock import AsyncMock
+
+    worker = DirectRunWorker(None, Settings())
+    worker._repo = SimpleNamespace(
+        checks=AsyncMock(return_value=[SimpleNamespace(command_name="smoke", status="PASSED", round=1)]),
+        reviews=AsyncMock(return_value=[SimpleNamespace(client="codex_app_server", model="review-model", verdict="clean", round=1)]),
+    )
+    run = SimpleNamespace(id=uuid4(), task_text=task, shape="epic")
+    assert len(task.encode("utf-8")) == 65536
+    body = await worker._pr_body(run, "Summary evidence. " * 500)
+    assert len(body) <= 60000
+    assert "[TRUNCATED" in body
+    assert "Summary evidence." in body
+    assert "smoke: PASSED" in body
+    assert "review-model: clean" in body
+    assert body.endswith(f"Opened by Forge direct run {run.id}")
+    assert run.task_text == task
+
+
+@pytest.mark.parametrize("shape", ["quick", "planned", "epic"])
+async def test_ordinary_pr_body_keeps_compatible_shape_content(shape):
+    from unittest.mock import AsyncMock
+
+    worker = DirectRunWorker(None, Settings())
+    worker._repo = SimpleNamespace(checks=AsyncMock(return_value=[]), reviews=AsyncMock(return_value=[]))
+    run = SimpleNamespace(id=uuid4(), task_text="ordinary task", shape=shape)
+    body = await worker._pr_body(run, "ordinary summary")
+    expected = f"ordinary summary\n\nChecks:\n- no checks recorded\n\nReviews:\n- no reviews recorded\n\nOpened by Forge direct run {run.id}"
+    assert body == (f"Epic request:\nordinary task\n\n{expected}" if shape == "epic" else expected)
 
 
 def _git(repo: Path, *args: str) -> str:

@@ -26,9 +26,13 @@ from forge.application.services.validation_failure_evidence import (
     merge_check_failures,
 )
 from forge.domain.direct import (
+    ACTIVE_DIRECT_RUN_STATES,
+    DECOMPOSE_SCHEMA,
     RESULT_SCHEMA,
     REVIEW_CLIENT_PREFERENCE,
     REVIEW_SCHEMA,
+    DirectDecomposeResult,
+    DirectDecomposeTask,
     DirectFinding,
     DirectLaunch,
     DirectPrFeedback,
@@ -36,6 +40,7 @@ from forge.domain.direct import (
     DirectResult,
     DirectReviewResult,
     DirectRunRecord,
+    build_direct_decompose_prompt,
     build_direct_launch,
     build_direct_plan_prompt,
     build_direct_pr_repair_prompt,
@@ -45,6 +50,7 @@ from forge.domain.direct import (
     build_direct_review_repair_prompt,
     format_blocking_findings,
     format_pr_feedback,
+    parse_decompose_result,
     parse_direct_result,
     parse_review_result,
 )
@@ -62,6 +68,11 @@ _MAX_LINE_BYTES = 262144
 _TAIL_BYTES = 262144
 _TRUNCATED_LINE = b" ...[line truncated]"
 _OUTPUT_TRUNCATED = "[output truncated]"
+# 20 x 8,000 supplementary Unicode characters use <4 MiB in the supported
+# escaped role-JSON-inside-CLI-JSON forms. Reserve bounded framing/log headroom.
+_DECOMPOSE_CAPTURE_BYTES = 8 * 1024 * 1024
+_DECOMPOSE_OVERFLOW = "decomposition output exceeded capture limit"
+_ACTIVE_TASK_STATES = frozenset({"PLANNING", "RUNNING", "CHECKING", "REVIEWING", "REPAIRING"})
 
 
 class _CommitFailure(RuntimeError):
@@ -145,6 +156,26 @@ class _BoundedTail:
 
     def text(self) -> str:
         return "\n".join(self._parts)
+
+
+class _DecomposeCapture:
+    """Whole bounded wire input, never a parseable truncated prefix or tail."""
+
+    def __init__(self) -> None:
+        self._data = bytearray()
+        self.overflow = False
+
+    def append(self, data: bytes) -> None:
+        if self.overflow:
+            return
+        if len(self._data) + len(data) > _DECOMPOSE_CAPTURE_BYTES:
+            self.overflow = True
+            self._data.clear()
+        else:
+            self._data.extend(data)
+
+    def text(self) -> str:
+        return self._data.decode("utf-8", errors="replace")
 
 
 @dataclass(frozen=True, slots=True)
@@ -331,6 +362,14 @@ class GhPublisher:
         await _run_publisher_argv(("gh", "pr", "close", str(number), "--repo", repo))
 
 
+@dataclass(frozen=True, slots=True)
+class _ChildPipelineResult:
+    head_sha: str
+    summary: str
+    check_round: int
+    review_round: int
+
+
 class DirectRunWorker:
     """Claim one QUEUED direct run and run its single session to settlement."""
 
@@ -366,14 +405,26 @@ class DirectRunWorker:
             logger.exception("direct run %s failed in worker", run.id)
             try:
                 current = await self._repo.get(run.id)
-                if current.state in {"PLANNING", "RUNNING", "FINALIZING", "CHECKING", "REVIEWING", "REPAIRING", "PUBLISHING", "PR_OPEN"}:
+                if current.state in ACTIVE_DIRECT_RUN_STATES:
                     await self._repo.update_run(
                         run.id, state="FAILED", failure_reason="worker error"
                     )
             except Exception:  # noqa: BLE001, S110
                 pass
         finally:
-            self._active_run_id = None
+            try:
+                current = await self._repo.get(run.id)
+                if current.shape == "epic" and current.state in {"FAILED", "CANCELLED", "NEEDS_DECISION"}:
+                    for task in await self._repo.tasks(run.id):
+                        if task.state in _ACTIVE_TASK_STATES:
+                            try:
+                                await self._repo.update_task(task.id, state=current.state)
+                            except Exception:
+                                logger.exception("direct run %s child cleanup failed; durable state may be incomplete", run.id)
+            except Exception:
+                logger.exception("direct run %s cleanup failed; durable state may be incomplete", run.id)
+            finally:
+                self._active_run_id = None
         return run.id
 
     async def _settle_orphans(self) -> None:
@@ -396,6 +447,10 @@ class DirectRunWorker:
                         session.id, state="FAILED", ended_at=datetime.now(UTC),
                         failure_reason="worker interrupted",
                     )
+            if run.shape == "epic":
+                for task in await self._repo.tasks(run.id):
+                    if task.state in _ACTIVE_TASK_STATES:
+                        await self._repo.update_task(task.id, state="FAILED")
             await self._repo.update_run(
                 run.id, state="FAILED", failure_reason="worker interrupted"
             )
@@ -447,6 +502,9 @@ class DirectRunWorker:
             run.worktree_path and run.base_sha and run.branch
             and Path(run.worktree_path).exists()
         )
+        if run.worktree_path and not resumed:
+            await self._repo.update_run(run.id, state="FAILED", failure_reason="recorded worktree unavailable")
+            return
         if resumed:
             worktree = Path(run.worktree_path or "")
             branch = run.branch or ""
@@ -478,134 +536,378 @@ class DirectRunWorker:
         transcript_dir.mkdir(parents=True, exist_ok=True)
         installation = self._resolve_installation(run)
         has_agents_md = (worktree / "AGENTS.md").exists()
-        plan_text = run.plan_text
-        if run.shape == "planned" and not plan_text:
+        if run.shape == "epic":
+            tasks = await self._repo.tasks(run.id)
+            if not tasks:
+                await self._repo.update_run(run.id, state="DECOMPOSING")
+                decompose_prompt = build_direct_decompose_prompt(
+                    run.task_text, has_agents_md=has_agents_md
+                )
+                decomposed = await self._launch_and_settle_decompose(
+                    run,
+                    installation,
+                    prompt=decompose_prompt,
+                    worktree=worktree,
+                    transcript_dir=transcript_dir,
+                )
+                if decomposed is None or decomposed.status != "done":
+                    return
+                run = await self._repo.accept_decomposition(run.id, decomposed)
+                if run.state != "RUNNING":
+                    return
+                tasks = await self._repo.tasks(run.id)
+
+            current_head = run.head_sha or base_sha
+            prior_summaries: list[str] = []
+            checks = await self._repo.checks(run.id)
+            reviews = await self._repo.reviews(run.id)
+            check_round = max((c.round for c in checks), default=-1) + 1
+            review_rounds = max((r.round for r in reviews), default=-1) + 1
+            for task in sorted(tasks, key=lambda t: t.ordinal):
+                if task.state == "DONE":
+                    if task.head_sha:
+                        current_head = task.head_sha
+                    if task.summary:
+                        prior_summaries.append(
+                            f"Task {task.ordinal + 1} ({task.task_text}): {task.summary}"
+                        )
+                    continue
+                if task.state in ("FAILED", "CANCELLED", "NEEDS_DECISION"):
+                    return
+                if await self._repo.cancel_requested(run.id):
+                    await self._repo.update_run(
+                        run.id, state="CANCELLED", head_sha=current_head
+                    )
+                    await self._repo.update_task(task.id, state="CANCELLED")
+                    return
+                child_res = await self._execute_child_pipeline(
+                    run,
+                    installation,
+                    worktree=worktree,
+                    transcript_dir=transcript_dir,
+                    has_agents_md=has_agents_md,
+                    task_text=task.task_text,
+                    shape=task.shape,
+                    plan_text=task.plan_text,
+                    base_sha=current_head,
+                    task_id=task.id,
+                    prior_summaries=tuple(prior_summaries),
+                    check_round_start=check_round,
+                    review_round_start=review_rounds,
+                    review_plan_first=run.review_plan_first and not task.plan_approved,
+                )
+                if child_res is None:
+                    return
+                current_head = child_res.head_sha
+                check_round = child_res.check_round
+                review_rounds = child_res.review_round
+                await self._repo.update_task(
+                    task.id,
+                    state="DONE",
+                    head_sha=child_res.head_sha,
+                    summary=child_res.summary,
+                )
+                prior_summaries.append(
+                    f"Task {task.ordinal + 1} ({task.task_text}): {child_res.summary}"
+                )
+
+            all_tasks = await self._repo.tasks(run.id)
+            combined_lines = [run.summary or f"Epic direct run {str(run.id)[:8]}"]
+            combined_lines.append("")
+            combined_lines.append("Completed tasks:")
+            for t in sorted(all_tasks, key=lambda x: x.ordinal):
+                combined_lines.append(f"- Task {t.ordinal + 1} [{t.shape}]: {t.task_text}")
+                if t.summary:
+                    combined_lines.append(f"  {t.summary}")
+            epic_summary = "\n".join(combined_lines)
+            await self._repo.update_run(run.id, summary=epic_summary[:8000], head_sha=current_head)
+            await self._publish_and_watch(
+                run,
+                worktree=worktree,
+                branch=branch,
+                head_sha=current_head,
+                summary=epic_summary,
+                installation=installation,
+                transcript_dir=transcript_dir,
+                has_agents_md=has_agents_md,
+                check_round=check_round,
+            )
+            return
+
+        pipeline_res = await self._execute_child_pipeline(
+            run,
+            installation,
+            worktree=worktree,
+            transcript_dir=transcript_dir,
+            has_agents_md=has_agents_md,
+            task_text=run.task_text,
+            shape=run.shape,
+            plan_text=run.plan_text,
+            base_sha=base_sha,
+            review_plan_first=run.review_plan_first,
+        )
+        if pipeline_res is None:
+            return
+        await self._publish_and_watch(
+            run,
+            worktree=worktree,
+            branch=branch,
+            head_sha=pipeline_res.head_sha,
+            summary=pipeline_res.summary,
+            installation=installation,
+            transcript_dir=transcript_dir,
+            has_agents_md=has_agents_md,
+            check_round=pipeline_res.check_round,
+        )
+
+    async def _sync_aborted_task_state(self, run_id: UUID, task_id: UUID | None) -> None:
+        if task_id is not None:
+            current_run = await self._repo.get(run_id)
+            if current_run and current_run.state not in ("NEEDS_DECISION",):
+                task_state = "CANCELLED" if current_run.state == "CANCELLED" else "FAILED"
+                await self._repo.update_task(task_id, state=task_state)
+
+    async def _execute_child_pipeline(
+        self,
+        run: DirectRunRecord,
+        installation: object,
+        *,
+        worktree: Path,
+        transcript_dir: Path,
+        has_agents_md: bool,
+        task_text: str,
+        shape: str,
+        plan_text: str | None,
+        base_sha: str,
+        task_id: UUID | None = None,
+        prior_summaries: tuple[str, ...] = (),
+        check_round_start: int = 0,
+        review_round_start: int = 0,
+        review_plan_first: bool = False,
+    ) -> _ChildPipelineResult | None:
+        if task_id is not None:
+            await self._repo.update_task(task_id, state="RUNNING")
+        if shape == "planned" and not plan_text:
             await self._repo.update_run(run.id, state="PLANNING")
+            if task_id is not None:
+                await self._repo.update_task(task_id, state="PLANNING")
+            plan_prompt = build_direct_plan_prompt(task_text, has_agents_md=has_agents_md)
             planned = await self._launch_and_settle_plan(
-                run, installation,
-                prompt=build_direct_plan_prompt(run.task_text, has_agents_md=has_agents_md),
-                worktree=worktree, transcript_dir=transcript_dir,
+                run,
+                installation,
+                prompt=plan_prompt,
+                worktree=worktree,
+                transcript_dir=transcript_dir,
+                task_id=task_id,
             )
             if planned is None:
-                return
+                await self._sync_aborted_task_state(run.id, task_id)
+                return None
             plan_text = planned
-            run = await self._repo.update_run(run.id, plan_text=plan_text)
-            if run.review_plan_first and not run.plan_approved:
-                await self._repo.update_run(run.id, state="AWAITING_PLAN_APPROVAL")
-                return
+            if task_id is not None:
+                if review_plan_first:
+                    await self._repo.park_child_plan(run.id, task_id, plan_text)
+                    return None
+                await self._repo.update_task(task_id, plan_text=plan_text)
+            else:
+                run = await self._repo.update_run(run.id, plan_text=plan_text)
+                if review_plan_first and not run.plan_approved:
+                    await self._repo.update_run(run.id, state="AWAITING_PLAN_APPROVAL")
+                    return None
             await self._repo.update_run(run.id, state="RUNNING")
+            if task_id is not None:
+                await self._repo.update_task(task_id, state="RUNNING")
+
         prompt = build_direct_prompt(
-            run.task_text, has_agents_md=has_agents_md, plan=plan_text
+            task_text,
+            has_agents_md=has_agents_md,
+            plan=plan_text,
+            prior_summaries=prior_summaries,
         )
         result = await self._launch_and_settle_session(
-            run, installation, kind="implement", prompt=prompt,
-            worktree=worktree, transcript_dir=transcript_dir,
+            run,
+            installation,
+            kind="implement",
+            prompt=prompt,
+            worktree=worktree,
+            transcript_dir=transcript_dir,
+            task_id=task_id,
         )
         if result is None:
-            return
-        head_sha = await self._commit_and_record(run, worktree, base_sha, result)
+            await self._sync_aborted_task_state(run.id, task_id)
+            return None
+        head_sha = await self._commit_and_record(
+            run, worktree, base_sha, result, task_id=task_id
+        )
         if head_sha is None:
-            return
+            return None
         summary = result.summary
         repairs_used = 0
-        check_round = 0
-        review_rounds = 0
+        check_round = check_round_start
+        review_rounds = review_round_start
+        child_review_rounds = 0
+        check_note = ""
         while True:
             # Inner Slice B check loop (separate counter from review rounds).
-            check_note = ""
             while True:
                 await self._repo.update_run(run.id, state="CHECKING", head_sha=head_sha)
-                round_result = await self._run_checks(
-                    run, worktree, head_sha, round_no=check_round
-                )
+                if task_id is not None:
+                    await self._repo.update_task(task_id, state="CHECKING", head_sha=head_sha)
+                    round_result = await self._run_checks(
+                        run, worktree, head_sha, round_no=check_round, task_id=task_id
+                    )
+                else:
+                    round_result = await self._run_checks(
+                        run, worktree, head_sha, round_no=check_round
+                    )
                 check_round += 1
                 if round_result.outcome == "cancelled":
                     await self._repo.update_run(run.id, state="CANCELLED")
-                    return
+                    if task_id is not None:
+                        await self._repo.update_task(task_id, state="CANCELLED")
+                    return None
                 if round_result.outcome == "passed":
                     check_note = f" ({round_result.note})" if round_result.note else ""
                     break
                 if round_result.outcome == "error":
                     await self._repo.update_run(
-                        run.id, state="FAILED", head_sha=head_sha,
+                        run.id,
+                        state="FAILED",
+                        head_sha=head_sha,
                         failure_reason=(round_result.error_reason or "check error")[:512],
                     )
-                    return
+                    if task_id is not None:
+                        await self._repo.update_task(task_id, state="FAILED")
+                    return None
                 detail = round_result.detail
                 if repairs_used >= self._settings.direct_max_repair_rounds:
                     await self._repo.update_run(
-                        run.id, state="FAILED", head_sha=head_sha,
+                        run.id,
+                        state="FAILED",
+                        head_sha=head_sha,
                         summary=f"{summary}\n{detail}"[:8000],
                         failure_reason=(
                             f"checks still failing after "
                             f"{self._settings.direct_max_repair_rounds} repair rounds"
                         ),
                     )
-                    return
+                    if task_id is not None:
+                        await self._repo.update_task(
+                            task_id,
+                            state="FAILED",
+                            summary=f"{summary}\n{detail}"[:8000],
+                        )
+                    return None
                 repairs_used += 1
                 await self._repo.update_run(run.id, state="REPAIRING")
+                if task_id is not None:
+                    await self._repo.update_task(task_id, state="REPAIRING")
                 repair_prompt = build_direct_repair_prompt(
-                    run.task_text, detail, has_agents_md=has_agents_md, plan=plan_text
+                    task_text, detail, has_agents_md=has_agents_md, plan=plan_text
                 )
                 repaired = await self._execute_repair_step(
-                    run, installation, prompt=repair_prompt, worktree=worktree,
-                    transcript_dir=transcript_dir, head_sha=head_sha, summary=summary,
+                    run,
+                    installation,
+                    prompt=repair_prompt,
+                    worktree=worktree,
+                    transcript_dir=transcript_dir,
+                    head_sha=head_sha,
+                    summary=summary,
+                    task_id=task_id,
                 )
                 if repaired is None:
-                    return
+                    return None
                 head_sha, summary = repaired
             # Slice C: cross-provider review after every passed CHECKING.
             if self._settings.direct_review_policy == "skip":
-                await self._publish_and_watch(run, worktree=worktree, branch=branch, head_sha=head_sha, summary=f"{summary}{check_note} (review skipped by owner policy)", installation=installation, transcript_dir=transcript_dir, has_agents_md=has_agents_md, check_round=check_round)
-                return
+                summary = f"{summary}{check_note} (review skipped by owner policy)"
+                break
             await self._repo.update_run(run.id, state="REVIEWING", head_sha=head_sha)
+            if task_id is not None:
+                await self._repo.update_task(task_id, state="REVIEWING", head_sha=head_sha)
             reviewer = self._resolve_review_installation(run, installation)
             if reviewer is None and self._settings.direct_review_policy == "same_provider":
                 reviewer = installation
             if reviewer is None:
                 await self._repo.update_run(
-                    run.id, state="FAILED", head_sha=head_sha,
+                    run.id,
+                    state="FAILED",
+                    head_sha=head_sha,
                     failure_reason="no distinct reviewer route",
                 )
-                return
+                if task_id is not None:
+                    await self._repo.update_task(task_id, state="FAILED")
+                return None
             diff_text = await _git_diff(worktree, base_sha, head_sha)
             review_prompt = build_direct_review_prompt(
-                run.task_text, diff_text, base_sha=base_sha, head_sha=head_sha,
-                has_agents_md=has_agents_md, plan=plan_text,
+                task_text,
+                diff_text,
+                base_sha=base_sha,
+                head_sha=head_sha,
+                has_agents_md=has_agents_md,
+                plan=plan_text,
             )
             review_round = review_rounds
             review_rounds += 1
+            child_review_rounds += 1
             review = await self._launch_and_settle_review(
-                run, reviewer, prompt=review_prompt, worktree=worktree,
-                transcript_dir=transcript_dir, round_no=review_round,
+                run,
+                reviewer,
+                prompt=review_prompt,
+                worktree=worktree,
+                transcript_dir=transcript_dir,
+                round_no=review_round,
+                task_id=task_id,
             )
             if review is None:
-                return
+                await self._sync_aborted_task_state(run.id, task_id)
+                return None
             blocking = tuple(f for f in review.findings if f.severity == "blocking")
             if review.verdict == "clean" and not blocking:
-                await self._publish_and_watch(run, worktree=worktree, branch=branch, head_sha=head_sha, summary=f"{summary}{check_note}", installation=installation, transcript_dir=transcript_dir, has_agents_md=has_agents_md, check_round=check_round)
-                return
-            if review_rounds >= self._settings.direct_max_review_rounds:
+                summary = f"{summary}{check_note}"
+                break
+            if child_review_rounds >= self._settings.direct_max_review_rounds:
                 await self._repo.update_run(
-                    run.id, state="FAILED", head_sha=head_sha,
+                    run.id,
+                    state="FAILED",
+                    head_sha=head_sha,
                     failure_reason=(
                         f"review still blocking after "
                         f"{self._settings.direct_max_review_rounds} rounds"
                     ),
                 )
-                return
+                if task_id is not None:
+                    await self._repo.update_task(task_id, state="FAILED")
+                return None
             await self._repo.update_run(run.id, state="REPAIRING")
+            if task_id is not None:
+                await self._repo.update_task(task_id, state="REPAIRING")
             review_repair_prompt = build_direct_review_repair_prompt(
-                run.task_text, format_blocking_findings(review.findings),
-                has_agents_md=has_agents_md, plan=plan_text,
+                task_text,
+                format_blocking_findings(review.findings),
+                has_agents_md=has_agents_md,
+                plan=plan_text,
             )
             repaired = await self._execute_repair_step(
-                run, installation, prompt=review_repair_prompt, worktree=worktree,
-                transcript_dir=transcript_dir, head_sha=head_sha, summary=summary,
+                run,
+                installation,
+                prompt=review_repair_prompt,
+                worktree=worktree,
+                transcript_dir=transcript_dir,
+                head_sha=head_sha,
+                summary=summary,
+                task_id=task_id,
             )
             if repaired is None:
-                return
+                return None
             head_sha, summary = repaired
+
+        return _ChildPipelineResult(
+            head_sha=head_sha,
+            summary=summary,
+            check_round=check_round,
+            review_round=review_rounds,
+        )
 
     def _log_pr_watch(self, transcript_dir: Path, message: str) -> None:
         try:
@@ -617,14 +919,18 @@ class DirectRunWorker:
             pass
 
     async def _pr_body(self, run: DirectRunRecord, summary: str) -> str:
-        lines = [summary[:4000], "", "Checks:"]
+        epic = run.shape == "epic"
+        lines = [summary[:8000 if epic else 4000], "", "Checks:"]
         try:
             checks = await self._repo.checks(run.id)
         except Exception:  # noqa: BLE001
             checks = ()
         if checks:
             for check in checks[-32:]:
-                lines.append(f"- {check.command_name}: {check.status} (round {check.round})")
+                name = check.command_name
+                if epic and len(name) > 256:
+                    name = name[:256] + "[TRUNCATED]"
+                lines.append(f"- {name}: {check.status} (round {check.round})")
         else:
             lines.append("- no checks recorded")
         lines.append("")
@@ -640,10 +946,35 @@ class DirectRunWorker:
             lines.append("- no reviews recorded")
         lines.append("")
         lines.append(f"Opened by Forge direct run {run.id}")
-        body, _ = self._redactor.redact_text("\n".join(lines))
-        return body[:8000]
+        if not epic:
+            body, _ = self._redactor.redact_text("\n".join(lines))
+            return body[:8000]
+        # GitHub accepts at most 65,536 codepoints. Reserve a margin and give
+        # summary/check/review evidence and the durable run reference priority
+        # over the echoed request. The persisted request is never changed.
+        cap = 60000
+        redactor = self._redactor.with_minimum_policy(RedactionPolicy(max_string_bytes=cap * 4))
+        evidence, _ = redactor.redact_text("\n".join(lines))
+        request, _ = redactor.redact_text(run.task_text)
+        prefix = "Epic request:\n"
+        available = cap - len(prefix) - len("\n\n") - len(evidence)
+        if len(request) > available:
+            marker = "\n[TRUNCATED: full request retained in Forge run]"
+            request = request[:max(0, available - len(marker))] + marker
+        return f"{prefix}{request}\n\n{evidence}"
 
     async def _publish_and_watch(self, run: DirectRunRecord, *, worktree: Path, branch: str, head_sha: str, summary: str, installation: object, transcript_dir: Path, has_agents_md: bool, check_round: int) -> None:
+        if await self._repo.cancel_requested(run.id):
+            await self._repo.update_run(run.id, state="CANCELLED", head_sha=head_sha)
+            return
+        if run.shape == "epic":
+            code, _ = await _run_git(worktree, "diff", "--quiet", run.base_sha or "", head_sha)
+            if code == 0:
+                await self._repo.update_run(run.id, state="DONE", head_sha=head_sha, summary=f"{summary}\npublication skipped: empty diff")
+                return
+            if code != 1:
+                await self._repo.update_run(run.id, state="FAILED", failure_reason="final epic diff unavailable")
+                return
         github_repo, default_branch = await self._repo.publication_for(run.id)
         if not github_repo.strip():
             await self._repo.update_run(run.id, state="DONE", head_sha=head_sha, summary=f"{summary}\npublication skipped: no GitHub repository")
@@ -813,15 +1144,19 @@ class DirectRunWorker:
     async def _execute_repair_step(
         self, run: DirectRunRecord, installation: object, *, prompt: str,
         worktree: Path, transcript_dir: Path, head_sha: str, summary: str,
+        task_id: UUID | None = None,
     ) -> tuple[str, str] | None:
         repair = await self._launch_and_settle_session(
             run, installation, kind="repair", prompt=prompt,
             worktree=worktree, transcript_dir=transcript_dir,
+            task_id=task_id,
         )
         if repair is None:
             return None
         previous_head = head_sha
-        new_head = await self._commit_and_record(run, worktree, previous_head, repair)
+        new_head = await self._commit_and_record(
+            run, worktree, previous_head, repair, task_id=task_id
+        )
         if new_head is None:
             return None
         new_summary = repair.summary or summary
@@ -830,24 +1165,37 @@ class DirectRunWorker:
                 run.id, state="FAILED", head_sha=new_head,
                 failure_reason="repair made no changes",
             )
+            if task_id is not None:
+                await self._repo.update_task(task_id, state="FAILED")
             return None
         return new_head, new_summary
 
     async def _commit_and_record(
-        self, run: DirectRunRecord, worktree: Path, previous_head: str, result: DirectResult
+        self,
+        run: DirectRunRecord,
+        worktree: Path,
+        previous_head: str,
+        result: DirectResult,
+        task_id: UUID | None = None,
     ) -> str | None:
         await self._repo.update_run(
             run.id, summary=result.summary,
             result_degraded=result.degraded,
         )
+        if task_id is not None:
+            await self._repo.update_task(task_id, summary=result.summary)
         try:
             head_sha = await _commit_worktree(worktree, previous_head, result.summary, run.id)
         except _CommitFailure:
             await self._repo.update_run(
                 run.id, state="FAILED", failure_reason="commit failed"
             )
+            if task_id is not None:
+                await self._repo.update_task(task_id, state="FAILED")
             return None
         await self._repo.update_run(run.id, head_sha=head_sha)
+        if task_id is not None:
+            await self._repo.update_task(task_id, head_sha=head_sha)
         return head_sha
 
     async def _launch_and_settle_session(
@@ -859,13 +1207,14 @@ class DirectRunWorker:
         prompt: str,
         worktree: Path,
         transcript_dir: Path,
+        task_id: UUID | None = None,
     ) -> DirectResult | None:
         """Run one session; settle the run and return None on terminal outcomes."""
 
         try:
             session_id, outcome, final_file = await self._launch_raw_session(
                 run, installation, kind=kind, prompt=prompt, worktree=worktree,
-                transcript_dir=transcript_dir,
+                transcript_dir=transcript_dir, task_id=task_id,
             )
         except _SessionBudgetExhausted:
             return None
@@ -896,7 +1245,11 @@ class DirectRunWorker:
         prompt: str,
         worktree: Path,
         transcript_dir: Path,
+        task_id: UUID | None = None,
     ) -> tuple[UUID, tuple[str, int | None, str], Path]:
+        if await self._repo.cancel_requested(run.id):
+            await self._repo.update_run(run.id, state="CANCELLED")
+            raise _SessionBudgetExhausted
         if await self._session_budget_exhausted(run.id):
             await self._repo.update_run(
                 run.id, state="FAILED",
@@ -907,13 +1260,20 @@ class DirectRunWorker:
             run_id=run.id, run=run, kind=kind,
             client=str(getattr(installation, "client", "")) or None,
             model=str(getattr(installation, "model", "")) or None,
+            task_id=task_id,
         )
         transcript_path = transcript_dir / f"{session.id}.log"
         await self._repo.update_session(session.id, transcript_path=str(transcript_path))
         prompt_file = transcript_dir / f"{session.id}.prompt.txt"
         prompt_file.write_text(prompt, encoding="utf-8")
         schema_file = transcript_dir / f"{session.id}.schema.json"
-        schema_file.write_text(json.dumps(REVIEW_SCHEMA if kind == "review" else RESULT_SCHEMA), encoding="utf-8")
+        if kind == "review":
+            schema_obj = REVIEW_SCHEMA
+        elif kind == "decompose":
+            schema_obj = DECOMPOSE_SCHEMA
+        else:
+            schema_obj = RESULT_SCHEMA
+        schema_file.write_text(json.dumps(schema_obj), encoding="utf-8")
         final_file = transcript_dir / f"{session.id}.final.txt"
         ctx = DirectLaunchContext(
             run=run, session_id=session.id, worktree=worktree, prompt=prompt,
@@ -928,18 +1288,21 @@ class DirectRunWorker:
                 schema_file=schema_file, final_file=final_file,
                 max_model_steps=self._settings.direct_max_model_steps,
             )
-        outcome = await self._run_session(run, session.id, launch, worktree, transcript_path)
+        if kind == "decompose":
+            outcome = await self._run_session(run, session.id, launch, worktree, transcript_path, decompose_capture=True)
+        else:
+            outcome = await self._run_session(run, session.id, launch, worktree, transcript_path)
         return session.id, outcome, final_file
 
     async def _launch_and_settle_plan(
         self, run: DirectRunRecord, installation: object, *, prompt: str,
-        worktree: Path, transcript_dir: Path,
+        worktree: Path, transcript_dir: Path, task_id: UUID | None = None,
     ) -> str | None:
         """Run the read-only plan session; return its plan text or None."""
 
         launched = await self._launch_read_only_session(
             run, installation, kind="plan", noun="planner", prompt=prompt,
-            worktree=worktree, transcript_dir=transcript_dir,
+            worktree=worktree, transcript_dir=transcript_dir, task_id=task_id,
         )
         if launched is None:
             return None
@@ -953,9 +1316,111 @@ class DirectRunWorker:
             plan_text += "\n(planner modified the worktree; changes were reverted)"
         return plan_text
 
+    def _decompose_output(self, collected: str, final_file: Path, *, overflow: bool) -> tuple[str, bool]:
+        """Read an authoritative artifact within the capture budget and sanitize it.
+
+        Parsing uses transient full input; persisted artifacts retain the usual
+        redacted string bound. A present invalid file never falls back to stdout.
+        """
+        if not final_file.exists():
+            return collected, overflow
+        try:
+            with final_file.open("rb") as handle:
+                data = handle.read(_DECOMPOSE_CAPTURE_BYTES + 1)
+            overflow = len(data) > _DECOMPOSE_CAPTURE_BYTES
+            text = "" if overflow else data.decode("utf-8", errors="replace")
+            persisted, _ = self._redactor.redact_text(_DECOMPOSE_OVERFLOW if overflow else text)
+            final_file.write_text(persisted, encoding="utf-8")
+            return text, overflow
+        except OSError:
+            logger.warning("direct decomposition final artifact unavailable or could not be sanitized")
+            return "", False
+
+    async def _launch_and_settle_decompose(
+        self, run: DirectRunRecord, installation: object, *, prompt: str,
+        worktree: Path, transcript_dir: Path,
+    ) -> DirectDecomposeResult | None:
+        """Run the read-only decomposition session; return DirectDecomposeResult or None."""
+
+        launched = await self._launch_read_only_session(
+            run, installation, kind="decompose", noun="decomposer", prompt=prompt,
+            worktree=worktree, transcript_dir=transcript_dir,
+        )
+        if launched is None:
+            return None
+        session_id, outcome, final_file, modified = launched
+        kind, _exit_code, collected_text = outcome
+        now = datetime.now(UTC)
+        raw_text, overflow = self._decompose_output(collected_text, final_file, overflow=kind == "output_overflow")
+        if kind not in {"exited", "output_overflow"} or _exit_code != 0:
+            await self._settle_session(run, session_id, outcome, final_file)
+            return None
+        parsed = None if overflow else parse_decompose_result(raw_text)
+        if parsed is None:
+            reason = _DECOMPOSE_OVERFLOW if overflow else "malformed decomposition"
+            # Redact before selecting a persistence tail: slicing a raw secret
+            # at the boundary would leave an unmatched credential fragment.
+            evidence_redactor = self._redactor.with_minimum_policy(
+                RedactionPolicy(max_string_bytes=_DECOMPOSE_CAPTURE_BYTES * 4)
+            )
+            redacted, _ = evidence_redactor.redact_text(reason if overflow else raw_text)
+            redacted = redacted.strip()[-2000:]
+            await self._repo.update_session(
+                session_id, state="FAILED", ended_at=now, failure_reason=reason
+            )
+            await self._repo.update_run(
+                run.id, state="FAILED", summary=redacted[:4000], failure_reason=reason
+            )
+            return None
+        if parsed.status == "needs_decision":
+            summary, _ = self._redactor.redact_text(parsed.summary)
+            question = (
+                self._redactor.redact_text(parsed.question)[0]
+                if parsed.question
+                else None
+            )
+            options = tuple(
+                self._redactor.redact_text(o)[0] for o in parsed.options
+            )
+            await self._repo.update_session(
+                session_id, state="SUCCEEDED", ended_at=now
+            )
+            await self._repo.update_run(
+                run.id,
+                state="NEEDS_DECISION",
+                summary=summary[:4000],
+                question=question[:1000] if question else None,
+                options=options,
+            )
+            return parsed
+        if parsed.status == "blocked":
+            summary, _ = self._redactor.redact_text(parsed.summary)
+            reason = (summary or "session blocked")[:512]
+            await self._repo.update_session(
+                session_id, state="FAILED", ended_at=now, failure_reason=reason
+            )
+            await self._repo.update_run(
+                run.id, state="FAILED", summary=summary[:4000], failure_reason=reason
+            )
+            return parsed
+        summary_text, _ = self._redactor.redact_text(parsed.summary)
+        if modified:
+            summary_text += "\n(decomposer modified the worktree; changes were reverted)"
+        await self._repo.update_session(
+            session_id, state="SUCCEEDED", ended_at=now
+        )
+        task_redactor = self._redactor.with_minimum_policy(RedactionPolicy(max_string_bytes=32768))
+        return DirectDecomposeResult(
+            status="done",
+            summary=summary_text[:4000],
+            tasks=tuple(DirectDecomposeTask(task=task_redactor.redact_text(t.task)[0], shape=t.shape) for t in parsed.tasks),
+            question=parsed.question,
+            options=parsed.options,
+        )
+
     async def _launch_read_only_session(
         self, run: DirectRunRecord, installation: object, *, kind: str, noun: str,
-        prompt: str, worktree: Path, transcript_dir: Path,
+        prompt: str, worktree: Path, transcript_dir: Path, task_id: UUID | None = None,
     ) -> tuple[UUID, tuple[str, int | None, str], Path, bool] | None:
         """Launch a read-only session and revert any edits before returning.
 
@@ -967,13 +1432,15 @@ class DirectRunWorker:
         try:
             session_id, outcome, final_file = await self._launch_raw_session(
                 run, installation, kind=kind, prompt=prompt, worktree=worktree,
-                transcript_dir=transcript_dir,
+                transcript_dir=transcript_dir, task_id=task_id,
             )
         except _SessionBudgetExhausted:
             return None
         # Post-hoc read-only enforcement before any result is applied.
         modified, restored = await _revert_reviewer_changes(worktree, before_head, before)
         if modified and not restored:
+            if kind == "decompose":
+                self._decompose_output(outcome[2], final_file, overflow=outcome[0] == "output_overflow")
             reason = f"{noun} modified worktree; candidate could not be restored"
             await self._repo.update_session(
                 session_id, state="FAILED", ended_at=datetime.now(UTC),
@@ -985,23 +1452,23 @@ class DirectRunWorker:
 
     async def _launch_and_settle_review(
         self, run: DirectRunRecord, reviewer: object, *, prompt: str,
-        worktree: Path, transcript_dir: Path, round_no: int,
+        worktree: Path, transcript_dir: Path, round_no: int, task_id: UUID | None = None,
     ) -> DirectReviewResult | None:
         launched = await self._launch_read_only_session(
             run, reviewer, kind="review", noun="reviewer", prompt=prompt,
-            worktree=worktree, transcript_dir=transcript_dir,
+            worktree=worktree, transcript_dir=transcript_dir, task_id=task_id,
         )
         if launched is None:
             return None
         session_id, outcome, final_file, modified = launched
         return await self._settle_review(
             run, session_id, outcome, final_file, reviewer=reviewer,
-            round_no=round_no, modified=modified,
+            round_no=round_no, modified=modified, task_id=task_id,
         )
 
     async def _settle_review(
         self, run: DirectRunRecord, session_id: UUID, outcome: tuple[str, int | None, str], final_file: Path,
-        *, reviewer: object, round_no: int, modified: bool,
+        *, reviewer: object, round_no: int, modified: bool, task_id: UUID | None = None,
     ) -> DirectReviewResult | None:
         # Precedence (locked): DirectResult parse first ONLY for
         # needs_decision/blocked detection; otherwise review parse.
@@ -1075,6 +1542,7 @@ class DirectRunWorker:
             client=str(getattr(reviewer, "client", "")), model=str(getattr(reviewer, "model", "")),
             verdict=review.verdict, findings=findings_payload, summary=summary_r,
             degraded=review.degraded, reviewer_modified_worktree=modified,
+            task_id=task_id,
         )
         return redacted_review
 
@@ -1134,7 +1602,8 @@ class DirectRunWorker:
         return result
 
     async def _run_checks(
-        self, run: DirectRunRecord, worktree: Path, head_sha: str, *, round_no: int
+        self, run: DirectRunRecord, worktree: Path, head_sha: str, *, round_no: int,
+        task_id: UUID | None = None,
     ) -> _CheckRound:
         _tree_code, _tree_out = await _run_git(worktree, "rev-parse", "HEAD^{tree}")
         tree_sha = (_tree_out.strip() if _tree_code == 0 else None) or head_sha
@@ -1172,6 +1641,7 @@ class DirectRunWorker:
                     policy_version=policy_version, status="CACHED",
                     exit_code=cached.exit_code, duration_ms=cached.duration_ms,
                     failure_excerpt=cached.failure_excerpt,
+                    task_id=task_id,
                 )
                 if cached.status == "ERROR":
                     return _CheckRound(
@@ -1195,6 +1665,7 @@ class DirectRunWorker:
                     kind=str(command.kind), tree_sha=tree_sha, command_digest=digest,
                     policy_version=policy_version, status="ERROR",
                     failure_excerpt=reason,
+                    task_id=task_id,
                 )
                 return _CheckRound(outcome="error", error_reason=reason)
             executed = await self._execute_check(run, command, worktree, env, log_path)
@@ -1207,6 +1678,7 @@ class DirectRunWorker:
                     kind=str(command.kind), tree_sha=tree_sha, command_digest=digest,
                     policy_version=policy_version, status="ERROR",
                     duration_ms=duration_ms, failure_excerpt=stderr_text,
+                    task_id=task_id,
                 )
                 return _CheckRound(outcome="error", error_reason=stderr_text)
             if timed_out:
@@ -1219,6 +1691,7 @@ class DirectRunWorker:
                     kind=str(command.kind), tree_sha=tree_sha, command_digest=digest,
                     policy_version=policy_version, status="ERROR",
                     duration_ms=duration_ms, failure_excerpt=reason,
+                    task_id=task_id,
                 )
                 return _CheckRound(outcome="error", error_reason=reason)
             evidence = merge_check_failures(
@@ -1231,6 +1704,7 @@ class DirectRunWorker:
                 kind=str(command.kind), tree_sha=tree_sha, command_digest=digest,
                 policy_version=policy_version, status=status, exit_code=exit_code,
                 duration_ms=duration_ms, failure_excerpt=excerpt,
+                task_id=task_id,
             )
             if status == "FAILED":
                 any_failed = True
@@ -1338,8 +1812,14 @@ class DirectRunWorker:
         launch: DirectLaunch,
         worktree: Path,
         transcript_path: Path,
+        *,
+        decompose_capture: bool = False,
     ) -> tuple[str, int | None, str]:
-        """Return (kind, exit_code, redacted output): kind in exited|cancelled|timeout."""
+        """Return (kind, exit_code, output); only decomposition captures raw wire.
+
+        Its transient bounded capture may report output_overflow. Ordinary roles
+        retain their existing redacted tail and settlement behavior.
+        """
 
         silence = float(self._settings.direct_silence_timeout_seconds)
         duration_limit = float(self._settings.direct_session_timeout_seconds)
@@ -1373,15 +1853,18 @@ class DirectRunWorker:
             last_cancel_check = 0.0
             last_progress_update = 0.0
             collected = _BoundedTail()
+            decomposition = _DecomposeCapture() if decompose_capture else None
             kind = "exited"
             stream_eof = False
             assert proc.stdout is not None
             stdout_stream = proc.stdout
-            queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=128)
+            # Do not compose an 8 MiB line bound with the ordinary 128-line
+            # queue: at most one large decomposition line waits in the queue.
+            queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=1 if decompose_capture else 128)
 
             async def _reader() -> None:
                 try:
-                    async for line in _iter_lines(stdout_stream):
+                    async for line in _iter_lines(stdout_stream, max_line_bytes=_DECOMPOSE_CAPTURE_BYTES if decompose_capture else _MAX_LINE_BYTES):
                         await queue.put(line)
                 finally:
                     try:
@@ -1421,7 +1904,10 @@ class DirectRunWorker:
                     text = line.decode("utf-8", errors="replace")
                     redacted, _ = self._redactor.redact_text(text.rstrip("\n"))
                     output_bytes += len(line)
-                    collected.append(redacted)
+                    if decomposition is not None:
+                        decomposition.append(line)
+                    else:
+                        collected.append(redacted)
                     if not transcript_truncated:
                         entry = f"[{datetime.now(UTC).isoformat()}] {redacted}\n"
                         entry_bytes = len(entry.encode("utf-8"))
@@ -1444,6 +1930,10 @@ class DirectRunWorker:
                 session_id, last_output_at=datetime.now(UTC), output_bytes=output_bytes,
                 exit_code=exit_code,
             )
+            if decomposition is not None:
+                if kind == "exited" and decomposition.overflow:
+                    kind = "output_overflow"
+                return kind, exit_code, decomposition.text()
             return kind, exit_code, collected.text()[-262144:]
         finally:
             if reader is not None and not reader.done():

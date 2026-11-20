@@ -18,7 +18,7 @@ export default function DirectPage() {
   const routes = useApi<Route[]>('/direct-runs/routes');
   const [projectId, setProjectId] = useState('');
   const [task, setTask] = useState('');
-  const [shape, setShape] = useState<'quick' | 'planned'>('quick');
+  const [shape, setShape] = useState<'quick' | 'planned' | 'epic'>('quick');
   const [reviewPlanFirst, setReviewPlanFirst] = useState(false);
   const [routeKey, setRouteKey] = useState('');
   const [error, setError] = useState('');
@@ -34,7 +34,7 @@ export default function DirectPage() {
       const created = await mutate<Run>('/direct-runs', {
         project_id: project, task, client: selected.client, model: selected.model,
         effort: selected.effort ?? undefined, shape,
-        review_plan_first: shape === 'planned' && reviewPlanFirst,
+        review_plan_first: shape !== 'quick' && reviewPlanFirst,
       }, { idempotencyKey: crypto.randomUUID() });
       if (created) router.push(`/direct/${encodeURIComponent(created.id)}`);
     } catch { setError('Direct run could not be created.'); }
@@ -47,11 +47,13 @@ export default function DirectPage() {
         {(projects.value ?? []).map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
       </select></label>
       <label>Task <textarea aria-label="Task" value={task} onChange={e => setTask(e.target.value)} /></label>
-      <label>Shape <select aria-label="Shape" value={shape} onChange={e => setShape(e.target.value as 'quick' | 'planned')}>
+      <label>Shape <select aria-label="Shape" value={shape} onChange={e => setShape(e.target.value as 'quick' | 'planned' | 'epic')}>
         <option value="quick">Quick implementation</option>
         <option value="planned">Planned (plan session first)</option>
+        <option value="epic">Epic (decompose into sequential tasks)</option>
       </select></label>
       {shape === 'planned' && <label><input type="checkbox" checked={reviewPlanFirst} onChange={e => setReviewPlanFirst(e.target.checked)} /> Review plan before implementation</label>}
+      {shape === 'epic' && <label><input type="checkbox" checked={reviewPlanFirst} onChange={e => setReviewPlanFirst(e.target.checked)} /> Review decomposition and child plans before implementation</label>}
       <label>Route <select aria-label="Route" value={routeKey} onChange={e => setRouteKey(e.target.value)}>
         {routeList.map((r, i) => <option key={`${r.client}-${r.model}-${r.effort}`} value={`${i}`}>{`${r.client} / ${r.model}${r.effort ? ` / ${r.effort}` : ''}`}</option>)}
       </select></label>

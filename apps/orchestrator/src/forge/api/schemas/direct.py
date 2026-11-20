@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from forge.domain.direct import (
     DirectCheckRecord,
+    DirectChildTaskRecord,
     DirectReviewRecord,
     DirectRunRecord,
     DirectSessionRecord,
@@ -24,8 +25,64 @@ class DirectRunCreateRequest(BaseModel):
     client: str = Field(min_length=1, max_length=64)
     model: str = Field(min_length=1, max_length=255)
     effort: str | None = Field(default=None, max_length=32)
-    shape: Literal["quick", "planned"] = "quick"
+    shape: Literal["quick", "planned", "epic"] = "quick"
     review_plan_first: bool = False
+
+
+class DirectTaskResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: UUID
+    run_id: UUID
+    ordinal: int
+    task: str
+    shape: str
+    state: str
+    plan_text: str | None = None
+    head_sha: str | None = None
+    summary: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    plan_approved: bool = False
+
+    @classmethod
+    def from_record(cls, record: DirectChildTaskRecord) -> DirectTaskResponse:
+        return cls(
+            id=record.id,
+            run_id=record.run_id,
+            ordinal=record.ordinal,
+            task=record.task_text,
+            plan_approved=getattr(record, "plan_approved", False),
+            shape=record.shape,
+            state=record.state,
+            plan_text=record.plan_text,
+            head_sha=record.head_sha,
+            summary=record.summary,
+            created_at=record.created_at,
+            updated_at=record.updated_at,
+        )
+
+
+class DirectTaskItemUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: UUID | None = None
+    task: str = Field(min_length=1, max_length=65536)
+    shape: Literal["quick", "planned"] = "quick"
+
+
+class DirectTasksUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_version: int = Field(ge=0)
+    tasks: list[DirectTaskItemUpdate] = Field(min_length=1, max_length=20)
+
+
+class DirectApprovalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_version: int | None = Field(default=None, ge=0)
+    task_id: UUID | None = None
 
 
 class DirectCheckResponse(BaseModel):
@@ -44,6 +101,7 @@ class DirectCheckResponse(BaseModel):
     duration_ms: int | None
     failure_excerpt: str | None
     created_at: datetime | None
+    task_id: UUID | None = None
 
     @classmethod
     def from_record(cls, record: DirectCheckRecord) -> DirectCheckResponse:
@@ -54,6 +112,7 @@ class DirectCheckResponse(BaseModel):
             policy_version=record.policy_version, status=record.status,
             exit_code=record.exit_code, duration_ms=record.duration_ms,
             failure_excerpt=record.failure_excerpt, created_at=record.created_at,
+            task_id=getattr(record, "task_id", None),
         )
 
 
@@ -80,6 +139,7 @@ class DirectReviewResponse(BaseModel):
     degraded: bool
     reviewer_modified_worktree: bool
     created_at: datetime | None
+    task_id: UUID | None = None
 
     @classmethod
     def from_record(cls, record: DirectReviewRecord) -> DirectReviewResponse:
@@ -97,6 +157,7 @@ class DirectReviewResponse(BaseModel):
             summary=record.summary, degraded=record.degraded,
             reviewer_modified_worktree=record.reviewer_modified_worktree,
             created_at=record.created_at,
+            task_id=getattr(record, "task_id", None),
         )
 
 
@@ -117,6 +178,7 @@ class DirectSessionResponse(BaseModel):
     ended_at: datetime | None
     last_output_at: datetime | None
     failure_reason: str | None
+    task_id: UUID | None = None
 
     @classmethod
     def from_record(cls, record: DirectSessionRecord) -> DirectSessionResponse:
@@ -127,6 +189,7 @@ class DirectSessionResponse(BaseModel):
             output_bytes=record.output_bytes, exit_code=record.exit_code,
             started_at=record.started_at, ended_at=record.ended_at,
             last_output_at=record.last_output_at, failure_reason=record.failure_reason,
+            task_id=getattr(record, "task_id", None),
         )
 
 
@@ -157,11 +220,15 @@ class DirectRunResponse(BaseModel):
     review_plan_first: bool = False
     plan_text: str | None = None
     plan_approved: bool = False
+    control_version: int = 0
+    approval_task_id: UUID | None = None
+    owner_actions: tuple[dict[str, object], ...] = ()
     created_at: datetime | None
     updated_at: datetime | None
     sessions: tuple[DirectSessionResponse, ...] = ()
     checks: tuple[DirectCheckResponse, ...] = ()
     reviews: tuple[DirectReviewResponse, ...] = ()
+    tasks: tuple[DirectTaskResponse, ...] = ()
 
     @classmethod
     def from_record(
@@ -170,6 +237,7 @@ class DirectRunResponse(BaseModel):
         sessions: tuple[DirectSessionRecord, ...] = (),
         checks: tuple[DirectCheckRecord, ...] = (),
         reviews: tuple[DirectReviewRecord, ...] = (),
+        tasks: tuple[DirectChildTaskRecord, ...] = (),
     ) -> DirectRunResponse:
         return cls(
             id=record.id, project_id=record.project_id, task=record.task_text,
@@ -184,11 +252,15 @@ class DirectRunResponse(BaseModel):
             review_plan_first=getattr(record, "review_plan_first", False),
             plan_text=getattr(record, "plan_text", None),
             plan_approved=getattr(record, "plan_approved", False),
+            control_version=getattr(record, "control_version", 0),
+            approval_task_id=getattr(record, "approval_task_id", None),
+            owner_actions=getattr(record, "owner_actions", ()),
             created_at=record.created_at,
             updated_at=record.updated_at,
             sessions=tuple(DirectSessionResponse.from_record(s) for s in sessions),
             checks=tuple(DirectCheckResponse.from_record(c) for c in checks),
             reviews=tuple(DirectReviewResponse.from_record(r) for r in reviews),
+            tasks=tuple(DirectTaskResponse.from_record(t) for t in tasks),
         )
 
 
@@ -221,5 +293,8 @@ __all__ = [
     "DirectRunCreateRequest",
     "DirectRunResponse",
     "DirectSessionResponse",
+    "DirectTaskItemUpdate",
+    "DirectTaskResponse",
+    "DirectTasksUpdateRequest",
     "DirectTranscriptResponse",
 ]
