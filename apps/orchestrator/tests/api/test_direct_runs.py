@@ -48,6 +48,7 @@ class FakeDirectService:
     def __init__(self) -> None:
         self.run = FakeRun()
         self.created: list[dict] = []
+        self.child_tasks: list[SimpleNamespace] = []
 
     async def create(self, **kwargs):
         if kwargs["model"] == "nope":
@@ -63,6 +64,36 @@ class FakeDirectService:
 
     async def sessions(self, run_id):
         return ()
+
+    async def tasks(self, run_id):
+        return tuple(self.child_tasks)
+
+    async def approve_decomposition(self, run_id, **kwargs):
+        if self.run.state != "AWAITING_DECOMPOSITION_APPROVAL":
+            raise ValueError("direct run is not awaiting decomposition approval")
+        self.run.state = "QUEUED"
+        return self.run
+
+    async def replace_tasks(self, run_id, tasks, **kwargs):
+        if self.run.state != "AWAITING_DECOMPOSITION_APPROVAL":
+            raise ValueError("direct run is not awaiting decomposition approval")
+        self.child_tasks = [
+            SimpleNamespace(
+                id=uuid4(),
+                run_id=run_id,
+                ordinal=idx,
+                task_text=t["task"],
+                shape=t.get("shape", "quick"),
+                state="PENDING",
+                plan_text=None,
+                head_sha=None,
+                summary=None,
+                created_at=None,
+                updated_at=None,
+            )
+            for idx, t in enumerate(tasks)
+        ]
+        return tuple(self.child_tasks)
 
     async def checks(self, run_id):
         return (
@@ -86,11 +117,11 @@ class FakeDirectService:
             ),
         )
 
-    async def cancel(self, run_id):
+    async def cancel(self, run_id, **kwargs):
         self.run.state = "CANCELLED"
         return self.run
 
-    async def approve_plan(self, run_id):
+    async def approve_plan(self, run_id, **kwargs):
         if self.run.state != "AWAITING_PLAN_APPROVAL":
             raise ValueError("direct run is not awaiting plan approval")
         self.run.plan_approved = True
@@ -219,10 +250,10 @@ async def test_direct_create_planned_shape_and_approve_plan(direct_client, direc
         headers=HEADERS,
         json={
             "project_id": str(direct_context.service.run.project_id),
-            "task": "epic it",
+            "task": "bad shape",
             "client": "muse_code",
             "model": "model-1",
-            "shape": "epic",
+            "shape": "bogus",
         },
     )
     assert bad_shape.status_code == 422
@@ -244,3 +275,123 @@ async def test_direct_create_planned_shape_and_approve_plan(direct_client, direc
     assert body["state"] == "QUEUED"
     assert body["plan_approved"] is True
     assert body["plan_text"] == "the plan"
+
+
+async def test_direct_create_epic_shape_and_manage_tasks(direct_client, direct_context):
+    created = await direct_client.post(
+        "/api/direct-runs",
+        headers=HEADERS,
+        json={
+            "project_id": str(direct_context.service.run.project_id),
+            "task": "epic feature",
+            "client": "muse_code",
+            "model": "model-1",
+            "shape": "epic",
+            "review_plan_first": True,
+        },
+    )
+    assert created.status_code == 201
+    sent = direct_context.service.created[-1]
+    assert sent["shape"] == "epic"
+    assert sent["review_plan_first"] is True
+
+    # Seed child tasks
+    direct_context.service.child_tasks = [
+        SimpleNamespace(
+            id=uuid4(),
+            run_id=direct_context.service.run.id,
+            ordinal=0,
+            task_text="Task 1",
+            shape="quick",
+            state="PENDING",
+            plan_text=None,
+            head_sha=None,
+            summary=None,
+            created_at=None,
+            updated_at=None,
+        )
+    ]
+    got = await direct_client.get(
+        f"/api/direct-runs/{direct_context.service.run.id}", headers=HEADERS
+    )
+    assert got.status_code == 200
+    assert len(got.json()["tasks"]) == 1
+    assert got.json()["tasks"][0]["task"] == "Task 1"
+
+    # Try reordering while not awaiting decomposition approval -> fails
+    direct_context.service.run.state = "RUNNING"
+    bad_reorder = await direct_client.put(
+        f"/api/direct-runs/{direct_context.service.run.id}/tasks",
+        headers=HEADERS,
+        json={"expected_version": 0, "tasks": [{"task": "Task 1 updated", "shape": "quick"}]},
+    )
+    assert bad_reorder.status_code == 422
+
+    # Park in AWAITING_DECOMPOSITION_APPROVAL -> reorder succeeds
+    direct_context.service.run.state = "AWAITING_DECOMPOSITION_APPROVAL"
+    reorder = await direct_client.put(
+        f"/api/direct-runs/{direct_context.service.run.id}/tasks",
+        headers=HEADERS,
+        json={
+            "expected_version": 0,
+            "tasks": [
+                {"task": "Task B", "shape": "planned"},
+                {"task": "Task A", "shape": "quick"},
+            ]
+        },
+    )
+    assert reorder.status_code == 200
+    tasks_body = reorder.json()["tasks"]
+    assert len(tasks_body) == 2
+    assert tasks_body[0]["task"] == "Task B"
+    assert tasks_body[0]["ordinal"] == 0
+    assert tasks_body[0]["shape"] == "planned"
+    assert tasks_body[1]["task"] == "Task A"
+    assert tasks_body[1]["ordinal"] == 1
+
+    # Approve decomposition
+    approve = await direct_client.post(
+        f"/api/direct-runs/{direct_context.service.run.id}/approve-decomposition",
+        headers=HEADERS,
+        json={},
+    )
+    assert approve.status_code == 200
+    assert approve.json()["state"] == "QUEUED"
+
+
+@pytest.mark.integration
+async def test_epic_owner_http_actions_use_authenticated_actor_and_snapshot(direct_client, direct_context, session_factory):
+    from forge.application.services.direct_runs import DirectRunService
+    from forge.persistence.models import Project
+    from forge.persistence.repositories.direct import PostgresDirectRepository
+
+    pid = uuid4()
+    async with session_factory() as session:
+        session.add(Project(id=pid, name="P", canonical_path=f"/tmp/{pid}", canonical_path_key=f"/tmp/{pid}", github_repository="o/r", default_branch="main"))
+        await session.commit()
+    service = DirectRunService(session_factory, Settings(), installations=(SimpleNamespace(client="muse_code", model="model-1", effort=None),))
+    direct_context.app.state.direct_run_service = service
+    repo = PostgresDirectRepository(session_factory)
+    run = await service.create(project_id=pid, task="epic", client="muse_code", model="model-1", effort=None, shape="epic")
+    task = await repo.create_task(run_id=run.id, ordinal=0, task_text="first")
+    parked = await repo.update_run(run.id, state="AWAITING_DECOMPOSITION_APPROVAL")
+    url = f"/api/direct-runs/{run.id}"
+    forbidden = await direct_client.put(f"{url}/tasks", headers={**HEADERS, "X-CSRF-Token": "wrong"}, json={"expected_version": parked.control_version, "tasks": [{"id": str(task.id), "task": "changed", "shape": "quick"}]})
+    assert forbidden.status_code == 403
+    assert (await repo.tasks(run.id))[0].task_text == "first"
+    updated = await direct_client.put(f"{url}/tasks", headers=HEADERS, json={"expected_version": parked.control_version, "tasks": [{"id": str(task.id), "task": "changed", "shape": "quick"}]})
+    assert updated.status_code == 200
+    body = updated.json()
+    assert body["tasks"][0]["id"] == str(task.id)
+    assert body["owner_actions"][0]["actor_id"] == str(direct_context.auth.actor.actor_id)
+    assert body["owner_actions"][0]["action"] == "edit_tasks"
+    stale = await direct_client.post(f"{url}/approve-decomposition", headers=HEADERS, json={"expected_version": parked.control_version})
+    assert stale.status_code == 422
+    assert (await service.get(run.id)).state == "AWAITING_DECOMPOSITION_APPROVAL"
+    approved = await direct_client.post(f"{url}/approve-decomposition", headers=HEADERS, json={"expected_version": body["control_version"]})
+    assert approved.status_code == 200
+    assert approved.json()["state"] == "QUEUED"
+    cancelled = await direct_client.post(f"{url}/cancel", headers=HEADERS, json={})
+    assert cancelled.json()["state"] == "CANCELLED"
+    replay = await direct_client.post(f"{url}/approve-decomposition", headers=HEADERS, json={"expected_version": cancelled.json()["control_version"]})
+    assert replay.status_code == 422

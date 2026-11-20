@@ -44,8 +44,8 @@ Three shapes, all autonomous after "go":
 - **Epic** — one decompose session returns a structured task list. Each
   task then runs the quick or planned pipeline **sequentially** on the
   epic's branch line. Parallel child worktrees are out of scope for v1.
-  Sequential execution is the v1 default; when the epic shape is built,
-  parallel/sequencing must become owner-overridable.
+  The owner can revise the pending task sequence when decomposition review
+  is enabled. Parallel execution remains outside v1.
 
 ## The autonomous loop
 
@@ -195,7 +195,32 @@ behavior.
    PR-comment loop, done state. New-run form offers it as "Direct".
 2. Planned shape (plan session + preference wiring).
 3. Epic shape (decompose session, sequential child tasks reusing the
-   same pipeline).
+   same pipeline). Implemented: `shape="epic"` runs one read-only
+   decomposition session whose strictly parsed, bounded task list
+   (1-20 quick/planned children) is persisted as durable child rows.
+   Children then execute sequentially in the one managed
+   worktree/branch through the shared checks/review/repair pipeline;
+   each child starts from the previous child's accepted head and
+   receives bounded prior summaries, and a single combined PR is
+   published only after every child passes. With
+   `review_plan_first`, the run parks in
+   `AWAITING_DECOMPOSITION_APPROVAL`; the owner may edit or reorder
+   not-yet-started tasks (`PUT /direct-runs/{id}/tasks`) and approve
+   once (`POST /direct-runs/{id}/approve-decomposition`) with no
+   second confirmation or compulsory note. Default auto-continue
+   needs no extra click. Edits preserve existing child IDs when supplied;
+   owner actions carry the authenticated actor, snapshot version, actual
+   warnings and before/after task identity/order digests. Approval and edit
+   requests require the current `expected_version`; stale or cancelled
+   requests cannot requeue work. Cancellation always targets the current run.
+   The same preference also parks each new planned child's plan, with
+   `approval_task_id` identifying that child. Continuation reuses the saved
+   plan and worktree and does not replay completed children. Repair/review
+   caps apply separately to each child; session-count and elapsed-session
+   budgets remain cumulative across the epic. Interrupted workers fail
+   honestly while retaining completed children and partial work.
+   This is sequential execution only; it is
+   not parallel support.
 4. Route-list settings UI and quota-fallback polish.
 
 Non-goals for v1: parallel epic children, per-action approvals or

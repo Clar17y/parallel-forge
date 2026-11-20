@@ -10,10 +10,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from forge.api.dependencies import require_operator, require_operator_mutation
 from forge.api.errors import translate_error
 from forge.api.schemas.direct import (
+    DirectApprovalRequest,
     DirectDiffResponse,
     DirectRouteResponse,
     DirectRunCreateRequest,
     DirectRunResponse,
+    DirectTasksUpdateRequest,
     DirectTranscriptResponse,
 )
 from forge.application.services.auth import AuthenticatedActor
@@ -77,9 +79,10 @@ def router_for() -> APIRouter:
             sessions = await service.sessions(run_id)
             checks = await service.checks(run_id)
             reviews = await service.reviews(run_id)
+            tasks = await service.tasks(run_id)
         except Exception as error:  # noqa: BLE001
             raise translate_error(error) from None
-        return DirectRunResponse.from_record(record, sessions, checks, reviews)
+        return DirectRunResponse.from_record(record, sessions, checks, reviews, tasks)
 
     @router.get("/direct-runs/{run_id}/transcript", response_model=DirectTranscriptResponse)
     async def get_transcript(
@@ -113,14 +116,52 @@ def router_for() -> APIRouter:
     async def approve_plan(
         run_id: UUID,
         request: Request,
+        body: DirectApprovalRequest | None = None,
         _actor: AuthenticatedActor = Depends(require_operator_mutation),  # noqa: B008
     ) -> DirectRunResponse:
         service = _service(request)
         try:
-            record = await service.approve_plan(run_id)
+            record = await service.approve_plan(run_id, expected_version=body.expected_version if body else None, actor_id=_actor.actor_id, task_id=body.task_id if body else None)
         except Exception as error:  # noqa: BLE001
             raise translate_error(error) from None
         return DirectRunResponse.from_record(record)
+
+    @router.post(
+        "/direct-runs/{run_id}/approve-decomposition", response_model=DirectRunResponse
+    )
+    async def approve_decomposition(
+        run_id: UUID,
+        request: Request,
+        body: DirectApprovalRequest | None = None,
+        _actor: AuthenticatedActor = Depends(require_operator_mutation),  # noqa: B008
+    ) -> DirectRunResponse:
+        service = _service(request)
+        try:
+            record = await service.approve_decomposition(run_id, expected_version=body.expected_version if body else None, actor_id=_actor.actor_id)
+            tasks = await service.tasks(run_id)
+        except Exception as error:  # noqa: BLE001
+            raise translate_error(error) from None
+        return DirectRunResponse.from_record(record, tasks=tasks)
+
+    @router.put("/direct-runs/{run_id}/tasks", response_model=DirectRunResponse)
+    async def update_tasks(
+        run_id: UUID,
+        body: DirectTasksUpdateRequest,
+        request: Request,
+        _actor: AuthenticatedActor = Depends(require_operator_mutation),  # noqa: B008
+    ) -> DirectRunResponse:
+        service = _service(request)
+        try:
+            task_dicts = [t.model_dump() for t in body.tasks]
+            await service.replace_tasks(run_id, task_dicts, expected_version=body.expected_version, actor_id=_actor.actor_id)
+            record = await service.get(run_id)
+            sessions = await service.sessions(run_id)
+            checks = await service.checks(run_id)
+            reviews = await service.reviews(run_id)
+            tasks = await service.tasks(run_id)
+        except Exception as error:  # noqa: BLE001
+            raise translate_error(error) from None
+        return DirectRunResponse.from_record(record, sessions, checks, reviews, tasks)
 
     @router.post("/direct-runs/{run_id}/cancel", response_model=DirectRunResponse)
     async def cancel_run(
@@ -130,7 +171,7 @@ def router_for() -> APIRouter:
     ) -> DirectRunResponse:
         service = _service(request)
         try:
-            record = await service.cancel(run_id)
+            record = await service.cancel(run_id, actor_id=_actor.actor_id)
         except Exception as error:  # noqa: BLE001
             raise translate_error(error) from None
         return DirectRunResponse.from_record(record)

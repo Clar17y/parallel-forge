@@ -404,7 +404,7 @@ async def test_invalid_shape_rejected(session_factory, tmp_path):
     with pytest.raises(ValueError):
         await service.create(
             project_id=pid, task="x", client="muse_code", model="model-1",
-            effort=None, shape="epic",
+            effort=None, shape="bogus",
         )
 
 
@@ -418,3 +418,67 @@ async def test_diff_bounded(session_factory, tmp_path, fake_cli):
     diff = await service.diff(run.id)
     assert "changed.txt" in diff
     assert len(diff.encode()) <= 65536 + 64
+
+
+@pytest.mark.parametrize("failure", ["get", "tasks", "update_task", "cleanup_cancel", "execute_cancel"])
+async def test_run_once_releases_active_ownership_when_cleanup_fails(failure):
+    from unittest.mock import AsyncMock
+
+    run = SimpleNamespace(id=uuid4(), shape="epic", state="FAILED")
+    repo = SimpleNamespace(
+        running_runs=AsyncMock(return_value=()), claim_next=AsyncMock(return_value=run),
+        get=AsyncMock(return_value=run), tasks=AsyncMock(return_value=(SimpleNamespace(id=uuid4(), state="RUNNING"),)),
+        update_task=AsyncMock(), update_run=AsyncMock(),
+    )
+    if failure in {"get", "tasks", "update_task"}:
+        getattr(repo, failure).side_effect = RuntimeError("cleanup unavailable")
+    elif failure == "cleanup_cancel":
+        repo.get.side_effect = asyncio.CancelledError()
+    worker = DirectRunWorker(None, Settings())
+    worker._repo = repo
+    worker._execute = AsyncMock(side_effect=asyncio.CancelledError() if failure == "execute_cancel" else None)
+    caught = None
+    try:
+        await worker.run_once()
+    except (RuntimeError, asyncio.CancelledError) as error:
+        caught = error
+    assert worker._active_run_id is None
+    if failure.endswith("cancel"):
+        assert isinstance(caught, asyncio.CancelledError)
+    else:
+        assert caught is None
+
+
+async def test_cleanup_failure_does_not_skip_next_orphan_sweep():
+    from unittest.mock import AsyncMock
+
+    run = SimpleNamespace(id=uuid4(), shape="epic", state="RUNNING")
+    worker = DirectRunWorker(None, Settings())
+    worker._repo = SimpleNamespace(
+        running_runs=AsyncMock(side_effect=[(), (run,)]), claim_next=AsyncMock(return_value=run),
+        get=AsyncMock(side_effect=RuntimeError("cleanup unavailable")), sessions=AsyncMock(return_value=()),
+        tasks=AsyncMock(return_value=()), update_run=AsyncMock(),
+    )
+    worker._execute = AsyncMock()
+    try:
+        await worker.run_once()
+    except RuntimeError:
+        pass
+    await worker._settle_orphans()
+    worker._repo.sessions.assert_awaited_once_with(run.id)
+    worker._repo.update_run.assert_awaited_once_with(run.id, state="FAILED", failure_reason="worker interrupted")
+
+
+async def test_child_cleanup_attempts_remaining_tasks_after_one_write_fails():
+    from unittest.mock import AsyncMock, call
+
+    run = SimpleNamespace(id=uuid4(), shape="epic", state="FAILED")
+    tasks = [SimpleNamespace(id=uuid4(), state=state) for state in ("RUNNING", "DONE", "CHECKING")]
+    worker = DirectRunWorker(None, Settings())
+    worker._repo = SimpleNamespace(running_runs=AsyncMock(return_value=()), claim_next=AsyncMock(return_value=run),
+                                   get=AsyncMock(return_value=run), tasks=AsyncMock(return_value=tasks),
+                                   update_task=AsyncMock(side_effect=[RuntimeError("unavailable"), None]))
+    worker._execute = AsyncMock()
+    assert await worker.run_once() == run.id
+    assert worker._active_run_id is None
+    assert worker._repo.update_task.await_args_list == [call(tasks[0].id, state="FAILED"), call(tasks[2].id, state="FAILED")]

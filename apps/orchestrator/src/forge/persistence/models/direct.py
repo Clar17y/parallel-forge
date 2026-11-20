@@ -21,15 +21,21 @@ from sqlalchemy.orm import Mapped, mapped_column
 from forge.persistence.models.base import Base, TimestampMixin
 
 _RUN_STATES = (
-    "('QUEUED','PLANNING','AWAITING_PLAN_APPROVAL','RUNNING','FINALIZING',"
+    "('QUEUED','PLANNING','AWAITING_PLAN_APPROVAL','DECOMPOSING',"
+    "'AWAITING_DECOMPOSITION_APPROVAL','RUNNING','FINALIZING',"
     "'CHECKING','REVIEWING','REPAIRING','PUBLISHING','PR_OPEN','DONE',"
     "'FAILED','CANCELLED','NEEDS_DECISION')"
 )
-_RUN_SHAPES = "('quick','planned')"
+_RUN_SHAPES = "('quick','planned','epic')"
 _SESSION_STATES = "('RUNNING','SUCCEEDED','FAILED','KILLED','TIMED_OUT')"
 _CHECK_STATUSES = "('PASSED','FAILED','ERROR','CACHED')"
-_SESSION_KINDS = "('implement','repair','review','plan')"
+_SESSION_KINDS = "('implement','repair','review','plan','decompose')"
 _REVIEW_VERDICTS = "('clean','blocking')"
+_TASK_SHAPES = "('quick','planned')"
+_TASK_STATES = (
+    "('PENDING','PLANNING','RUNNING','CHECKING','REVIEWING','REPAIRING','DONE',"
+    "'FAILED','CANCELLED','NEEDS_DECISION','AWAITING_PLAN_APPROVAL')"
+)
 
 
 class DirectRun(Base, TimestampMixin):
@@ -49,7 +55,7 @@ class DirectRun(Base, TimestampMixin):
     client: Mapped[str] = mapped_column(String(64), nullable=False)
     model: Mapped[str] = mapped_column(String(255), nullable=False)
     effort: Mapped[str | None] = mapped_column(String(32))
-    state: Mapped[str] = mapped_column(String(24), nullable=False, default="QUEUED")
+    state: Mapped[str] = mapped_column(String(32), nullable=False, default="QUEUED")
     branch: Mapped[str | None] = mapped_column(String(255))
     worktree_path: Mapped[str | None] = mapped_column(Text)
     base_sha: Mapped[str | None] = mapped_column(String(64))
@@ -70,6 +76,32 @@ class DirectRun(Base, TimestampMixin):
     plan_text: Mapped[str | None] = mapped_column(Text)
     plan_approved: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
+    control_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    approval_task_id: Mapped[UUID | None] = mapped_column(Uuid)
+    owner_actions: Mapped[list[dict[str, object]]] = mapped_column(JSONB, nullable=False, default=list)
+
+
+class DirectTask(Base, TimestampMixin):
+    __tablename__ = "direct_tasks"
+    __table_args__ = (
+        CheckConstraint(f"shape IN {_TASK_SHAPES}", name="direct_tasks_shape"),
+        CheckConstraint(f"state IN {_TASK_STATES}", name="direct_tasks_state"),
+        Index("ix_direct_tasks_run_ordinal", "run_id", "ordinal"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    run_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("direct_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    task_text: Mapped[str] = mapped_column(Text, nullable=False)
+    shape: Mapped[str] = mapped_column(String(16), nullable=False, default="quick")
+    state: Mapped[str] = mapped_column(String(32), nullable=False, default="PENDING")
+    plan_text: Mapped[str | None] = mapped_column(Text)
+    head_sha: Mapped[str | None] = mapped_column(String(64))
+    summary: Mapped[str | None] = mapped_column(Text)
+    plan_approved: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
 
 class DirectSession(Base):
     __tablename__ = "direct_sessions"
@@ -83,6 +115,9 @@ class DirectSession(Base):
     kind: Mapped[str] = mapped_column(String(16), nullable=False, default="implement")
     run_id: Mapped[UUID] = mapped_column(
         Uuid, ForeignKey("direct_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    task_id: Mapped[UUID | None] = mapped_column(
+        Uuid, ForeignKey("direct_tasks.id", ondelete="SET NULL")
     )
     state: Mapped[str] = mapped_column(String(24), nullable=False, default="RUNNING")
     client: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -108,6 +143,9 @@ class DirectReview(Base):
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
     run_id: Mapped[UUID] = mapped_column(
         Uuid, ForeignKey("direct_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    task_id: Mapped[UUID | None] = mapped_column(
+        Uuid, ForeignKey("direct_tasks.id", ondelete="SET NULL")
     )
     session_id: Mapped[UUID] = mapped_column(
         Uuid, ForeignKey("direct_sessions.id", ondelete="CASCADE"), nullable=False
@@ -140,6 +178,9 @@ class DirectCheck(Base):
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
     run_id: Mapped[UUID] = mapped_column(
         Uuid, ForeignKey("direct_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    task_id: Mapped[UUID | None] = mapped_column(
+        Uuid, ForeignKey("direct_tasks.id", ondelete="SET NULL")
     )
     round: Mapped[int] = mapped_column(Integer, nullable=False)
     command_name: Mapped[str] = mapped_column(String(255), nullable=False)

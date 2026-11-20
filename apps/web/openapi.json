@@ -3900,6 +3900,37 @@
         "title": "DependencyEvidence",
         "type": "object"
       },
+      "DirectApprovalRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_version": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Version"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          }
+        },
+        "title": "DirectApprovalRequest",
+        "type": "object"
+      },
       "DirectCheckResponse": {
         "additionalProperties": false,
         "properties": {
@@ -3981,6 +4012,18 @@
           "status": {
             "title": "Status",
             "type": "string"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
           },
           "tree_sha": {
             "title": "Tree Sha",
@@ -4118,6 +4161,18 @@
             ],
             "title": "Summary"
           },
+          "task_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
           "verdict": {
             "title": "Verdict",
             "type": "string"
@@ -4211,7 +4266,8 @@
             "default": "quick",
             "enum": [
               "quick",
-              "planned"
+              "planned",
+              "epic"
             ],
             "title": "Shape",
             "type": "string"
@@ -4235,6 +4291,18 @@
       "DirectRunResponse": {
         "additionalProperties": false,
         "properties": {
+          "approval_task_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approval Task Id"
+          },
           "base_sha": {
             "anyOf": [
               {
@@ -4272,6 +4340,11 @@
           "client": {
             "title": "Client",
             "type": "string"
+          },
+          "control_version": {
+            "default": 0,
+            "title": "Control Version",
+            "type": "integer"
           },
           "created_at": {
             "anyOf": [
@@ -4332,6 +4405,15 @@
               "type": "string"
             },
             "title": "Options",
+            "type": "array"
+          },
+          "owner_actions": {
+            "default": [],
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Owner Actions",
             "type": "array"
           },
           "plan_approved": {
@@ -4441,6 +4523,14 @@
           "task": {
             "title": "Task",
             "type": "string"
+          },
+          "tasks": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/DirectTaskResponse"
+            },
+            "title": "Tasks",
+            "type": "array"
           },
           "updated_at": {
             "anyOf": [
@@ -4602,6 +4692,18 @@
           "state": {
             "title": "State",
             "type": "string"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
           }
         },
         "required": [
@@ -4621,6 +4723,171 @@
           "failure_reason"
         ],
         "title": "DirectSessionResponse",
+        "type": "object"
+      },
+      "DirectTaskItemUpdate": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "shape": {
+            "default": "quick",
+            "enum": [
+              "quick",
+              "planned"
+            ],
+            "title": "Shape",
+            "type": "string"
+          },
+          "task": {
+            "maxLength": 65536,
+            "minLength": 1,
+            "title": "Task",
+            "type": "string"
+          }
+        },
+        "required": [
+          "task"
+        ],
+        "title": "DirectTaskItemUpdate",
+        "type": "object"
+      },
+      "DirectTaskResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "created_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "head_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Head Sha"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "ordinal": {
+            "title": "Ordinal",
+            "type": "integer"
+          },
+          "plan_approved": {
+            "default": false,
+            "title": "Plan Approved",
+            "type": "boolean"
+          },
+          "plan_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan Text"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "shape": {
+            "title": "Shape",
+            "type": "string"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary"
+          },
+          "task": {
+            "title": "Task",
+            "type": "string"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "required": [
+          "id",
+          "run_id",
+          "ordinal",
+          "task",
+          "shape",
+          "state"
+        ],
+        "title": "DirectTaskResponse",
+        "type": "object"
+      },
+      "DirectTasksUpdateRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_version": {
+            "minimum": 0.0,
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "tasks": {
+            "items": {
+              "$ref": "#/components/schemas/DirectTaskItemUpdate"
+            },
+            "maxItems": 20,
+            "minItems": 1,
+            "title": "Tasks",
+            "type": "array"
+          }
+        },
+        "required": [
+          "expected_version",
+          "tasks"
+        ],
+        "title": "DirectTasksUpdateRequest",
         "type": "object"
       },
       "DirectTranscriptResponse": {
@@ -16037,6 +16304,69 @@
         "summary": "Get Run"
       }
     },
+    "/api/direct-runs/{run_id}/approve-decomposition": {
+      "post": {
+        "operationId": "approve_decomposition_api_direct_runs__run_id__approve_decomposition_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/DirectApprovalRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DirectRunResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "CSRF": [],
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Approve Decomposition"
+      }
+    },
     "/api/direct-runs/{run_id}/approve-plan": {
       "post": {
         "operationId": "approve_plan_api_direct_runs__run_id__approve_plan_post",
@@ -16052,6 +16382,23 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/DirectApprovalRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "content": {
@@ -16172,6 +16519,62 @@
           }
         ],
         "summary": "Get Diff"
+      }
+    },
+    "/api/direct-runs/{run_id}/tasks": {
+      "put": {
+        "operationId": "update_tasks_api_direct_runs__run_id__tasks_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DirectTasksUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DirectRunResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "CSRF": [],
+            "OperatorSession": []
+          }
+        ],
+        "summary": "Update Tasks"
       }
     },
     "/api/direct-runs/{run_id}/transcript": {

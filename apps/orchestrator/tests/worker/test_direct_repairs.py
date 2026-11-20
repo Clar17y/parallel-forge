@@ -130,7 +130,7 @@ async def test_commit_failure_settles_failed_before_checks_on_implement(tmp_path
     monkeypatch.setattr(obj, "_resolve_installation", lambda run: object())
     monkeypatch.setattr(obj, "_resolve_review_installation", lambda run, installation: object())
 
-    async def fake_session(run_arg, installation, *, kind, prompt, worktree, transcript_dir):
+    async def fake_session(run_arg, installation, *, kind, prompt, worktree, transcript_dir, task_id=None):
         (worktree / "changed.txt").write_text("changed\n")
         return DirectResult(status="done", summary="done")
 

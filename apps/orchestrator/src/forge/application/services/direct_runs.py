@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from forge.domain.direct import (
     SUPPORTED_DIRECT_CLIENTS,
     DirectCheckRecord,
+    DirectChildTaskRecord,
     DirectReviewRecord,
     DirectRunRecord,
     DirectSessionRecord,
@@ -81,7 +82,7 @@ class DirectRunService:
     ) -> DirectRunRecord:
         if client not in SUPPORTED_DIRECT_CLIENTS:
             raise ValueError("unknown direct route")
-        if shape not in {"quick", "planned"}:
+        if shape not in {"quick", "planned", "epic"}:
             raise ValueError("unknown direct run shape")
         if not task.strip() or len(task.encode("utf-8")) > 64 * 1024:
             raise ValueError("direct task text is invalid")
@@ -91,8 +92,29 @@ class DirectRunService:
             effort=effort, shape=shape, review_plan_first=review_plan_first,
         )
 
-    async def approve_plan(self, run_id: UUID) -> DirectRunRecord:
-        return await self._repo.approve_plan(run_id)
+    async def approve_plan(
+        self, run_id: UUID, *, expected_version: int | None = None,
+        task_id: UUID | None = None, actor_id: UUID | None = None,
+    ) -> DirectRunRecord:
+        return await self._repo.approve_plan(run_id, expected_version=expected_version, task_id=task_id, actor_id=actor_id)
+
+    async def approve_decomposition(
+        self, run_id: UUID, *, expected_version: int | None = None, actor_id: UUID | None = None,
+    ) -> DirectRunRecord:
+        return await self._repo.approve_decomposition(run_id, expected_version=expected_version, actor_id=actor_id)
+
+    async def tasks(self, run_id: UUID) -> tuple[DirectChildTaskRecord, ...]:
+        return await self._repo.tasks(run_id)
+
+    async def replace_tasks(
+        self, run_id: UUID, task_items: list[dict[str, object]], *,
+        expected_version: int | None = None, actor_id: UUID | None = None,
+    ) -> tuple[DirectChildTaskRecord, ...]:
+        from forge.observability.redaction import RedactionPolicy, Redactor
+
+        redactor = Redactor(policy=RedactionPolicy(max_string_bytes=32768))
+        clean = [{**t, "task": redactor.redact_text(str(t.get("task", "")))[0]} for t in task_items]
+        return await self._repo.replace_pending_tasks(run_id, clean, expected_version=expected_version, actor_id=actor_id)
 
     async def list(self, limit: int = 50) -> tuple[DirectRunRecord, ...]:
         return await self._repo.list(min(max(limit, 1), MAX_LIST))
@@ -109,8 +131,8 @@ class DirectRunService:
     async def checks(self, run_id: UUID) -> tuple[DirectCheckRecord, ...]:
         return await self._repo.checks(run_id)
 
-    async def cancel(self, run_id: UUID) -> DirectRunRecord:
-        return await self._repo.request_cancel(run_id)
+    async def cancel(self, run_id: UUID, *, actor_id: UUID | None = None) -> DirectRunRecord:
+        return await self._repo.request_cancel(run_id, actor_id=actor_id)
 
     async def transcript(
         self, run_id: UUID, session_id: UUID | None = None, tail_bytes: int = 32_768
