@@ -72,3 +72,51 @@ python -m pytest tests/integration/test_runner_container.py -q
 
 It checks the image/tool versions, a real capability-bound staged-file command,
 and guard rejection before command or malicious loader-constructor execution.
+
+## Running Forge's Python checks on Docker Desktop
+
+The self-development project can load its locked Python dependencies from the runner image. Forge and its tests still load from the mounted worktree, including uncommitted edits. This avoids reading the worktree's virtual environment across the Windows file share during each check.
+
+Start the local supervisor with the optional image target.
+
+```sh
+python scripts/dev.py --forge-checks
+```
+
+The supervisor builds the `forge-checks` target and gives the worker that build's immutable image ID. For a separately started worker, use the ID printed by this command for `FORGE_RUNNER_IMAGE`.
+
+```sh
+docker build --quiet --platform linux/amd64 --target forge-checks -f Dockerfile.runner -t parallel-forge-runner:forge-checks .
+```
+
+For Docker-backed checks, replace the three leading arguments `.venv/bin/python -m pytest` with `forge-pytest` in a new project policy version. Keep the check's marker expression, remaining arguments and path scope. The Docker `test-backend` argument vector is
+
+```json
+["forge-pytest", "-m", "not integration and not docker and not live_provider and not live_github", "-q"]
+```
+
+For `test-backend-focused`, keep the existing `path_scope` so Forge appends the task's eligible test paths to this vector.
+
+```json
+["forge-pytest", "-q", "-p", "no:cacheprovider", "-m", "not integration and not docker and not live_provider and not live_github"]
+```
+
+If the project also uses direct runs, keep the unscoped `test-backend` command executable on the host. Direct runs execute it there, where an image-only `forge-pytest` command will fail. They skip path-scoped checks, so the focused Docker check can use `forge-pytest` in that shared policy.
+
+The launcher checks the mounted `pyproject.toml` and `uv.lock` against the image's build inputs before starting pytest. Rebuild the image when those inputs change. Operators can also select the worktree's `.venv/bin/python -m pytest` in the policy. The receipt links to the command result, which records `duration_ms` and the immutable image ID. For version 3 receipts, the named-check outcome exposes the same duration as `command_duration_ms`.
+
+### Measured on Windows Docker Desktop
+
+On 2026-11-21 both images ran the self-development policy's offline selection on the same read-only checkout at `51f8f0c`. Each container used Python 3.14.2, pytest 8.4.2, two CPUs, 2 GiB of memory and no network. Wall time includes container startup and exit. The worktree environment used image `f20c73552d15` and the image-based environment used `42b60da45c9f`.
+
+| Check | Worktree virtualenv | Image dependencies | Result on both |
+| --- | ---: | ---: | --- |
+| Domain tests, median of three runs | 19.1 s | 10.5 s | 443 passed |
+| API tests, one run each | 106.4 s | 70.0 s | 339 passed, 23 deselected |
+| Full offline collection, one run each | 74.7 s | 49.6 s | 6,376 selected, 3,232 deselected |
+
+The collected cases matched after accounting for one test ID containing a generated UUID. Two state-transition tests also varied their parameter order between processes. These runs used serial pytest.
+
+On the implementation worktree based on `a660e67`, a separate run of `test-backend-focused` through Forge's Docker runner passed all 561 domain tests. Its command result recorded 12,074 ms.
+
+The full offline `test-backend` command at `4b5253b` took 443.8 s with image dependencies. Pytest reported 6,445 passed, 124 skipped, 11 failed and 3,497 deselected. All 11 failing cases also failed with the worktree virtualenv and the original runner image on both `4b5253b` and its parent `a660e67`. The full suite has a single timing for the image-based environment.

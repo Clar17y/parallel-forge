@@ -287,9 +287,14 @@ def test_runner_dockerfile_uses_only_pinned_runtime_stages() -> None:
         "node:24.19.0-slim@sha256:65932751ed4073ed02f5c04e494e4b2572a891b7dbea0568a863dc80341bf848"
     )
 
-    assert dockerfile.count("FROM ") == 2
-    assert python_reference in dockerfile
-    assert node_reference in dockerfile
+    instructions = [line.split() for line in dockerfile.splitlines()]
+    stages = [parts[1:] for parts in instructions if parts and parts[0].upper() == "FROM"]
+    assert stages == [
+        ["--platform=linux/amd64", node_reference, "AS", "node-runtime"],
+        ["--platform=linux/amd64", python_reference, "AS", "runner-base"],
+        ["runner-base", "AS", "forge-checks"],
+        ["runner-base", "AS", "runner"],
+    ]
     assert python_reference in guidance
     assert node_reference in guidance
     assert "USER 10001:10001" in dockerfile

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import re
@@ -515,11 +516,13 @@ class DevSupervisor:
         runner: CommandRunner | None = None,
         stdout: TextIO | None = None,
         stderr: TextIO | None = None,
+        forge_checks: bool = False,
     ) -> None:
         self.repo_root = repo_root or Path(__file__).resolve().parents[1]
         self.runner = runner or DefaultCommandRunner()
         self.stdout = stdout or sys.stdout
         self.stderr = stderr or sys.stderr
+        self.forge_checks = forge_checks
         self.stop_event = threading.Event()
 
     def log(self, message: str) -> None:
@@ -693,19 +696,27 @@ class DevSupervisor:
 
     def build_and_inspect_runner_image(self) -> str:
         """Build the Docker runner image and inspect its immutable digest."""
-        self.log("Building Docker runner image from Dockerfile.runner...")
+        build_cmd = [
+            "docker",
+            "build",
+            "--quiet",
+            "--platform",
+            "linux/amd64",
+        ]
+        if self.forge_checks:
+            tag = "parallel-forge-runner:forge-checks"
+            self.log(
+                "Building Docker forge-checks runner image from Dockerfile.runner "
+                "(target=forge-checks)..."
+            )
+            build_cmd.extend(["--target", "forge-checks"])
+        else:
+            tag = "parallel-forge-runner:latest"
+            self.log("Building Docker runner image from Dockerfile.runner...")
+        build_cmd.extend(["-f", "Dockerfile.runner", "-t", tag, "."])
+
         build_res = self.run_cmd(
-            [
-                "docker",
-                "build",
-                "--platform",
-                "linux/amd64",
-                "-f",
-                "Dockerfile.runner",
-                "-t",
-                "parallel-forge-runner:latest",
-                ".",
-            ],
+            build_cmd,
             cwd=self.repo_root,
             timeout=600,
         )
@@ -714,9 +725,10 @@ class DevSupervisor:
                 f"Docker runner image build failed: {build_res.stderr.strip() or build_res.stdout.strip()}"
             )
 
-        inspect_res = self.run_cmd(
-            ["docker", "inspect", "--format", "{{.Id}}", "parallel-forge-runner:latest"]
-        )
+        built_id = build_res.stdout.strip()
+        if not IMMUTABLE_IMAGE_DIGEST_PATTERN.fullmatch(built_id):
+            raise SupervisorError("Docker build must return an immutable digest")
+        inspect_res = self.run_cmd(["docker", "inspect", "--format", "{{.Id}}", built_id])
         if inspect_res.returncode != 0:
             raise SupervisorError(f"Docker inspect failed: {inspect_res.stderr.strip()}")
 
@@ -900,9 +912,23 @@ class DevSupervisor:
             raise
 
 
-def main() -> int:
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Local development supervisor for Forge.")
+    parser.add_argument(
+        "--forge-checks",
+        action="store_true",
+        help=(
+            "Build and use the optional forge-checks target from Dockerfile.runner "
+            "with pre-baked locked Python dev dependencies and /usr/local/bin/forge-pytest."
+        ),
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
     """CLI entry point for scripts/dev.py."""
-    supervisor = DevSupervisor()
+    args = _parse_args(argv)
+    supervisor = DevSupervisor(forge_checks=args.forge_checks)
 
     def handle_signal(signum: int, frame: Any) -> None:
         del signum, frame

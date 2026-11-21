@@ -209,6 +209,7 @@ def test_runner_image_build_and_inspect() -> None:
     digest = "sha256:" + "a" * 64
     runner = FakeCommandRunner(
         responses={
+            "docker build": CommandResult(0, f"{digest}\n", ""),
             "docker inspect": CommandResult(0, f"{digest}\n", ""),
         }
     )
@@ -223,6 +224,7 @@ def test_runner_image_build_and_inspect() -> None:
 def test_runner_image_rejects_mutable_or_invalid_digest() -> None:
     runner = FakeCommandRunner(
         responses={
+            "docker build": CommandResult(0, "sha256:" + "a" * 64, ""),
             "docker inspect": CommandResult(0, "latest\n", ""),
         }
     )
@@ -266,6 +268,7 @@ def test_lifecycle_exact_sequence_and_worker_environment() -> None:
     responses = _default_prereq_responses()
     responses.update(
         {
+            "docker build": CommandResult(0, f"{digest}\n", ""),
             "docker inspect": CommandResult(0, f"{digest}\n", ""),
             "forge operator open": CommandResult(0, f"{url}\n", ""),
         }
@@ -1054,6 +1057,7 @@ def test_lifecycle_exact_sequence_web_config_resolved_after_sync(
     responses = _default_prereq_responses()
     responses.update(
         {
+            "docker build": CommandResult(0, f"{digest}\n", ""),
             "docker inspect": CommandResult(0, f"{digest}\n", ""),
             "forge operator open": CommandResult(0, f"{url}\n", ""),
         }
@@ -1197,3 +1201,63 @@ def test_warns_when_process_environment_shadows_a_different_dotenv_value(tmp_pat
     assert "FORGE_SUBSCRIPTION_INSTALLATIONS_PATH" in text
     assert "C:/old" not in text and "C:/new" not in text
     assert "FORGE_API_PORT" not in text and "FORGE_DATA_ROOT" not in text
+
+
+@pytest.mark.parametrize(
+    ("forge_checks", "tag"),
+    [(False, "parallel-forge-runner:latest"), (True, "parallel-forge-runner:forge-checks")],
+)
+def test_runner_uses_its_own_build_when_another_worktree_moves_the_tag(
+    forge_checks: bool, tag: str
+) -> None:
+    built = "sha256:" + "a" * 64
+    retagged = "sha256:" + "b" * 64
+    runner = FakeCommandRunner(
+        responses={
+            "docker build": CommandResult(0, built, ""),
+            f"{{{{.Id}}}} {built}": CommandResult(0, built, ""),
+            "docker inspect": CommandResult(0, retagged, ""),
+        }
+    )
+    supervisor = DevSupervisor(repo_root=REPO_ROOT, runner=runner, forge_checks=forge_checks)
+
+    assert supervisor.build_and_inspect_runner_image() == built
+    build, inspect = [argv for argv, _ in runner.calls]
+    assert "--quiet" in build
+    assert build[build.index("-t") + 1] == tag
+    if forge_checks:
+        assert build[build.index("--target") + 1] == "forge-checks"
+    else:
+        assert "--target" not in build
+    assert inspect[-1] == built
+
+
+def test_runner_rejects_a_mutable_build_reference_before_inspection() -> None:
+    runner = FakeCommandRunner(
+        responses={
+            "docker build": CommandResult(0, "parallel-forge-runner:latest", ""),
+            "docker inspect": CommandResult(0, "sha256:" + "a" * 64, ""),
+        }
+    )
+    with pytest.raises(SupervisorError, match="immutable digest"):
+        DevSupervisor(repo_root=REPO_ROOT, runner=runner).build_and_inspect_runner_image()
+    assert len(runner.calls) == 1
+
+
+def test_dev_main_parses_forge_checks_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    from scripts import dev
+
+    captured_flags: list[bool] = []
+
+    class StubSupervisor:
+        def __init__(self, *, forge_checks: bool = False) -> None:
+            captured_flags.append(forge_checks)
+            self.stop_event = threading.Event()
+
+        def run(self) -> int:
+            return 0
+
+    monkeypatch.setattr(dev, "DevSupervisor", StubSupervisor)
+    assert dev.main([]) == 0
+    assert dev.main(["--forge-checks"]) == 0
+    assert captured_flags == [False, True]

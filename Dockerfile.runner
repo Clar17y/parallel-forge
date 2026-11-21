@@ -2,7 +2,7 @@
 
 FROM --platform=linux/amd64 node:24.19.0-slim@sha256:65932751ed4073ed02f5c04e494e4b2572a891b7dbea0568a863dc80341bf848 AS node-runtime
 
-FROM --platform=linux/amd64 python:3.14.2-slim@sha256:51f5baff157fee39a31e5b32394dde7ed2977bcea7a0b16a8978a8d23c270f85
+FROM --platform=linux/amd64 python:3.14.2-slim@sha256:51f5baff157fee39a31e5b32394dde7ed2977bcea7a0b16a8978a8d23c270f85 AS runner-base
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -35,3 +35,31 @@ RUN cc -static -O2 -Wall -Wextra -Werror /tmp/runner-mount-guard.c \
 ENV HOME=/home/forge
 WORKDIR /workspace
 USER 10001:10001
+
+FROM runner-base AS forge-checks
+
+USER 0:0
+COPY --chmod=0444 pyproject.toml uv.lock /opt/forge-checks-inputs/
+RUN printf '%s\n' 'uv==0.12.10 --hash=sha256:f7d6248ad9f2d282fea795f248da8fa666ab382df50d8385bd98e01049440a0c' \
+    | python -m pip install --no-cache-dir --only-binary=:all: --require-hashes -r /dev/stdin \
+    && uv venv --no-cache --python /usr/local/bin/python /opt/forge-checks-venv \
+    && uv export --directory /opt/forge-checks-inputs --locked --offline --no-cache \
+        --extra dev --no-emit-project --format requirements.txt --output-file /tmp/requirements.txt \
+    && uv pip install --no-cache \
+        --python /opt/forge-checks-venv/bin/python \
+        --require-hashes \
+        --compile-bytecode \
+        -r /tmp/requirements.txt \
+    && rm -f /tmp/requirements.txt \
+    && printf '/workspace/apps/orchestrator/src\n' \
+        > /opt/forge-checks-venv/lib/python3.14/site-packages/forge_workspace.pth \
+    && python -m pip uninstall -y uv \
+    && chmod 0555 /opt/forge-checks-inputs \
+    && chmod -R a+rX /opt/forge-checks-venv
+
+COPY --chmod=0555 scripts/forge-pytest /usr/local/bin/forge-pytest
+
+WORKDIR /workspace
+USER 10001:10001
+
+FROM runner-base AS runner
