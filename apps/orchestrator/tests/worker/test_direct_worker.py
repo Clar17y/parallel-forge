@@ -27,6 +27,7 @@ class _QuietPublisher:
 from forge.persistence.models import Project
 from forge.persistence.repositories.direct import PostgresDirectRepository
 from forge.settings import Settings
+from forge.worker import direct
 from forge.worker.direct import DirectRunWorker, _spawn_argv
 
 FAKE_CLI = '''
@@ -472,8 +473,6 @@ async def test_cleanup_failure_does_not_skip_next_orphan_sweep():
 async def test_orphan_sweep_leaves_unstopped_run_retryable_while_other_runs_progress(monkeypatch):
     from unittest.mock import AsyncMock, call
 
-    from forge.worker import direct
-
     active, blocked, other = (SimpleNamespace(id=uuid4()) for _ in range(3))
     running = SimpleNamespace(id=uuid4(), pid=11111, state="RUNNING")
     done = SimpleNamespace(id=uuid4(), pid=22222, state="DONE")
@@ -514,22 +513,26 @@ async def test_child_cleanup_attempts_remaining_tasks_after_one_write_fails():
     assert worker._repo.update_task.await_args_list == [call(tasks[0].id, state="FAILED"), call(tasks[2].id, state="FAILED")]
 
 
+async def _claimed_orphan_run(session_factory, tmp_path, task, *, shape="quick"):
+    _, project_id, settings, service = await _setup(session_factory, tmp_path)
+    repo = PostgresDirectRepository(session_factory)
+    created = await service.create(
+        project_id=project_id, task=task, client="muse_code", model="model-1",
+        effort=None, shape=shape,
+    )
+    run = await repo.claim_next()
+    assert run is not None and run.id == created.id
+    return service, repo, DirectRunWorker(session_factory, settings), run
+
+
 @pytest.mark.integration
 async def test_orphan_unconfirmed_persists_warning_once_and_settles_on_eventual_stop(
-    session_factory, tmp_path, fake_cli, monkeypatch
+    session_factory, tmp_path, monkeypatch
 ):
-    from forge.worker import direct
-
-    _, pid, settings, service = await _setup(session_factory, tmp_path)
-    repo = PostgresDirectRepository(session_factory)
-    run = await service.create(
-        project_id=pid, task="stuck", client="muse_code", model="model-1", effort=None
-    )
-    claimed = await repo.claim_next()
-    assert claimed is not None
-    unconfirmed = await repo.create_session(run_id=run.id, run=claimed)
+    service, repo, worker, run = await _claimed_orphan_run(session_factory, tmp_path, "stuck")
+    unconfirmed = await repo.create_session(run_id=run.id, run=run)
     await repo.update_session(unconfirmed.id, pid=11111)
-    confirmed = await repo.create_session(run_id=run.id, run=claimed)
+    confirmed = await repo.create_session(run_id=run.id, run=run)
     await repo.update_session(confirmed.id, pid=22222)
 
     attempts = {11111: 0, 22222: 0}
@@ -541,8 +544,6 @@ async def test_orphan_unconfirmed_persists_warning_once_and_settles_on_eventual_
         return attempts[target_pid] >= 4
 
     monkeypatch.setattr(direct, "_kill_pid_tree", fake_kill_pid_tree)
-    worker = _worker(session_factory, settings, fake_cli, "happy")
-
     # Sweep 1: 22222 settles FAILED, 11111 stays RUNNING with warning persisted once.
     await worker._settle_orphans()
     after_first = await service.get(run.id)
@@ -566,7 +567,7 @@ async def test_orphan_unconfirmed_persists_warning_once_and_settles_on_eventual_
     assert after_second.control_version == after_first.control_version
 
     # Even with the same warning, a changed session needs a new owner snapshot.
-    new_session = await repo.create_session(run_id=run.id, run=claimed)
+    new_session = await repo.create_session(run_id=run.id, run=run)
     await worker._settle_orphans()
     after_third = await service.get(run.id)
     assert after_third.failure_reason == after_second.failure_reason
@@ -583,26 +584,20 @@ async def test_orphan_unconfirmed_persists_warning_once_and_settles_on_eventual_
 
 @pytest.mark.integration
 async def test_orphan_unconfirmed_owner_cancel_retains_session_and_epic_work(
-    session_factory, tmp_path, fake_cli, monkeypatch
+    session_factory, tmp_path, monkeypatch
 ):
-    from forge.worker import direct
-
-    _, pid, settings, service = await _setup(session_factory, tmp_path)
-    repo = PostgresDirectRepository(session_factory)
-    run = await service.create(
-        project_id=pid, task="epic", client="muse_code", model="model-1", effort=None, shape="epic"
+    service, repo, worker, run = await _claimed_orphan_run(
+        session_factory, tmp_path, "epic", shape="epic"
     )
-    claimed = await repo.claim_next()
-    assert claimed is not None
     done_task = await repo.create_task(run_id=run.id, ordinal=0, task_text="done part")
     await repo.update_task(done_task.id, state="DONE")
     running_task = await repo.create_task(run_id=run.id, ordinal=1, task_text="active part")
     await repo.update_task(running_task.id, state="RUNNING")
     pending_task = await repo.create_task(run_id=run.id, ordinal=2, task_text="later part")
 
-    done_session = await repo.create_session(run_id=run.id, run=claimed, task_id=done_task.id)
+    done_session = await repo.create_session(run_id=run.id, run=run, task_id=done_task.id)
     await repo.update_session(done_session.id, state="SUCCEEDED", pid=44444)
-    unresolved = await repo.create_session(run_id=run.id, run=claimed, task_id=running_task.id)
+    unresolved = await repo.create_session(run_id=run.id, run=run, task_id=running_task.id)
     await repo.update_session(unresolved.id, pid=33333)
 
     seen_pids: list[int] = []
@@ -612,7 +607,6 @@ async def test_orphan_unconfirmed_owner_cancel_retains_session_and_epic_work(
         return False
 
     monkeypatch.setattr(direct, "_kill_pid_tree", fake_kill_pid_tree)
-    worker = _worker(session_factory, settings, fake_cli, "happy")
 
     await worker._settle_orphans()
     pending_run = await service.get(run.id)
@@ -657,18 +651,10 @@ async def test_orphan_unconfirmed_owner_cancel_retains_session_and_epic_work(
 @pytest.mark.integration
 @pytest.mark.parametrize("stop_confirmed", [True, False])
 async def test_orphan_cancel_during_stop_respects_owner_decision(
-    session_factory, tmp_path, fake_cli, monkeypatch, stop_confirmed
+    session_factory, tmp_path, monkeypatch, stop_confirmed
 ):
-    from forge.worker import direct
-
-    _, pid, settings, service = await _setup(session_factory, tmp_path)
-    repo = PostgresDirectRepository(session_factory)
-    run = await service.create(
-        project_id=pid, task="race", client="muse_code", model="model-1", effort=None
-    )
-    claimed = await repo.claim_next()
-    assert claimed is not None
-    sess = await repo.create_session(run_id=run.id, run=claimed)
+    service, repo, worker, run = await _claimed_orphan_run(session_factory, tmp_path, "race")
+    sess = await repo.create_session(run_id=run.id, run=run)
     await repo.update_session(sess.id, pid=55555)
 
     actor_id = uuid4()
@@ -678,7 +664,6 @@ async def test_orphan_cancel_during_stop_respects_owner_decision(
         return stop_confirmed
 
     monkeypatch.setattr(direct, "_kill_pid_tree", fake_kill_pid_tree)
-    worker = _worker(session_factory, settings, fake_cli, "happy")
     await worker._settle_orphans()
 
     final = await service.get(run.id)
@@ -699,17 +684,10 @@ async def test_orphan_cancel_during_stop_respects_owner_decision(
 
 @pytest.mark.integration
 async def test_orphan_stop_evidence_is_bound_to_the_observed_pid(
-    session_factory, tmp_path, fake_cli, monkeypatch
+    session_factory, tmp_path, monkeypatch
 ):
-    from forge.worker import direct
-
-    _, project_id, settings, service = await _setup(session_factory, tmp_path)
-    repo = PostgresDirectRepository(session_factory)
-    run = await service.create(
-        project_id=project_id, task="interrupted", client="muse_code", model="model-1", effort=None
-    )
-    claimed = await repo.claim_next()
-    session = await repo.create_session(run_id=run.id, run=claimed)
+    service, repo, worker, run = await _claimed_orphan_run(session_factory, tmp_path, "interrupted")
+    session = await repo.create_session(run_id=run.id, run=run)
     await repo.update_session(session.id, pid=55555)
 
     async def stop_observed_pid(pid):
@@ -718,7 +696,7 @@ async def test_orphan_stop_evidence_is_bound_to_the_observed_pid(
         return True
 
     monkeypatch.setattr(direct, "_kill_pid_tree", stop_observed_pid)
-    await _worker(session_factory, settings, fake_cli, "happy")._settle_orphans()
+    await worker._settle_orphans()
     assert (await service.get(run.id)).state == "RUNNING"
     [retained] = await repo.sessions(run.id)
     assert (retained.pid, retained.state, retained.ended_at) == (55556, "RUNNING", None)

@@ -433,6 +433,16 @@ def _fixture_stat(pid, state, group, session):
     return str(pid).encode() + b" (weird ) name\n\xff) " + " ".join(map(str, fields)).encode()
 
 
+def _mock_process_groups(monkeypatch, groups):
+    def getpgid(pid):
+        try:
+            return groups[pid]
+        except KeyError:
+            raise ProcessLookupError from None
+
+    monkeypatch.setattr(os, "getpgid", getpgid)
+
+
 @linux_recovery
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
@@ -454,8 +464,9 @@ async def test_orphan_group_requires_observable_session_members(
             raise ProcessLookupError
 
     monkeypatch.setattr(os, "killpg", probe_only)
-    monkeypatch.setattr(os, "getpgid", lambda pid: kernel_group)
     own_pid = os.getpid()
+    groups = {own_pid: 99999}
+    _mock_process_groups(monkeypatch, groups)
     own_dir = tmp_path / str(own_pid)
     own_dir.mkdir()
     (tmp_path / "self").symlink_to(own_dir.name)
@@ -465,6 +476,7 @@ async def test_orphan_group_requires_observable_session_members(
     flags = "rw,hidepid=invisible" if member == "hidden-members" else "rw"
     (own_dir / "mounts").write_bytes(f"proc /proc proc {flags} 0 0\n".encode())
     if member not in ("unlisted", "kernel-gone"):
+        groups.update({42001: 42001, 42002: kernel_group})
         leader = tmp_path / "42001"
         leader.mkdir()
         state = "S" if member == "other-pid-namespace" else "Z"
@@ -488,9 +500,41 @@ async def test_orphan_group_requires_observable_session_members(
 
 
 @linux_recovery
+def test_orphan_scan_skips_known_nonmembers_and_reads_uncertain_candidates(tmp_path, monkeypatch):
+    group, foreign, gone, denied = 42001, 42002, 42003, 42004
+
+    def kernel_pgid(pid):
+        if pid == foreign:
+            return 99999
+        if pid == gone:
+            raise ProcessLookupError
+        assert pid == denied
+        raise PermissionError
+
+    reads = []
+    read_stat = direct_process._read_stat
+
+    def record_read(entry):
+        reads.append(int(entry.name))
+        return read_stat(entry)
+
+    entry = tmp_path / str(denied)
+    entry.mkdir()
+    (entry / "stat").write_bytes(_fixture_stat(denied, "Z", group, group))
+    monkeypatch.setattr(os, "getpgid", kernel_pgid)
+    monkeypatch.setattr(direct_process, "_read_stat", record_read)
+    pids = {str(pid) for pid in (foreign, gone, denied)}
+    state = direct_process._scan_members(group, tmp_path, pids)
+    assert state is direct_process._State.STOPPED
+    assert sorted(reads) == [gone, denied]
+
+
+@linux_recovery
 @pytest.mark.asyncio
 @pytest.mark.parametrize("new_session", [42001, 99999], ids=["related-fork", "unrelated-fork"])
 async def test_orphan_sweep_rechecks_new_pids_before_settling(tmp_path, monkeypatch, new_session):
+    groups = {42001: 42001, 42002: 42001}
+    _mock_process_groups(monkeypatch, groups)
     for pid, state in ((42001, "Z"), (42002, "S")):
         entry = tmp_path / str(pid)
         entry.mkdir()
@@ -501,6 +545,8 @@ async def test_orphan_sweep_rechecks_new_pids_before_settling(tmp_path, monkeypa
     def read(path):
         if path.parent.name == "42002":
             if not newcomer.exists():
+                del groups[42002]
+                groups[42003] = new_session
                 newcomer.mkdir()
                 (newcomer / "stat").write_bytes(_fixture_stat(42003, "S", new_session, new_session))
             raise ProcessLookupError
@@ -516,7 +562,6 @@ async def test_orphan_sweep_rechecks_new_pids_before_settling(tmp_path, monkeypa
     monkeypatch.setattr(Path, "read_bytes", read)
     monkeypatch.setattr(direct_process, "_same_pid_namespace", lambda root: True)
     monkeypatch.setattr(direct_process, "_proc_lists_all_pids", lambda root: True)
-    monkeypatch.setattr(os, "getpgid", lambda pid: 99999)
     monkeypatch.setattr(os, "killpg", signal_group)
     expected = direct_process._State.LIVE if new_session == 42001 else direct_process._State.STOPPED
     assert direct_process._group_state(42001, tmp_path) is expected
@@ -533,6 +578,20 @@ async def test_orphan_sweep_retries_uncertain_observation_after_signal(monkeypat
     sent = []
     monkeypatch.setattr(os, "killpg", lambda pgid, sig: sent.append(sig) if sig else None)
     assert await direct_process.stop_linux_session_group(42001)
+    assert sent == [signal.SIGTERM]
+
+
+@linux_recovery
+@pytest.mark.asyncio
+async def test_orphan_sweep_never_escalates_persistent_uncertainty(monkeypatch):
+    sent = []
+    states = direct_process._State
+    monkeypatch.setattr(
+        direct_process, "_group_state", lambda *_: states.UNCONFIRMED if sent else states.LIVE
+    )
+    monkeypatch.setattr(os, "killpg", lambda pgid, sig: sent.append(sig) if sig else None)
+    for _ in range(2):
+        assert not await direct_process.stop_linux_session_group(42001)
     assert sent == [signal.SIGTERM]
 
 

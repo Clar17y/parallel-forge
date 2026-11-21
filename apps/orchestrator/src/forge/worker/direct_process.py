@@ -128,6 +128,12 @@ def _listed_pids(proc_root: Path) -> set[str]:
 def _scan_members(pgid: int, proc_root: Path, pids: set[str]) -> _State | None:
     observed = None
     for pid in pids:
+        if sys.platform == "linux":
+            try:
+                if os.getpgid(int(pid)) != pgid:
+                    continue
+            except OSError:
+                pass  # An inconclusive lookup still requires the procfs check.
         member = _member_state(proc_root / pid, pgid)
         if member in (_State.LIVE, _State.UNCONFIRMED):
             return member

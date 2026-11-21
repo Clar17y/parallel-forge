@@ -124,9 +124,11 @@ If Forge cannot confirm a stop, the run shows a warning and recovery
 retries. The owner can choose **Cancel** to end automatic recovery and
 retain the worktree for manual cleanup. The run then shows `CANCELLED`
 and a warning. An unresolved session keeps its last recorded state, PID
-and open end time. Verify the process on the host before reusing the
-worktree. A numeric PID alone cannot distinguish a later dedicated
-session that reuses the same ID, so recovery could signal that session.
+and open end time. Escalation to `SIGKILL` requires a current observation
+of a live group member. Verify the process on the host before reusing the
+worktree. Procfs listings span multiple reads, so a rapid fork and exit
+can escape observation. A later dedicated session can also reuse the
+same numeric PID, in which case recovery could signal that session.
 
 Each role (plan, implement, review, repair, decompose) has an ordered,
 owner-editable route list. Defaults at time of writing:
