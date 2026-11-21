@@ -696,11 +696,6 @@ class DevSupervisor:
 
     def build_and_inspect_runner_image(self) -> str:
         """Build the Docker runner image and inspect its immutable digest."""
-        tag = (
-            "parallel-forge-runner:forge-checks"
-            if self.forge_checks
-            else "parallel-forge-runner:latest"
-        )
         build_cmd = [
             "docker",
             "build",
@@ -709,12 +704,14 @@ class DevSupervisor:
             "linux/amd64",
         ]
         if self.forge_checks:
+            tag = "parallel-forge-runner:forge-checks"
             self.log(
                 "Building Docker forge-checks runner image from Dockerfile.runner "
                 "(target=forge-checks)..."
             )
             build_cmd.extend(["--target", "forge-checks"])
         else:
+            tag = "parallel-forge-runner:latest"
             self.log("Building Docker runner image from Dockerfile.runner...")
         build_cmd.extend(["-f", "Dockerfile.runner", "-t", tag, "."])
 

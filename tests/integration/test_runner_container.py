@@ -334,6 +334,8 @@ def test_runner_image_is_pinned_nonroot_and_has_required_tool_versions(
             "python --version && node --version && npm --version && git --version",
             "&& rg --version | head -1 && cc --version | head -1 && id -u",
             "&& ! command -v docker",
+            "&& test -x /usr/local/bin/forge-mount-guard",
+            "&& ! test -e /usr/local/bin/forge-pytest && ! test -e /opt/forge-checks-venv",
         )
     )
     output = subprocess.check_output(
@@ -574,15 +576,21 @@ def _run_locked_down(
     return subprocess.run(cmd, capture_output=True, text=True, timeout=60, check=False)
 
 
-def _prepare_forge_checks_workspace(tmp_path: Path) -> Path:
+@pytest.fixture
+def dependency_workspace(tmp_path: Path) -> Path:
     ws = tmp_path / "ws"
-    ws.mkdir(parents=True)
+    ws.mkdir()
     shutil.copy2(REPO_ROOT / "pyproject.toml", ws / "pyproject.toml")
     shutil.copy2(REPO_ROOT / "uv.lock", ws / "uv.lock")
-    pkg_dir = ws / "apps" / "orchestrator" / "src" / "forge_probe"
+    return ws
+
+
+@pytest.fixture
+def probe_workspace(dependency_workspace: Path) -> Path:
+    pkg_dir = dependency_workspace / "apps" / "orchestrator" / "src" / "forge_probe"
     pkg_dir.mkdir(parents=True)
     (pkg_dir / "__init__.py").write_text('VALUE = "live-candidate"\n', encoding="utf-8")
-    tests_dir = ws / "tests"
+    tests_dir = dependency_workspace / "tests"
     tests_dir.mkdir()
     (tests_dir / "test_probe.py").write_text(
         "import os, subprocess, sys\n"
@@ -599,38 +607,11 @@ def _prepare_forge_checks_workspace(tmp_path: Path) -> Path:
         '        assert proc.stdout.strip() == "live-candidate"\n',
         encoding="utf-8",
     )
-    return ws
-
-
-def test_default_target_remains_lightweight_without_forge_pytest(
-    docker_cli: str, default_runner_image: str
-) -> None:
-    res = subprocess.run(
-        [
-            docker_cli,
-            "run",
-            "--rm",
-            "--network=none",
-            default_runner_image,
-            "sh",
-            "-c",
-            (
-                "id -u && test -x /usr/local/bin/forge-mount-guard "
-                "&& ! test -e /usr/local/bin/forge-pytest "
-                "&& ! test -e /opt/forge-checks-venv"
-            ),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
-    )
-    assert res.returncode == 0, res.stderr
-    assert res.stdout.strip() == "10001"
+    return dependency_workspace
 
 
 def test_forge_checks_image_properties_no_cache_and_isolated_import(
-    tmp_path: Path, docker_cli: str, forge_checks_image: str
+    probe_workspace: Path, docker_cli: str, forge_checks_image: str
 ) -> None:
     no_cache = subprocess.run(
         [
@@ -650,11 +631,10 @@ def test_forge_checks_image_properties_no_cache_and_isolated_import(
     )
     assert no_cache.returncode == 0, no_cache.stderr
 
-    ws = _prepare_forge_checks_workspace(tmp_path)
     res = _run_locked_down(
         docker_cli,
         forge_checks_image,
-        ws,
+        probe_workspace,
         "sh",
         "-c",
         (
@@ -670,42 +650,43 @@ def test_forge_checks_image_properties_no_cache_and_isolated_import(
     assert res.stdout.strip().splitlines() == ["10001", "0:0", "0:0", "live-candidate"]
 
 
+@pytest.mark.parametrize("filename", ["pyproject.toml", "uv.lock"])
+@pytest.mark.parametrize("state", ["missing", "changed"])
 def test_forge_pytest_rejects_missing_and_changed_dependency_inputs(
-    tmp_path: Path, docker_cli: str, forge_checks_image: str
+    dependency_workspace: Path,
+    docker_cli: str,
+    forge_checks_image: str,
+    filename: str,
+    state: str,
 ) -> None:
-    for filename, mode, marker in (
-        ("pyproject.toml", "missing", None),
-        ("uv.lock", "missing", None),
-        ("pyproject.toml", "changed", "SECRET_SENTINEL_MUST_NOT_ECHO_PYPROJECT"),
-        ("uv.lock", "changed", "SECRET_SENTINEL_MUST_NOT_ECHO_LOCK"),
-    ):
-        ws = _prepare_forge_checks_workspace(tmp_path / f"{mode}_{filename}")
-        target = ws / filename
-        if mode == "missing":
-            target.unlink()
-        else:
-            with target.open("a", encoding="utf-8") as handle:
-                handle.write(f"\n# {marker}\n")
-        res = _run_locked_down(docker_cli, forge_checks_image, ws, "forge-pytest", "-q")
-        assert res.returncode == 2, res.stdout + res.stderr
-        assert filename in res.stderr
-        assert "rebuild" in res.stderr.lower()
-        if marker is not None:
-            assert marker not in res.stdout + res.stderr
+    target = dependency_workspace / filename
+    marker = "DEPENDENCY_INPUT_MUST_NOT_BE_ECHOED"
+    if state == "missing":
+        target.unlink()
+    else:
+        with target.open("a", encoding="utf-8") as handle:
+            handle.write(f"\n# {marker}\n")
+
+    res = _run_locked_down(
+        docker_cli, forge_checks_image, dependency_workspace, "forge-pytest", "-q"
+    )
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert filename in res.stderr
+    assert "rebuild" in res.stderr.lower()
+    assert marker not in res.stdout + res.stderr
 
 
 def test_forge_pytest_runs_mounted_candidate_isolated_children_and_propagates_exit(
-    tmp_path: Path, docker_cli: str, forge_checks_image: str
+    probe_workspace: Path, docker_cli: str, forge_checks_image: str
 ) -> None:
-    ws = _prepare_forge_checks_workspace(tmp_path)
-    shadow_dir = ws / "shadow"
+    shadow_dir = probe_workspace / "shadow"
     shadow_dir.mkdir()
     (shadow_dir / "hashlib.py").write_text("raise RuntimeError('shadowed!')\n", encoding="utf-8")
 
     passing = _run_locked_down(
         docker_cli,
         forge_checks_image,
-        ws,
+        probe_workspace,
         "forge-pytest",
         "-q",
         "tests/test_probe.py",
@@ -714,20 +695,19 @@ def test_forge_pytest_runs_mounted_candidate_isolated_children_and_propagates_ex
     assert passing.returncode == 0, passing.stdout + passing.stderr
     assert "1 passed" in passing.stdout
 
-    (ws / "apps" / "orchestrator" / "src" / "forge_probe" / "__init__.py").write_text(
+    (probe_workspace / "apps" / "orchestrator" / "src" / "forge_probe" / "__init__.py").write_text(
         'VALUE = "dirty-edit"\n', encoding="utf-8"
     )
     failing = _run_locked_down(
-        docker_cli, forge_checks_image, ws, "forge-pytest", "-q", "tests/test_probe.py"
+        docker_cli, forge_checks_image, probe_workspace, "forge-pytest", "-q", "tests/test_probe.py"
     )
     assert failing.returncode == 1, failing.stdout + failing.stderr
     assert "1 failed" in failing.stdout
 
 
 def test_docker_runner_executes_forge_pytest_policy_command(
-    tmp_path: Path, forge_checks_image: str
+    tmp_path: Path, probe_workspace: Path, forge_checks_image: str
 ) -> None:
-    ws = _prepare_forge_checks_workspace(tmp_path)
     command = CommandSpec(
         kind=StepKind.TEST,
         name="test-backend-focused",
@@ -737,7 +717,7 @@ def test_docker_runner_executes_forge_pytest_policy_command(
     policy = ProjectPolicy(
         id=uuid4(),
         version=1,
-        repository_path=str(ws),
+        repository_path=str(probe_workspace),
         github_repository="local/forge-checks-smoke",
         default_branch="main",
         runner_mode=RunnerMode.DOCKER,
@@ -746,7 +726,7 @@ def test_docker_runner_executes_forge_pytest_policy_command(
     artifacts = FilesystemArtifactStore(tmp_path / "artifacts")
     runner = DockerRunner(
         policy=policy,
-        root=CanonicalRoot(ws),
+        root=CanonicalRoot(probe_workspace),
         image_digest=forge_checks_image,
         artifact_store=artifacts,
     )

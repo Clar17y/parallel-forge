@@ -103,7 +103,7 @@ For `test-backend-focused`, keep the existing `path_scope` so Forge appends the 
 
 If the project also uses direct runs, keep the unscoped `test-backend` command executable on the host. Direct runs execute it there, where an image-only `forge-pytest` command will fail. They skip path-scoped checks, so the focused Docker check can use `forge-pytest` in that shared policy.
 
-The launcher checks the mounted `pyproject.toml` and `uv.lock` against the image's build inputs before starting pytest. Rebuild the image when those inputs change. Operators can also select the worktree's `.venv/bin/python -m pytest` in the policy. The named-check receipt records elapsed command time in `command_duration_ms`, and the command result identifies the image used.
+The launcher checks the mounted `pyproject.toml` and `uv.lock` against the image's build inputs before starting pytest. Rebuild the image when those inputs change. Operators can also select the worktree's `.venv/bin/python -m pytest` in the policy. The receipt links to the command result, which records `duration_ms` and the immutable image ID. For version 3 receipts, the named-check outcome exposes the same duration as `command_duration_ms`.
 
 ### Measured on Windows Docker Desktop
 
@@ -115,6 +115,8 @@ On 2026-11-21 both images ran the self-development policy's offline selection on
 | API tests, one run each | 106.4 s | 70.0 s | 339 passed, 23 deselected |
 | Full offline collection, one run each | 74.7 s | 49.6 s | 6,376 selected, 3,232 deselected |
 
-The collected cases matched after accounting for one test ID containing a generated UUID. Two state-transition tests also varied their parameter order between processes. Full-suite execution time and parallel pytest performance remain unmeasured.
+The collected cases matched after accounting for one test ID containing a generated UUID. Two state-transition tests also varied their parameter order between processes. These runs used serial pytest.
 
 On the implementation worktree based on `a660e67`, a separate run of `test-backend-focused` through Forge's Docker runner passed all 561 domain tests. Its command result recorded 12,074 ms.
+
+The full offline `test-backend` command at `4b5253b` took 443.8 s with image dependencies. Pytest reported 6,445 passed, 124 skipped, 11 failed and 3,497 deselected. All 11 failing cases also failed with the worktree virtualenv and the original runner image on both `4b5253b` and its parent `a660e67`. The full suite has a single timing for the image-based environment.
