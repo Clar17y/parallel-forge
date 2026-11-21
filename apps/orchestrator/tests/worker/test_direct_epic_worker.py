@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import subprocess
 import sys
+from contextlib import suppress
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -799,8 +800,22 @@ async def test_epic_orphan_retains_completed_child_and_partial_work(session_fact
     await repo.update_task(children[1].id, state="RUNNING")
     Path(parked.worktree_path, "partial.txt").write_text("retained")
     session = await repo.create_session(run_id=run.id, run=claimed, task_id=children[1].id)
-    await repo.update_session(session.id, pid=4194304)
-    assert await worker.run_once() is None
+    provider = await asyncio.create_subprocess_exec(
+        sys.executable, "-c", "import time; time.sleep(60)",
+        cwd=parked.worktree_path, start_new_session=(sys.platform != "win32"),
+    )
+    try:
+        await repo.update_session(session.id, pid=provider.pid)
+        assert await worker.run_once() is None
+        assert await asyncio.wait_for(provider.wait(), timeout=5) != 0
+    finally:
+        if provider.returncode is None:
+            with suppress(ProcessLookupError):
+                provider.kill()
+            await provider.wait()
+    recovered_session = next(row for row in await repo.sessions(run.id) if row.id == session.id)
+    assert recovered_session.state == "FAILED"
+    assert recovered_session.failure_reason == "worker interrupted"
     assert (await service.get(run.id)).failure_reason == "worker interrupted"
     final = await service.tasks(run.id)
     assert final[0] == children[0]

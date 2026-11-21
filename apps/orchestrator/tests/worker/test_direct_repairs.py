@@ -5,8 +5,11 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import select
+import signal
 import subprocess
 import sys
+from contextlib import suppress
 from pathlib import Path
 from time import monotonic
 from types import SimpleNamespace
@@ -17,7 +20,7 @@ import pytest
 from forge.domain.direct import DirectLaunch, DirectResult, DirectRunRecord, parse_review_result
 from forge.domain.policy import CommandSpec, ProjectPolicy, StepKind
 from forge.settings import Settings
-from forge.worker import direct
+from forge.worker import direct, direct_process
 
 
 def git(root, *args):
@@ -251,26 +254,301 @@ async def test_worker_task_cancellation_settles_child_process(tmp_path, monkeypa
     assert not survived, "worker task cancellation left the CLI child running without a watchdog"
 
 
+def _orphan_worker(tmp_path, pid):
+    obj = worker(tmp_path)
+    run = run_record()
+    session = SimpleNamespace(id=uuid4(), state="RUNNING", pid=pid)
+    obj._repo.running_runs = AsyncMock(return_value=(run,))
+    obj._repo.sessions = AsyncMock(return_value=(session,))
+    obj._repo.settle_orphan_run = AsyncMock(return_value=None)
+    return obj
+
+
+def _assert_stop_submitted(obj):
+    [run] = obj._repo.running_runs.return_value
+    [session] = obj._repo.sessions.return_value
+    obj._repo.settle_orphan_run.assert_awaited_once_with(
+        run.id, stopped_sessions={session.id: session.pid}
+    )
+
+
 @pytest.mark.asyncio
 async def test_orphan_sweep_kills_live_recorded_pid(tmp_path):
-    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])  # noqa: ASYNC220
+    child = subprocess.Popen(  # noqa: ASYNC220
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        start_new_session=(os.name != "nt"),
+    )
     try:
-        obj = worker(tmp_path)
-        run = run_record()
-        session = SimpleNamespace(id=uuid4(), pid=child.pid, state="RUNNING")
-        obj._repo.running_runs = AsyncMock(return_value=(run,))
-        obj._repo.sessions = AsyncMock(return_value=(session,))
+        obj = _orphan_worker(tmp_path, child.pid)
         await obj._settle_orphans()
-        deadline = monotonic() + 5
-        while direct._pid_alive(child.pid) and monotonic() < deadline:
-            await asyncio.sleep(0.05)
-        assert not direct._pid_alive(child.pid)
-        failed = [c for c in obj._repo.update_run.await_args_list if c.kwargs.get("state") == "FAILED"]
-        assert failed and failed[-1].kwargs.get("failure_reason") == "worker interrupted"
+        assert child.wait(timeout=5) != 0
+        _assert_stop_submitted(obj)
     finally:
         if child.poll() is None:
             child.kill()
-            child.wait()
+            child.wait(timeout=5)
+
+
+linux_recovery = pytest.mark.skipif(sys.platform != "linux", reason="Linux process groups and procfs")
+
+
+async def _wait_for_unreaped_exit(pid):
+    status = await asyncio.wait_for(
+        asyncio.to_thread(os.waitid, os.P_PID, pid, os.WEXITED | os.WNOWAIT), timeout=5
+    )
+    assert status is not None and status.si_pid == pid
+
+
+@linux_recovery
+@pytest.mark.asyncio
+async def test_orphan_sweep_recognizes_exited_unreaped_zombie_session(tmp_path, monkeypatch):
+    with subprocess.Popen([sys.executable, "-I", "-S", "-c", "pass"], start_new_session=True) as child:  # noqa: ASYNC220
+        await _wait_for_unreaped_exit(child.pid)
+        assert not direct._pid_alive(child.pid)
+        kernel_killpg = os.killpg
+
+        def probe_only(pgid, sig):
+            assert sig == 0, "a zombie-only group must not be signalled"
+            kernel_killpg(pgid, sig)
+
+        monkeypatch.setattr(os, "killpg", probe_only)
+        obj = _orphan_worker(tmp_path, child.pid)
+        await obj._settle_orphans()
+        await _wait_for_unreaped_exit(child.pid)  # Recovery observed exit without reaping.
+        _assert_stop_submitted(obj)
+
+
+@linux_recovery
+@pytest.mark.asyncio
+async def test_orphan_sweep_stops_provider_with_exited_main_thread(tmp_path):
+    # pthread_exit ends the group leader's main thread while the other thread
+    # keeps running. Only the survivor announces that the leader is a zombie.
+    script = """
+import ctypes, os, threading, time
+from pathlib import Path
+def survivor():
+    while Path('/proc/self/stat').read_bytes().rsplit(b') ', 1)[1].split()[0] != b'Z':
+        time.sleep(.01)
+    os.write(1, b'R')
+    time.sleep(60)
+threading.Thread(target=survivor, daemon=True).start()
+ctypes.CDLL(None).pthread_exit(None)
+"""
+    with subprocess.Popen(  # noqa: ASYNC220
+        [sys.executable, "-I", "-c", script], stdout=subprocess.PIPE, start_new_session=True
+    ) as provider:
+        try:
+            assert select.select([provider.stdout], [], [], 5)[0] and provider.stdout.read(1) == b"R"
+            assert direct._pid_alive(provider.pid)
+            obj = _orphan_worker(tmp_path, provider.pid)
+            await obj._settle_orphans()
+            assert provider.wait(timeout=5) != 0
+            _assert_stop_submitted(obj)
+        finally:
+            if provider.poll() is None:
+                provider.kill()
+
+
+@linux_recovery
+@pytest.mark.asyncio
+@pytest.mark.parametrize("leader_exits", [False, True], ids=["live-tree", "survivor-ignores-term"])
+async def test_orphan_sweep_stops_group_before_recording_failure(tmp_path, leader_exits):
+    read_fd, write_fd = os.pipe()
+    member_code = (
+        "import os, signal, time\n"
+        + ("signal.signal(signal.SIGTERM, signal.SIG_IGN)\n" if leader_exits else "")
+        + f"os.write({write_fd}, b'R')\n"
+        + "time.sleep(60)\n"
+    )
+    leader_code = (
+        "import subprocess, sys, time\n"
+        f"subprocess.Popen([sys.executable, '-I', '-c', sys.argv[1]], pass_fds=({write_fd},))\n"
+        + ("" if leader_exits else "time.sleep(60)\n")
+    )
+    with os.fdopen(read_fd, "rb", buffering=0) as witness, os.fdopen(write_fd, "wb") as writer:
+        leader = subprocess.Popen(  # noqa: ASYNC220
+            [sys.executable, "-I", "-c", leader_code, member_code],
+            pass_fds=(write_fd,), start_new_session=True,
+        )
+        writer.close()
+        try:
+            assert select.select([witness], [], [], 5)[0] and witness.read(1) == b"R"
+            if leader_exits:
+                # The member is ready and the leader is dead but deliberately unreaped.
+                await _wait_for_unreaped_exit(leader.pid)
+
+            def require_stopped(run_id, *, stopped_sessions):
+                # Both processes inherit the write end. EOF is independent of Forge's probe.
+                assert select.select([witness], [], [], 0)[0] and witness.read(1) == b""
+                assert list(stopped_sessions.values()) == [leader.pid]
+
+            obj = _orphan_worker(tmp_path, leader.pid)
+            obj._repo.settle_orphan_run.side_effect = require_stopped
+            await obj._settle_orphans()
+            _assert_stop_submitted(obj)
+        finally:
+            # Keep the leader unreaped until the group's final cleanup, pinning its PID.
+            with suppress(ProcessLookupError):
+                os.killpg(leader.pid, signal.SIGKILL)
+            leader.wait(timeout=5)
+
+
+@linux_recovery
+@pytest.mark.asyncio
+@pytest.mark.parametrize("group", [-1, 0], ids=["ordinary-child", "foreign-session"])
+async def test_orphan_sweep_does_not_signal_unrelated_process(tmp_path, monkeypatch, group):
+    kernel_killpg = os.killpg
+
+    def probe_only(pgid, sig):
+        assert sig == 0
+        kernel_killpg(pgid, sig)
+
+    monkeypatch.setattr(os, "killpg", probe_only)
+    child = subprocess.Popen(  # noqa: ASYNC220
+        [sys.executable, "-I", "-c", "import time; time.sleep(60)"], process_group=group,
+    )
+    try:
+        obj = _orphan_worker(tmp_path, child.pid)
+        await obj._settle_orphans()
+        assert child.poll() is None
+        if group == 0:
+            assert obj._repo.settle_orphan_run.await_args.kwargs["stopped_sessions"] == {}
+    finally:
+        child.kill()
+        child.wait(timeout=5)
+
+
+@linux_recovery
+@pytest.mark.asyncio
+async def test_orphan_sweep_refuses_own_process_group(monkeypatch):
+    monkeypatch.setattr(os, "killpg", lambda *args: pytest.fail("probed the worker's own group"))
+    assert await direct._kill_pid_tree(os.getpid())  # Worker PID reuse proves the prior group ended.
+    for number in {os.getpgrp(), os.getsid(0)} - {os.getpid()}:
+        assert not await direct._kill_pid_tree(number)
+
+
+def _fixture_stat(pid, state, group, session):
+    # /proc/PID/stat fields 3..20, including the thread count.
+    fields = [state, 1, group, session, *([0] * 13), 1]
+    return str(pid).encode() + b" (weird ) name\n\xff) " + " ".join(map(str, fields)).encode()
+
+
+@linux_recovery
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("member", "kernel_group", "stopped"),
+    [
+        ("unreadable", 42001, False), ("unreadable", 99999, True),
+        ("malformed", 42001, False), ("foreign-session", 42001, False),
+        ("unlisted", 42001, False), ("kernel-gone", 42001, True),
+        ("hidden-members", 99999, False), ("other-pid-namespace", 99999, False),
+    ],
+)
+async def test_orphan_group_requires_observable_session_members(
+    tmp_path, monkeypatch, member, kernel_group, stopped,
+):
+
+    def probe_only(pgid, sig):
+        assert pgid == 42001 and sig == 0
+        if member == "kernel-gone":
+            raise ProcessLookupError
+
+    monkeypatch.setattr(os, "killpg", probe_only)
+    monkeypatch.setattr(os, "getpgid", lambda pid: kernel_group)
+    own_pid = os.getpid()
+    own_dir = tmp_path / str(own_pid)
+    own_dir.mkdir()
+    (tmp_path / "self").symlink_to(own_dir.name)
+    (own_dir / "stat").write_bytes(_fixture_stat(own_pid, "S", 99999, 99999))
+    namespace_pids = f"{own_pid}\t{own_pid}" if member == "other-pid-namespace" else str(own_pid)
+    (own_dir / "status").write_bytes(f"NSpid:\t{namespace_pids}\n".encode())
+    flags = "rw,hidepid=invisible" if member == "hidden-members" else "rw"
+    (own_dir / "mounts").write_bytes(f"proc /proc proc {flags} 0 0\n".encode())
+    if member not in ("unlisted", "kernel-gone"):
+        leader = tmp_path / "42001"
+        leader.mkdir()
+        state = "S" if member == "other-pid-namespace" else "Z"
+        (leader / "stat").write_bytes(_fixture_stat(42001, state, 42001, 42001))
+        other = tmp_path / "42002"
+        other.mkdir()
+        if member == "unreadable":
+            original = Path.read_bytes
+
+            def read(path):
+                if path.parent == other:
+                    raise PermissionError
+                return original(path)
+
+            monkeypatch.setattr(Path, "read_bytes", read)
+        elif member == "malformed":
+            (other / "stat").write_bytes(b"42002 (bad) S\n")
+        elif member == "foreign-session":
+            (other / "stat").write_bytes(_fixture_stat(42002, "S", 42001, 41000))
+    assert await direct_process.stop_linux_session_group(42001, proc_root=tmp_path) is stopped
+
+
+@linux_recovery
+@pytest.mark.asyncio
+@pytest.mark.parametrize("new_session", [42001, 99999], ids=["related-fork", "unrelated-fork"])
+async def test_orphan_sweep_rechecks_new_pids_before_settling(tmp_path, monkeypatch, new_session):
+    for pid, state in ((42001, "Z"), (42002, "S")):
+        entry = tmp_path / str(pid)
+        entry.mkdir()
+        (entry / "stat").write_bytes(_fixture_stat(pid, state, 42001, 42001))
+    newcomer = tmp_path / "42003"
+    original = Path.read_bytes
+
+    def read(path):
+        if path.parent.name == "42002":
+            if not newcomer.exists():
+                newcomer.mkdir()
+                (newcomer / "stat").write_bytes(_fixture_stat(42003, "S", new_session, new_session))
+            raise ProcessLookupError
+        return original(path)
+
+    sent = []
+    def signal_group(pgid, sig):
+        assert pgid == 42001
+        if sig:
+            sent.append(sig)
+            (newcomer / "stat").write_bytes(_fixture_stat(42003, "Z", pgid, pgid))
+
+    monkeypatch.setattr(Path, "read_bytes", read)
+    monkeypatch.setattr(direct_process, "_same_pid_namespace", lambda root: True)
+    monkeypatch.setattr(direct_process, "_proc_lists_all_pids", lambda root: True)
+    monkeypatch.setattr(os, "getpgid", lambda pid: 99999)
+    monkeypatch.setattr(os, "killpg", signal_group)
+    expected = direct_process._State.LIVE if new_session == 42001 else direct_process._State.STOPPED
+    assert direct_process._group_state(42001, tmp_path) is expected
+    assert await direct_process.stop_linux_session_group(42001, proc_root=tmp_path)
+    assert sent == ([signal.SIGTERM] if new_session == 42001 else [])
+
+
+@linux_recovery
+@pytest.mark.asyncio
+async def test_orphan_sweep_retries_uncertain_observation_after_signal(monkeypatch):
+    states = direct_process._State
+    observations = iter((states.LIVE, states.UNCONFIRMED, states.LIVE, states.STOPPED))
+    monkeypatch.setattr(direct_process, "_group_state", lambda *_: next(observations))
+    sent = []
+    monkeypatch.setattr(os, "killpg", lambda pgid, sig: sent.append(sig) if sig else None)
+    assert await direct_process.stop_linux_session_group(42001)
+    assert sent == [signal.SIGTERM]
+
+
+@pytest.mark.asyncio
+async def test_orphan_group_invalid_pids():
+    for pid in (0, -1):
+        assert await direct._kill_pid_tree(pid)
+        assert not direct._pid_alive(pid)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows taskkill")
+@pytest.mark.asyncio
+async def test_orphan_group_windows_best_effort(monkeypatch):
+    monkeypatch.setattr(direct, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(direct.asyncio, "create_subprocess_exec", AsyncMock(side_effect=OSError()))
+    assert await direct._kill_pid_tree(12345)
 
 
 # --- check execution: F6/F8/F3/F7 -------------------------------------------

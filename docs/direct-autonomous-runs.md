@@ -114,6 +114,20 @@ last-output time: silence beyond a threshold warns visibly, longer
 silence kills the session and settles it as failed. Cancellation uses
 the existing proved-stop machinery where available.
 
+On Linux, restart recovery uses a recorded provider PID to find its
+dedicated session and process group. A thread or child can still write to
+the worktree after the main thread exits. Forge records `worker interrupted`
+for that session once it confirms the group has stopped. Direct checks
+currently have no recorded PID for restart recovery.
+
+If Forge cannot confirm a stop, the run shows a warning and recovery
+retries. The owner can choose **Cancel** to end automatic recovery and
+retain the worktree for manual cleanup. The run then shows `CANCELLED`
+and a warning. An unresolved session keeps its last recorded state, PID
+and open end time. Verify the process on the host before reusing the
+worktree. A numeric PID alone cannot distinguish a later dedicated
+session that reuses the same ID, so recovery could signal that session.
+
 Each role (plan, implement, review, repair, decompose) has an ordered,
 owner-editable route list. Defaults at time of writing:
 

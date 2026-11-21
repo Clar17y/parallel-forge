@@ -27,6 +27,7 @@ from forge.application.services.validation_failure_evidence import (
 )
 from forge.domain.direct import (
     ACTIVE_DIRECT_RUN_STATES,
+    ACTIVE_DIRECT_TASK_STATES,
     DECOMPOSE_SCHEMA,
     RESULT_SCHEMA,
     REVIEW_CLIENT_PREFERENCE,
@@ -60,6 +61,7 @@ from forge.domain.validation import command_spec_digest
 from forge.observability.redaction import RedactionPolicy, Redactor
 from forge.persistence.repositories.direct import PostgresDirectRepository
 from forge.settings import Settings
+from forge.worker.direct_process import linux_pid_alive, stop_linux_session_group
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +74,6 @@ _OUTPUT_TRUNCATED = "[output truncated]"
 # escaped role-JSON-inside-CLI-JSON forms. Reserve bounded framing/log headroom.
 _DECOMPOSE_CAPTURE_BYTES = 8 * 1024 * 1024
 _DECOMPOSE_OVERFLOW = "decomposition output exceeded capture limit"
-_ACTIVE_TASK_STATES = frozenset({"PLANNING", "RUNNING", "CHECKING", "REVIEWING", "REPAIRING"})
 
 
 class _CommitFailure(RuntimeError):
@@ -416,7 +417,7 @@ class DirectRunWorker:
                 current = await self._repo.get(run.id)
                 if current.shape == "epic" and current.state in {"FAILED", "CANCELLED", "NEEDS_DECISION"}:
                     for task in await self._repo.tasks(run.id):
-                        if task.state in _ACTIVE_TASK_STATES:
+                        if task.state in ACTIVE_DIRECT_TASK_STATES:
                             try:
                                 await self._repo.update_task(task.id, state=current.state)
                             except Exception:
@@ -428,32 +429,20 @@ class DirectRunWorker:
         return run.id
 
     async def _settle_orphans(self) -> None:
-        # Rule: a RUNNING/CHECKING/REPAIRING run with no live session pid is
-        # orphaned. CHECKING/REPAIRING only exist inside a worker's active
-        # run_once (skipped via _active_run_id, and a sequential worker never
-        # sweeps mid-execution), so one seen here belongs to a dead worker.
+        # Direct runs have a single sequential worker. Skip its current run;
+        # the other active runs belong to an interrupted worker.
         for run in await self._repo.running_runs():
             if run.id == self._active_run_id:
                 continue
-            sessions = await self._repo.sessions(run.id)
-            # Single sequential worker: a non-active run has no live
-            # supervisor, so a still-live recorded pid is reclaimed here.
-            for session in sessions:
-                if session.state == "RUNNING" and session.pid and _pid_alive(session.pid):
-                    await _kill_pid_tree(session.pid)
-            for session in sessions:
-                if session.state == "RUNNING":
-                    await self._repo.update_session(
-                        session.id, state="FAILED", ended_at=datetime.now(UTC),
-                        failure_reason="worker interrupted",
-                    )
-            if run.shape == "epic":
-                for task in await self._repo.tasks(run.id):
-                    if task.state in _ACTIVE_TASK_STATES:
-                        await self._repo.update_task(task.id, state="FAILED")
-            await self._repo.update_run(
-                run.id, state="FAILED", failure_reason="worker interrupted"
-            )
+            stopped: dict[UUID, int | None] = {}
+            for session in await self._repo.sessions(run.id):
+                if session.state == "RUNNING" and (
+                    session.pid is None or await _kill_pid_tree(session.pid)
+                ):
+                    stopped[session.id] = session.pid
+            warning = await self._repo.settle_orphan_run(run.id, stopped_sessions=stopped)
+            if warning:
+                logger.warning("Direct run %s recovery: %s", run.id, warning)
 
     def _resolve_installation(self, run: DirectRunRecord) -> object:
         if self._installation_resolver is not None:
@@ -2145,11 +2134,15 @@ async def _kill_tree(proc: asyncio.subprocess.Process) -> None:
         proc.kill()
 
 
-async def _kill_pid_tree(pid: int) -> None:
-    """Kill a process tree by pid (orphaned sessions are not our children)."""
+async def _kill_pid_tree(pid: int) -> bool:
+    """Recover an orphan, requiring group-level proof on Linux."""
 
     if pid <= 0:
-        return
+        return True
+    if sys.platform == "linux":
+        return await stop_linux_session_group(pid)
+    if not _pid_alive(pid):
+        return True
     try:
         if sys.platform == "win32":
             killer = await asyncio.create_subprocess_exec(
@@ -2161,16 +2154,19 @@ async def _kill_pid_tree(pid: int) -> None:
             os.killpg(pid, signal.SIGTERM)
             for _ in range(20):
                 if not _pid_alive(pid):
-                    return
+                    return True
                 await asyncio.sleep(0.05)
             os.killpg(pid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError, OSError):
+    except OSError:
         pass
+    return True  # Other platforms retain their existing best-effort recovery.
 
 
 def _pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False
+    if sys.platform == "linux":
+        return linux_pid_alive(pid)
     if sys.platform == "win32":
         import ctypes
 

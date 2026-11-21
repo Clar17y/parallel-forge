@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from hashlib import sha256
 from uuid import UUID, uuid4
@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from forge.domain.direct import (
     ACTIVE_DIRECT_RUN_STATES,
+    ACTIVE_DIRECT_TASK_STATES,
     DirectCheckRecord,
     DirectChildTaskRecord,
     DirectDecomposeResult,
@@ -29,6 +30,15 @@ from forge.persistence.models import (
     DirectTask,
     Project,
 )
+
+
+def _orphan_warning(pids: Sequence[int | None], *, cancelled: bool) -> str:
+    if cancelled:
+        action = "The owner cancelled recovery. Verify remaining providers manually before reusing the worktree."
+    else:
+        action = "Recovery will retry. Cancel ends retries and retains the worktree for manual cleanup."
+    ids = ", ".join(str(pid) for pid in sorted({pid for pid in pids if pid is not None}))
+    return f"Provider stop unconfirmed. {action} Recorded PIDs {ids or 'unavailable'}."[:512]
 
 
 def _task_record(row: DirectTask) -> DirectChildTaskRecord:
@@ -266,7 +276,7 @@ class PostgresDirectRepository:
     @staticmethod
     def _owner_action(
         row: DirectRun, action: str, actor_id: UUID | None, expected_version: int | None,
-        *, task_id: UUID | None = None,
+        *, task_id: UUID | None = None, warnings: Sequence[str] = (),
     ) -> None:
         if row.shape == "epic" and expected_version is None:
             raise ValueError("a current snapshot version is required")
@@ -275,7 +285,7 @@ class PostgresDirectRepository:
         event: dict[str, object] = {
             "actor_id": str(actor_id) if actor_id else None, "action": action,
             "snapshot_version": row.control_version, "state": row.state,
-            "task_id": str(task_id) if task_id else None, "warnings": [],
+            "task_id": str(task_id) if task_id else None, "warnings": list(warnings),
             "at": datetime.now(UTC).isoformat(),
         }
         row.owner_actions = [*(row.owner_actions or []), event][-64:]
@@ -577,7 +587,8 @@ class PostgresDirectRepository:
                 return _run_record(row)
             # Cancellation always applies to the locked current state; it must
             # not depend on the browser still having the latest progress poll.
-            self._owner_action(row, "cancel", actor_id, row.control_version)
+            warnings = [row.failure_reason] if row.failure_reason else []
+            self._owner_action(row, "cancel", actor_id, row.control_version, warnings=warnings)
             if row.state in parked_states:
                 row.state = "CANCELLED"
                 row.cancel_requested = True
@@ -589,6 +600,56 @@ class PostgresDirectRepository:
             await session.commit()
             await session.refresh(row)
             return _run_record(row)
+
+    async def settle_orphan_run(
+        self, run_id: UUID, *, stopped_sessions: Mapping[UUID, int | None],
+    ) -> str | None:
+        """Apply observed exits under the same run lock as an owner's Cancel."""
+        async with self._factory.begin() as session:
+            row = await self._locked_run(session, run_id)
+            if row.state not in ACTIVE_DIRECT_RUN_STATES:
+                return None
+            now = datetime.now(UTC)
+            session_changed = False
+            for session_id, observed_pid in stopped_sessions.items():
+                changed_id = await session.scalar(
+                    update(DirectSession).where(
+                        DirectSession.run_id == run_id,
+                        DirectSession.id == session_id,
+                        DirectSession.pid.is_not_distinct_from(observed_pid),
+                        DirectSession.state == "RUNNING",
+                    ).values(state="FAILED", ended_at=now, failure_reason="worker interrupted")
+                    .returning(DirectSession.id)
+                )
+                if changed_id is not None:
+                    session_changed = True
+
+            remaining = (await session.scalars(
+                select(DirectSession.pid).where(
+                    DirectSession.run_id == run_id, DirectSession.state == "RUNNING"
+                )
+            )).all()
+            if remaining:
+                reason = _orphan_warning(remaining, cancelled=row.cancel_requested)
+            else:
+                reason = "cancelled" if row.cancel_requested else "worker interrupted"
+
+            if row.cancel_requested or not remaining:
+                row.state = "CANCELLED" if row.cancel_requested else "FAILED"
+                if row.shape == "epic":
+                    await session.execute(
+                        update(DirectTask).where(
+                            DirectTask.run_id == run_id, DirectTask.state.in_(ACTIVE_DIRECT_TASK_STATES)
+                        ).values(state=row.state)
+                    )
+            elif row.failure_reason == reason:
+                if session_changed:
+                    row.control_version += 1
+                return None  # The warning itself has not changed.
+
+            row.failure_reason = reason
+            row.control_version += 1
+            return reason if remaining else None
 
     async def cancel_requested(self, run_id: UUID) -> bool:
         async with self._factory() as session:
